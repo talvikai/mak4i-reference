@@ -1,0 +1,169 @@
+"""Local-only developer configuration for `mak4i init` / `mak4i serve`.
+
+This is a **convenience for local/self-hosted development only** — it lets a
+developer run one `mak4i init` and then `mak4i serve` without hand-copying
+ids and a raw token between commands. It has nothing to do with the hosted
+Developer Preview, which never reads or writes any of these files.
+
+Layout (all under `.mak4i/` in the current directory, or `$MAK4I_HOME`):
+
+    .mak4i/
+      config.json        ids + names + resolved backend settings (NO secret)
+      credentials.json    {"token": "mak4i_..."}  — file mode 0600, dir 0700
+      control-plane.db    the local instance's SQLite control plane
+      artifacts/          the local instance's LocalJSONStore
+
+The raw credential token is stored here in plaintext **on purpose** — it is
+the price of the `serve` convenience, and it is the *only* place the raw
+token exists (the control-plane database stores only its SHA-256 hash, per
+`identity/tokens.py`). `.mak4i/` is gitignored. Do not reuse this mechanism
+for anything hosted.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict
+
+_DIR_ENV_VAR = "MAK4I_HOME"
+_DEFAULT_DIR = ".mak4i"
+_CONFIG_FILE = "config.json"
+_CREDENTIALS_FILE = "credentials.json"
+
+
+class LocalConfig(BaseModel):
+    """What `mak4i init` records so `mak4i serve` can start the same local
+    instance. No secret lives here — the raw token is in a separate file."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    organization_id: str
+    organization_name: str
+    owner_principal_id: str
+    owner_display_name: str
+    project_id: str
+    project_name: str
+    credential_id: str
+    control_plane_db: str
+    store: str
+    local_store_dir: str | None = None
+    created_at: str
+
+
+def home_dir() -> Path:
+    """The `.mak4i/` directory for this working tree, or `$MAK4I_HOME`."""
+    return Path(os.environ.get(_DIR_ENV_VAR, _DEFAULT_DIR))
+
+
+def config_path() -> Path:
+    return home_dir() / _CONFIG_FILE
+
+
+def credentials_path() -> Path:
+    return home_dir() / _CREDENTIALS_FILE
+
+
+def exists() -> bool:
+    """True once `mak4i init` has written a config here."""
+    return config_path().is_file()
+
+
+def default_control_plane_db() -> str:
+    """SQLite URL for a fresh local instance, kept inside `.mak4i/` so the
+    whole local environment is one self-contained, gitignored directory."""
+    return f"sqlite:///{(home_dir() / 'control-plane.db').as_posix()}"
+
+
+def default_local_store_dir() -> str:
+    return (home_dir() / "artifacts").as_posix()
+
+
+def ensure_home() -> Path:
+    """Create the `.mak4i/` directory (mode 0700) and return its path."""
+    d = home_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.chmod(stat.S_IRWXU)  # 0700
+    except OSError:
+        pass  # best-effort (e.g. some Windows / network filesystems)
+    return d
+
+
+_ensure_home = ensure_home  # internal alias
+
+
+def save(config: LocalConfig) -> None:
+    _ensure_home()
+    config_path().write_text(json.dumps(config.model_dump(), indent=2) + "\n")
+
+
+def load() -> LocalConfig | None:
+    path = config_path()
+    if not path.is_file():
+        return None
+    return LocalConfig.model_validate_json(path.read_text())
+
+
+def save_token(raw_token: str) -> None:
+    """Persist the raw credential for `serve`, with restricted permissions."""
+    _ensure_home()
+    path = credentials_path()
+    path.write_text(json.dumps({"token": raw_token}) + "\n")
+    try:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass
+
+
+def load_token() -> str | None:
+    path = credentials_path()
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text())
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+#: env vars that together identify one initialized local environment — the
+#: control plane, the artifact store, and the credential that was issued
+#: *into* that control plane. `mak4i serve` treats `.mak4i/` as the source
+#: of truth for these, so `mak4i init && mak4i serve` is deterministic even
+#: with a stale `export MAK4I_TOKEN=…` (or a stale DB URL) in the shell.
+LOCAL_ENV_KEYS = ("MAK4I_CONTROL_PLANE_DB", "MAK4I_STORE", "MAK4I_LOCAL_STORE_DIR", "MAK4I_TOKEN")
+
+
+def overridden_local_env_keys(config: LocalConfig, token: str | None) -> list[str]:
+    """Which `LOCAL_ENV_KEYS` are currently set in the environment to a value
+    that differs from this local config — i.e. what `apply_to_env` will
+    override. Used only to print a heads-up (never the values)."""
+    desired = _desired_local_env(config, token)
+    return [k for k, v in desired.items() if k in os.environ and os.environ[k] != v]
+
+
+def apply_to_env(config: LocalConfig, token: str | None) -> None:
+    """Set the env vars `config.py` / `mcp_server.py` read so they describe
+    the environment `mak4i init` created — **authoritatively**. A stale
+    `MAK4I_TOKEN` / `MAK4I_CONTROL_PLANE_DB` in the shell is replaced, not
+    respected, so `mak4i serve` reliably uses the initialized credential.
+
+    This only affects the `mak4i serve` process. `python -m mak4i.mcp_server`
+    is unchanged and still reads the environment as given.
+    """
+    for name, value in _desired_local_env(config, token).items():
+        os.environ[name] = value
+
+
+def _desired_local_env(config: LocalConfig, token: str | None) -> dict[str, str]:
+    desired: dict[str, str] = {
+        "MAK4I_CONTROL_PLANE_DB": config.control_plane_db,
+        "MAK4I_STORE": config.store,
+    }
+    if config.local_store_dir is not None:
+        desired["MAK4I_LOCAL_STORE_DIR"] = config.local_store_dir
+    if token is not None:
+        desired["MAK4I_TOKEN"] = token
+    return desired

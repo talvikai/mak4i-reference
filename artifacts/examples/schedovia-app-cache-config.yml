@@ -1,0 +1,11 @@
+# Demo fixture for MAK4I Demo Flow D (MVP_ARCHITECTURE.md §23).
+#
+# This represents a snippet of the (hypothetical) schedovia application's
+# own repository config — not part of the MAK4I engine itself. The MVP has
+# no real schedovia application codebase, so this fixture stands in for
+# "what an implementation worker would find by inspecting the app repo"
+# when following the discrepancy-surfacing instruction in this repo's own
+# CLAUDE.md (§15 of the architecture: Claude Code must compare repo state
+# against MAK4I's current decision and speak up on a mismatch, not assume
+# either side is authoritative).
+cache_backend: memcached

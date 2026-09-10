@@ -1,0 +1,10 @@
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+artifacts/schedovia/*.json
+artifacts/schedovia/*.lock
+docs/
+tests/
+.env

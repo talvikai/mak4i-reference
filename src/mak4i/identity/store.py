@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from mak4i.identity.models import (
+    Credential,
+    Grant,
+    Organization,
+    Principal,
+    Project,
+)
+
+
+@runtime_checkable
+class ControlPlaneStore(Protocol):
+    """Persistence for the control-plane entities — organizations,
+    principals, projects, grants, credentials.
+
+    [PROTOCOL]: this interface is pure storage. All business rules
+    (owner-role checks, the last-owner guard, credential usability,
+    grant→permission resolution) live in `ControlPlane` (control_plane.py),
+    never here — the same way `ArtifactStore` holds no resolver logic. Two
+    implementations back it: `InMemoryControlPlaneStore` (tests) and
+    `SqlControlPlaneStore` (SQLite locally, PostgreSQL deployed).
+
+    `put_*` methods are upserts (insert or replace by primary key). The
+    control plane is operator-driven and low-contention, so there is no
+    optimistic-concurrency token here (unlike `ArtifactStore`).
+    """
+
+    # -- organizations --
+    def get_organization(self, organization_id: str) -> Organization | None: ...
+    def put_organization(self, organization: Organization) -> None: ...
+    def list_organizations(self) -> list[Organization]: ...
+
+    # -- principals --
+    def get_principal(self, principal_id: str) -> Principal | None: ...
+    def put_principal(self, principal: Principal) -> None: ...
+    def list_principals(self, organization_id: str) -> list[Principal]: ...
+
+    # -- projects --
+    def get_project(self, project_id: str) -> Project | None: ...
+    def put_project(self, project: Project) -> None: ...
+    def list_projects(self, organization_id: str) -> list[Project]: ...
+
+    # -- grants --
+    def get_grant(self, principal_id: str, project_id: str) -> Grant | None: ...
+    def put_grant(self, grant: Grant) -> None: ...
+    def delete_grant(self, principal_id: str, project_id: str) -> None: ...
+    def list_grants_for_principal(self, principal_id: str) -> list[Grant]: ...
+
+    # -- credentials --
+    def get_credential(self, credential_id: str) -> Credential | None: ...
+    def put_credential(self, credential: Credential) -> None: ...
+    def list_credentials(self, principal_id: str) -> list[Credential]: ...
+    def lookup_credential_by_hash(self, token_hash: str) -> Credential | None: ...

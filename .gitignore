@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.env
+*.key.json
+.DS_Store
+
+# Local/self-hosted developer environment created by `mak4i init` /
+# `mak4i serve` — control-plane DB, artifact store, and the local config
+# holding a raw credential token. Never commit any of this.
+.mak4i/
+/mak4i-control-plane.db
+/artifacts/local/
+

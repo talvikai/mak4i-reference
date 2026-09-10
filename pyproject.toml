@@ -1,0 +1,43 @@
+[project]
+name = "mak4i"
+version = "0.1.0"
+description = "MAK4I reference MVP — durable project knowledge shared across real AI clients via MCP."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "mcp>=2.0,<3",
+    "google-cloud-storage>=2.18",
+    "starlette>=0.38",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "google-auth>=2.30",
+]
+
+[project.scripts]
+mak4i = "mak4i.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mak4i"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Belt-and-suspenders against the editable-install pth not being picked up
+# (uv marks its generated .pth macOS-hidden; CPython's site.py silently
+# skips hidden .pth files). The primary fix is installing non-editable
+# (see README's Setup section: `uv sync --extra dev --no-editable`), which
+# sidesteps the .pth mechanism entirely; this makes test collection
+# self-sufficient even if that's ever forgotten.
+pythonpath = ["src", "scripts"]
+asyncio_mode = "auto"
