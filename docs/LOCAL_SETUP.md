@@ -5,9 +5,9 @@ the CLI, and a local MCP server — with no cloud account and no
 relationship to anyone else's data. The same steps scale up to
 self-hosting your own shared instance.
 
-If instead you want to connect an AI client to **Talvik's hosted
-Developer Preview**, you need none of this — see "Hosted Developer
-Preview" in the top-level `README.md`.
+If instead you want to connect an AI client to a hosted MAK4I deployment
+(such as Talvik's), you need none of this — see "Hosted / server
+deployments" in the top-level `README.md`.
 
 ## Prerequisites
 

@@ -4,13 +4,14 @@ remain callable by tests/CLI without MCP"). `doctor` and the control-plane
 subcommands (`org`, `project`, `principal`, `grant`, `credential`) are
 CLI-only and never model-callable (MVP_ARCHITECTURE.md §10).
 
-`init` / `serve` / `preview provision` are onboarding conveniences: each is
+`init` / `serve` / `access provision` are onboarding conveniences: each is
 a thin wrapper over the same control-plane calls the granular subcommands
 make. `init` + `serve` are the local/self-hosted first-run path (they read
 and write `.mak4i/`, a gitignored local config — see `localconfig.py`);
-`preview provision` is an operator-only shortcut for onboarding one known
-Talvik-hosted Developer Preview tester. None of them add business logic,
-weaken authorization, or touch the hosted environment from the local path.
+`access provision` is an operator-only shortcut for giving one external
+collaborator scoped access to a hosted or server deployment. None of them
+add business logic, weaken authorization, or touch a hosted environment
+from the local path.
 
 `--principal <id>` on the artifact subcommands is a **trusted local/operator
 mode only**: it acts as that principal by id without a credential, and is
@@ -304,7 +305,7 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
 
 # -- onboarding convenience commands ---------------------------------------
 #
-# `init`, `serve`, and `preview provision` add no business logic: each is a
+# `init`, `serve`, and `access provision` add no business logic: each is a
 # thin wrapper over the same `ControlPlane` calls the granular subcommands
 # above make, plus (for init/serve) a small local config file so a
 # developer doesn't hand-copy ids and a token between steps. The granular
@@ -460,18 +461,18 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_preview_provision(args: argparse.Namespace) -> int:
-    """Operator-only: provision one known external tester into the
-    Talvik-hosted Developer Preview. Runs against whatever control plane
+def _cmd_access_provision(args: argparse.Namespace) -> int:
+    """Operator-only: give one external collaborator scoped access to a
+    hosted or server MAK4I deployment. Runs against whatever control plane
     the operator's environment points at. Not public self-service.
 
     Reuses the same `ControlPlane` calls as the granular commands: a new
-    organization for the tester, a `member` principal (never an owner), a
-    project, a read+write grant on that project only, and one credential.
+    organization, a `member` principal (never an owner), a project, a
+    read+write grant on that project only, and one credential.
     """
-    # Fail closed BEFORE anything is provisioned: the tester needs the
-    # endpoint, so there is no point minting an organization/credential we
-    # then can't hand off.
+    # Fail closed BEFORE anything is provisioned: the collaborator needs
+    # the endpoint, so there is no point minting an organization/credential
+    # we then can't hand off.
     endpoint = args.endpoint or os.environ.get("MAK4I_PUBLIC_ENDPOINT")
     if not endpoint:
         print(
@@ -485,11 +486,11 @@ def _cmd_preview_provision(args: argparse.Namespace) -> int:
         )
         return 1
 
-    tester_display_name = _prompt("Tester display name", args.display_name)
+    collaborator_display_name = _prompt("Collaborator display name", args.display_name)
     organization_name = _prompt("Organization name", args.org_name)
     project_name = _prompt("Initial project", args.project_name)
 
-    print("\nProvisioning Developer Preview access...\n", file=sys.stderr)
+    print("\nProvisioning access...\n", file=sys.stderr)
 
     control_plane = _make_control_plane()
     organization, owner = control_plane.onboard_organization(
@@ -497,11 +498,11 @@ def _cmd_preview_provision(args: argparse.Namespace) -> int:
         owner_display_name=f"{organization_name} (operator)",
     )
     print("✓ Organization created", file=sys.stderr)
-    tester = control_plane.create_principal(
+    collaborator = control_plane.create_principal(
         actor=owner,
         organization_id=organization.organization_id,
         type="human",
-        display_name=tester_display_name,
+        display_name=collaborator_display_name,
         role="member",
     )
     print("✓ Principal created", file=sys.stderr)
@@ -511,42 +512,42 @@ def _cmd_preview_provision(args: argparse.Namespace) -> int:
     print("✓ Project created", file=sys.stderr)
     control_plane.grant(
         actor=owner,
-        principal_id=tester.principal_id,
+        principal_id=collaborator.principal_id,
         project_id=project.project_id,
         permissions=["read", "write"],
     )
     print("✓ READ/WRITE grant created", file=sys.stderr)
     _credential, raw_token = control_plane.issue_credential(
-        actor=owner, principal_id=tester.principal_id, display_name=tester_display_name
+        actor=owner, principal_id=collaborator.principal_id, display_name=collaborator_display_name
     )
     print("✓ Credential issued", file=sys.stderr)
 
-    print("\nTester access:\n")
+    print("\nCollaborator access:\n")
     print(f"Endpoint: {endpoint}")
     print(f"Project:  {project.project_id}")
     print(f"Token:    {raw_token}")
 
     if args.output:
-        _write_tester_file(args.output, endpoint=endpoint, project_id=project.project_id, token=raw_token)
+        _write_access_file(args.output, endpoint=endpoint, project_id=project.project_id, token=raw_token)
         print(f"\nWritten to {args.output} (contains the token — handle it securely).", file=sys.stderr)
 
     return 0
 
 
-_TESTER_DOCS_URL = "https://github.com/talvikai/mak4i-reference#hosted-developer-preview"
+_ACCESS_DOCS_URL = "https://github.com/talvikai/mak4i-reference#hosted--server-deployments"
 
 
-def _write_tester_file(path: str, *, endpoint: str, project_id: str, token: str) -> None:
-    """Minimal onboarding file for one tester. Deliberately contains only
-    what the tester needs to connect a client — never infrastructure,
+def _write_access_file(path: str, *, endpoint: str, project_id: str, token: str) -> None:
+    """Minimal onboarding file for one collaborator. Deliberately contains
+    only what they need to connect a client — never infrastructure,
     database, service-account, or operator detail."""
     body = (
-        "MAK4I Developer Preview\n\n"
+        "MAK4I access\n\n"
         f"Endpoint: {endpoint}\n"
         f"Token: {token}\n"
         f"Project: {project_id}\n\n"
         "Documentation:\n"
-        f"{_TESTER_DOCS_URL}\n"
+        f"{_ACCESS_DOCS_URL}\n"
     )
     p = os.path.abspath(path)
     with open(p, "w") as fh:
@@ -580,22 +581,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.set_defaults(func=_cmd_serve)
 
-    preview = subparsers.add_parser("preview", help="Operator: Talvik-hosted Developer Preview provisioning.")
-    preview_sub = preview.add_subparsers(dest="preview_command", required=True)
-    preview_provision = preview_sub.add_parser(
-        "provision", help="Provision one known external tester (operator-only; not public self-service)."
+    access = subparsers.add_parser(
+        "access", help="Operator: grant an external collaborator access to a hosted/server deployment."
     )
-    preview_provision.add_argument("--display-name", help="tester display name (prompted if omitted)")
-    preview_provision.add_argument("--org-name", help="tester organization name (prompted if omitted)")
-    preview_provision.add_argument("--project-name", help="initial project name (prompted if omitted)")
-    preview_provision.add_argument(
+    access_sub = access.add_subparsers(dest="access_command", required=True)
+    access_provision = access_sub.add_parser(
+        "provision",
+        help="Provision one external collaborator (operator-only; not public self-service).",
+    )
+    access_provision.add_argument("--display-name", help="collaborator display name (prompted if omitted)")
+    access_provision.add_argument("--org-name", help="organization name (prompted if omitted)")
+    access_provision.add_argument("--project-name", help="initial project name (prompted if omitted)")
+    access_provision.add_argument(
         "--endpoint",
-        help="hosted endpoint URL to hand the tester — required (or set $MAK4I_PUBLIC_ENDPOINT)",
+        help="hosted endpoint URL to hand the collaborator — required (or set $MAK4I_PUBLIC_ENDPOINT)",
     )
-    preview_provision.add_argument(
-        "--output", help="also write a minimal tester onboarding file to this path"
+    access_provision.add_argument(
+        "--output", help="also write a minimal onboarding file to this path"
     )
-    preview_provision.set_defaults(func=_cmd_preview_provision)
+    access_provision.set_defaults(func=_cmd_access_provision)
 
     doctor = subparsers.add_parser(
         "doctor",

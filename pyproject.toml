@@ -1,8 +1,10 @@
 [project]
 name = "mak4i"
 version = "0.1.0"
-description = "MAK4I reference MVP — durable project knowledge shared across real AI clients via MCP."
+description = "MAK4I reference implementation — durable project knowledge shared across real AI clients via MCP."
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "pydantic>=2.7",
     "mcp>=2.0,<3",

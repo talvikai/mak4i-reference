@@ -79,6 +79,15 @@ credential — and saves a local config so `serve` needs nothing further.
 It all lives in a gitignored `.mak4i/` directory in the repo. You never
 copy an org id, project id, or token between commands.
 
+It prompts interactively; to script it, pass the flags:
+
+```bash
+mak4i init \
+  --org-name "Acme" \
+  --display-name "Alex Dev" \
+  --project-name "Demo Project"
+```
+
 `mak4i serve` then starts the existing MCP server (stdio transport by
 default) against that instance, in the foreground — Ctrl-C to stop.
 
@@ -94,6 +103,13 @@ active:
 
 ```bash
 claude mcp add mak4i -- mak4i serve
+```
+
+If you opened a new terminal, return to the repo and reactivate first:
+
+```bash
+cd mak4i-reference
+source .venv/bin/activate
 ```
 
 This registers a stdio MCP server that Claude Code launches on demand.
@@ -152,10 +168,12 @@ the organization / project / grant model — all selected by environment
 variable, nothing baked in. See **`docs/DEPLOYMENT.md`** for the runtime
 contract and the auth model.
 
-`mak4i preview provision` is an operator helper for onboarding one
-external collaborator against a hosted deployment (a new organization, a
+`mak4i access provision` is an operator helper for onboarding one external
+collaborator against a hosted or server deployment (a new organization, a
 `member` principal, a project, a read/write grant, and a credential). It
-is an operator command — not public self-service, no signup flow.
+is an operator command — not public self-service, no signup flow — and it
+fails closed before provisioning anything if no endpoint (`--endpoint` /
+`MAK4I_PUBLIC_ENDPOINT`) is configured.
 
 Talvik operates a hosted MAK4I Developer Preview built on this
 implementation. It is access-controlled and not a generally available
@@ -262,7 +280,7 @@ src/mak4i/
   config.py    # Backend + control-plane-DB selection from env (shared by cli.py and mcp_server.py)
   localconfig.py  # local-only .mak4i/ config for `mak4i init` / `mak4i serve`
   mcp_server.py
-  cli.py       # operator CLI + `init` / `serve` / `preview provision` onboarding wrappers
+  cli.py       # operator CLI + `init` / `serve` / `access provision` onboarding wrappers
 artifacts/
   examples/    # demo fixtures (e.g. the stale-config fixture for the implementation flow)
   schedovia/   # legacy placeholder (.gitkeep); LocalJSONStore's real runtime dir is artifacts/local/, untracked

@@ -1,4 +1,4 @@
-"""`mak4i init` / `mak4i serve` / `mak4i preview provision` — the onboarding
+"""`mak4i init` / `mak4i serve` / `mak4i access provision` — the onboarding
 convenience commands. These add no business logic; the tests here confirm
 they reuse the control plane correctly, save local config safely, fail
 clearly before initialization, keep the raw token out of logs, and don't
@@ -243,7 +243,7 @@ def test_serve_ignores_a_stale_exported_control_plane_db(capsys, monkeypatch, tm
     assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
 
 
-# -- preview provision ------------------------------------------------------
+# -- access provision ------------------------------------------------------
 
 
 @pytest.fixture
@@ -257,7 +257,7 @@ def hosted_env(tmp_path, monkeypatch):
 
 def _provision(*extra, display="Angie Carel", org="Example Consulting", project="MAK4I Evaluation"):
     return _run(
-        "preview", "provision",
+        "access", "provision",
         "--display-name", display, "--org-name", org, "--project-name", project, *extra,
     )
 
@@ -271,7 +271,7 @@ def _parse_access(stdout: str) -> dict:
     return fields
 
 
-def test_preview_provision_creates_a_correctly_scoped_member_tester(hosted_env, capsys):
+def test_access_provision_creates_a_correctly_scoped_member(hosted_env, capsys):
     assert _provision("--endpoint", "https://hosted.example/mcp") == 0
     access = _parse_access(capsys.readouterr().out)
     assert access["endpoint"] == "https://hosted.example/mcp"
@@ -286,10 +286,10 @@ def test_preview_provision_creates_a_correctly_scoped_member_tester(hosted_env, 
     assert sorted(authorized[0].permissions) == ["read", "write"]
 
 
-def test_preview_provision_keeps_testers_isolated_across_organizations(hosted_env, capsys):
-    assert _provision(display="Tester A", org="Org A", project="Proj A") == 0
+def test_access_provision_keeps_collaborators_isolated_across_organizations(hosted_env, capsys):
+    assert _provision(display="Collaborator A", org="Org A", project="Proj A") == 0
     a = _parse_access(capsys.readouterr().out)
-    assert _provision(display="Tester B", org="Org B", project="Proj B") == 0
+    assert _provision(display="Collaborator B", org="Org B", project="Proj B") == 0
     b = _parse_access(capsys.readouterr().out)
 
     control_plane = build_control_plane_from_env()
@@ -299,8 +299,8 @@ def test_preview_provision_keeps_testers_isolated_across_organizations(hosted_en
     assert [ap.project.project_id for ap in control_plane.list_authorized_projects(principal_a)] == [a["project"]]
 
 
-def test_preview_provision_output_file_is_minimal_and_secret(hosted_env, capsys, tmp_path):
-    out_path = tmp_path / "tester-access.txt"
+def test_access_provision_output_file_is_minimal_and_secret(hosted_env, capsys, tmp_path):
+    out_path = tmp_path / "collaborator-access.txt"
     assert _provision("--endpoint", "https://hosted.example/mcp", "--output", str(out_path)) == 0
     access = _parse_access(capsys.readouterr().out)
 
@@ -318,7 +318,7 @@ def test_preview_provision_output_file_is_minimal_and_secret(hosted_env, capsys,
         assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
 
 
-def test_preview_provision_never_logs_the_raw_token(hosted_env, capsys, caplog):
+def test_access_provision_never_logs_the_raw_token(hosted_env, capsys, caplog):
     assert _provision("--endpoint", "https://hosted.example/mcp") == 0
     captured = capsys.readouterr()
     token = _parse_access(captured.out)["token"]
@@ -326,7 +326,7 @@ def test_preview_provision_never_logs_the_raw_token(hosted_env, capsys, caplog):
     assert token not in caplog.text
 
 
-def test_preview_provision_without_endpoint_fails_closed_and_provisions_nothing(hosted_env, capsys, monkeypatch):
+def test_access_provision_without_endpoint_fails_closed_and_provisions_nothing(hosted_env, capsys, monkeypatch):
     monkeypatch.delenv("MAK4I_PUBLIC_ENDPOINT", raising=False)
     exit_code = _provision()  # no --endpoint, no MAK4I_PUBLIC_ENDPOINT
     assert exit_code == 1
@@ -342,7 +342,7 @@ def test_preview_provision_without_endpoint_fails_closed_and_provisions_nothing(
     assert control_plane._store.list_organizations() == []
 
 
-def test_preview_provision_reads_endpoint_from_the_environment(hosted_env, capsys, monkeypatch):
+def test_access_provision_reads_endpoint_from_the_environment(hosted_env, capsys, monkeypatch):
     monkeypatch.setenv("MAK4I_PUBLIC_ENDPOINT", "https://env.example/mcp")
     assert _provision() == 0
     assert _parse_access(capsys.readouterr().out)["endpoint"] == "https://env.example/mcp"

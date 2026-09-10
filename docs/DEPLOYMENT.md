@@ -32,7 +32,7 @@ project, resource names, one-time provisioning commands, deploy runbook,
 service-account operations, Secret Manager administration — is not in
 this repository. If you are an external developer wanting to *use* a
 hosted instance rather than run your own, you deploy nothing at all — see
-the "Hosted Developer Preview" section of the top-level `README.md`.
+the "Hosted / server deployments" section of the top-level `README.md`.
 
 The Dockerfile lives at the repo root so that a source-based build has it
 at the build-context root with no path override.
