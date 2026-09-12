@@ -6,6 +6,26 @@ database migration step, and the local development path. It is written so
 that someone standing up their **own** MAK4I reference deployment can do
 so without reverse-engineering it from code.
 
+## Prerequisites
+
+- A container runtime (or any way to run the `Dockerfile` at the repo
+  root, or just `python -m mak4i.mcp_server` directly on a host with
+  Python 3.11+).
+- A SQLAlchemy-supported database for the control plane — PostgreSQL is
+  the reference choice; anything SQLAlchemy speaks works.
+- An `ArtifactStore` backend — the bundled `LocalJSONStore` (a plain
+  directory, works anywhere, including a single self-hosted VM with no
+  cloud dependency at all) or `GCSArtifactStore` if you're already on
+  GCP. Implement the same `ArtifactStore` interface for another object
+  store (S3, Azure Blob, ...) if you need one — see "MAK4I is deployment-
+  and storage-neutral" below; none is bundled today, so this is a
+  documented extension point, not a gap in what's already portable.
+- TLS termination in front of the container if serving over HTTPS —
+  MAK4I itself is transport-agnostic (see "Security considerations"
+  below).
+- No GCP account, and nothing Talvik-specific, is required for any of
+  the above.
+
 ## MAK4I is deployment- and storage-neutral
 
 MAK4I is a protocol and an engine, not a hosting stack. The engine talks
@@ -126,6 +146,51 @@ Run this once before first serving traffic, and again after pulling
 changes that add a migration. For a throwaway local SQLite database you
 can instead set `MAK4I_CONTROL_PLANE_CREATE_TABLES=1` and skip Alembic.
 
+## Bootstrapping a fresh enterprise deployment
+
+Once the container is up and the schema is migrated, everything else —
+the first organization, its owner, a project, a grant, and the first
+credential — is self-service from the CLI. No Talvik involvement, no
+database access, and nothing here is specific to this repository's own
+operator (a **different** organization's admin runs the exact same
+commands against their own deployment):
+
+```bash
+# Point the CLI at the same control-plane database the server uses.
+export MAK4I_CONTROL_PLANE_DB=<your control-plane URL>
+
+# 1. First organization + its owner principal.
+mak4i org create --name "Acme Corp" --owner-display-name "Platform Admin"
+#   -> {"organization": {"organization_id": "org_...", ...}, "owner": {"principal_id": "prn_...", ...}}
+
+# 2. A project — the primary context/authorization boundary.
+mak4i project create --actor <owner_principal_id> \
+  --organization-id <organization_id> --name "Platform"
+
+# 3. The owner grants itself (or any other principal) access to it.
+mak4i grant create --actor <owner_principal_id> \
+  --principal-id <owner_principal_id> --project-id <project_id> \
+  --permissions read,write
+
+# 4. A credential for an AI client — prints the raw token once, plus
+#    ready-to-copy connect instructions for the hosted HTTP endpoint.
+mak4i credential issue --actor <owner_principal_id> \
+  --principal-id <owner_principal_id> --display-name "Claude Code"
+```
+
+Everything from here on is ordinary operation, self-service:
+`mak4i principal create` to add more principals, `mak4i grant create` to
+extend access to more projects, `mak4i credential issue`/`revoke` to
+manage AI-client connections, and the read-only `list`/`show` counterpart
+of each (`mak4i org|project|principal list|show`, `mak4i grant|credential
+list`) to inspect the current state without touching the database
+directly. Every one of these is owner-scoped: an owner in one
+organization gets `access denied`, never a peek, at another
+organization's principals, projects, grants, or credentials — see
+`docs/LOCAL_SETUP.md` Section 3 for the full command reference (identical
+commands whether the control plane behind them is a local SQLite file or
+this deployment's PostgreSQL database).
+
 ## Deploying the container
 
 The server is a standard container: build the image from the root
@@ -155,3 +220,83 @@ whole lifetime.
 See **`docs/LOCAL_SETUP.md`** for the full local path: bootstrapping a
 control plane, issuing yourself a credential, and running the server and
 the CLI against it.
+
+## Security considerations
+
+- **Credentials are high-entropy, hash-only, and shown once.** A raw
+  token (`generate_token()`, 32 bytes of `secrets.token_urlsafe`) exists
+  in plaintext only in the CLI's own stdout at the moment
+  `credential issue` runs; the store keeps a SHA-256 hash
+  (`Credential.token_hash`), never the raw value. `credential list` never
+  prints it either (see `docs/LOCAL_SETUP.md`). Nothing in this codebase
+  logs a raw token — `AuditLogger` records `principal_id`/
+  `organization_id`/`auth_method`, never the credential itself.
+- **Fail closed.** A missing, unknown, expired, or revoked credential is
+  a `401` with no distinguishing detail (`ControlPlane.authenticate`'s
+  `CredentialInvalidError` is uniform on purpose) — a failed request
+  cannot be used to probe *why* it failed. `Authorizer.require` fails
+  closed identically for an unknown project vs. one that exists but has
+  no grant.
+- **Revocation is immediate.** `credential revoke` / `grant revoke` take
+  effect on the very next request — there is no cache or TTL to wait out.
+- **Non-enumeration.** Cross-organization lookups (`org`, `principal`,
+  `project`, `grant`, `credential` `list`/`show`) raise the same
+  `AccessDeniedError` whether the target doesn't exist or simply belongs
+  to another organization — never a different error that would let an
+  admin fingerprint another tenant's existence.
+- **`MAK4I_CONTROL_PLANE_DB` is a secret** (it embeds the database
+  password) — keep it in your platform's secret manager, never a
+  plaintext env literal committed anywhere. The same applies to any
+  artifact-store credentials (e.g. cloud storage service-account keys).
+- **Least privilege for the runtime identity.** The container needs only
+  read/write on its own artifact store and network reachability plus
+  read access to the control-plane database — nothing broader.
+- **HTTPS is the caller's responsibility.** MAK4I is transport-agnostic;
+  putting a real TLS-terminating load balancer or reverse proxy in front
+  of the container (never serving `streamable-http` bare over plain HTTP
+  to the internet) is part of standing up "your own infrastructure."
+- **OAuth is intentionally not part of this reference implementation.**
+  The bearer-credential model above is the whole authentication surface
+  here; a hosted product layering OAuth or another auth scheme on top
+  does so in its *own* code, mapping down to a `Credential` the same way
+  this CLI does — never by changing anything in this repository.
+
+## Backups
+
+Two independent things to back up, matching the two backing stores:
+
+- **Control-plane database** (organizations, principals, projects,
+  grants, credential *hashes*) — back it up the way you'd back up any
+  PostgreSQL (or other SQLAlchemy-supported) database: `pg_dump` /
+  managed automated snapshots / point-in-time recovery, on whatever
+  schedule your organization's data-loss tolerance requires. This is the
+  authorization system of record — losing it without a backup means
+  losing every org/principal/project/grant/credential relationship, even
+  though the artifacts themselves would still be intact.
+- **Artifact store** (the durable project knowledge itself) — back up
+  `LocalJSONStore`'s directory like any other application data directory
+  (filesystem snapshot, rsync, etc.), or rely on your object-storage
+  provider's own versioning/replication if using a cloud
+  `ArtifactStore` implementation.
+
+Restoring either independently is safe: an artifact referencing a
+project/organization that no longer exists in a restored control plane
+simply becomes inaccessible (fails closed, like any other authorization
+gap) rather than corrupting anything; a control plane restored without
+its matching artifacts just has projects that report no current context
+until the artifact store catches up.
+
+## Upgrading
+
+1. **Read the release notes** for what changed, particularly any new
+   Alembic migration.
+2. **Back up first** (see above) — routine practice before any schema
+   change.
+3. **Deploy the new container image / pull the new code.**
+4. **Apply migrations**: `MAK4I_CONTROL_PLANE_DB="<url>" uv run alembic
+   upgrade head` — safe to run even when there's nothing new to apply.
+5. **Restart the server** so it picks up the new code.
+
+There is no separate "upgrade command" beyond the same `alembic upgrade
+head` used for first-time bootstrap — migrations are additive and
+idempotent to re-run.

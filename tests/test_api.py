@@ -1,7 +1,7 @@
 import pytest
 
 from mak4i.api import ArtifactNotActiveError, MAK4IEngine
-from mak4i.identity import Authorizer, ControlPlane
+from mak4i.identity import AccessDeniedError, Authorizer, ControlPlane
 from mak4i.identity.memory_store import InMemoryControlPlaneStore
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
@@ -84,6 +84,59 @@ def test_create_artifact_stores_and_returns_it(world, store):
 
     fetched, _token = store.get(world["organization_id"], project, "decision-cache-001")
     assert fetched == artifact
+
+
+def test_a_valid_credential_confers_no_more_access_than_its_principals_own_grants(tmp_path):
+    """Enterprise self-hosted requirement (§12): "credential inherits
+    principal authorization only." A `Credential` carries no permissions
+    of its own — it only authenticates an identity; `Authorizer` decides
+    access purely from that principal's `Grant`s. Issue a perfectly valid
+    credential to a principal with no grant on the project at all, and
+    prove the credential authenticates (identity is real) while the
+    engine still denies every operation on it — through the exact
+    `Authorizer` every MCP tool call goes through, not a mock.
+
+    Self-contained rather than built on the `world` fixture: proving this
+    needs the organization's *owner* (to create a second, ungranted
+    principal and issue it a credential), which `_onboarded_world()`
+    creates but doesn't return.
+    """
+    control_plane = ControlPlane(InMemoryControlPlaneStore())
+    org, owner = control_plane.onboard_organization(
+        organization_name="WD Technology Solutions", owner_display_name="Owner"
+    )
+    project = control_plane.create_project(
+        actor=owner, organization_id=org.organization_id, name="schedovia"
+    )
+    no_grant_principal = control_plane.create_principal(
+        actor=owner, organization_id=org.organization_id, type="human", display_name="No-grant dev"
+    )
+    _credential, raw_token = control_plane.issue_credential(
+        actor=owner, principal_id=no_grant_principal.principal_id
+    )
+
+    # The credential is real: it authenticates to a principal.
+    authenticated = control_plane.authenticate(raw_token)
+    assert authenticated.principal_id == no_grant_principal.principal_id
+
+    # But that principal has no grant on this project, so every engine
+    # operation — the same calls every MCP tool makes — is denied.
+    engine = MAK4IEngine(
+        LocalJSONStore(tmp_path / "artifacts"),
+        authorizer=Authorizer(control_plane),
+        control_plane=control_plane,
+    )
+    with pytest.raises(AccessDeniedError):
+        engine.create_artifact(
+            principal=no_grant_principal,
+            project=project.project_id,
+            artifact_id="should-not-be-created",
+            artifact_type="note",
+            title="x",
+            content="x",
+        )
+    with pytest.raises(AccessDeniedError):
+        engine.get_current(principal=no_grant_principal, project=project.project_id)
 
 
 def test_create_artifact_rejects_duplicate_id(world):

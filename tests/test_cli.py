@@ -323,8 +323,11 @@ def test_control_plane_bootstrap_flow_org_project_principal_grant_credential(cap
     ) == 0
     issue_output = capsys.readouterr().out
     assert "credential_id:" in issue_output
-    assert "token (shown once" in issue_output
-    credential_id = issue_output.splitlines()[0].split(": ", 1)[1]
+    assert "Authorization: Bearer " in issue_output
+    assert "will not be shown again" in issue_output
+    credential_id = next(
+        line.split(": ", 1)[1] for line in issue_output.splitlines() if line.startswith("credential_id:")
+    )
 
     assert cli.main(
         ["grant", "revoke", "--actor", owner_id, "--principal-id", dev_id, "--project-id", project_id]
@@ -341,3 +344,116 @@ def test_control_plane_bootstrap_flow_org_project_principal_grant_credential(cap
     ) == 0
     revoked_payload = json.loads(capsys.readouterr().out)
     assert revoked_payload["status"] == "revoked"
+    assert "token_hash" not in revoked_payload and "token" not in revoked_payload
+
+
+# -- self-service list/show subcommands (enterprise self-hosted, §4-§8) ------
+
+
+def test_org_list_and_show(world, capsys):
+    organization_id, _owner_id, _project_id = world
+    assert cli.main(["org", "list"]) == 0
+    orgs = json.loads(capsys.readouterr().out)
+    assert organization_id in {o["organization_id"] for o in orgs}
+
+    assert cli.main(["org", "show", "--organization-id", organization_id]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["organization_id"] == organization_id
+
+    exit_code = cli.main(["org", "show", "--organization-id", "org_does-not-exist"])
+    assert exit_code == 1
+    assert "no such organization" in capsys.readouterr().err
+
+
+def test_project_list_and_show(world, capsys):
+    organization_id, owner_id, project_id = world
+    assert cli.main(["project", "list", "--actor", owner_id, "--organization-id", organization_id]) == 0
+    projects = json.loads(capsys.readouterr().out)
+    assert project_id in {p["project_id"] for p in projects}
+
+    assert cli.main(["project", "show", "--actor", owner_id, "--project-id", project_id]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["project_id"] == project_id
+
+
+def test_principal_list_and_show(world, capsys):
+    organization_id, owner_id, _project_id = world
+    assert cli.main(
+        ["principal", "create", "--actor", owner_id, "--organization-id", organization_id, "--type", "human", "--display-name", "Dev"]
+    ) == 0
+    dev_id = json.loads(capsys.readouterr().out)["principal_id"]
+
+    assert cli.main(["principal", "list", "--actor", owner_id, "--organization-id", organization_id]) == 0
+    listed = {p["principal_id"] for p in json.loads(capsys.readouterr().out)}
+    assert {owner_id, dev_id} == listed
+
+    assert cli.main(["principal", "show", "--actor", owner_id, "--principal-id", dev_id]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["display_name"] == "Dev"
+
+
+def test_grant_list(world, capsys):
+    organization_id, owner_id, project_id = world
+    assert cli.main(
+        ["principal", "create", "--actor", owner_id, "--organization-id", organization_id, "--type", "human", "--display-name", "Dev"]
+    ) == 0
+    dev_id = json.loads(capsys.readouterr().out)["principal_id"]
+    assert cli.main(
+        ["grant", "create", "--actor", owner_id, "--principal-id", dev_id, "--project-id", project_id, "--permissions", "read"]
+    ) == 0
+    capsys.readouterr()
+
+    assert cli.main(["grant", "list", "--actor", owner_id, "--principal-id", dev_id]) == 0
+    grants = json.loads(capsys.readouterr().out)
+    assert [g["project_id"] for g in grants] == [project_id]
+
+
+def test_credential_list_never_prints_a_token_or_hash(world, capsys):
+    organization_id, owner_id, project_id = world
+    assert cli.main(
+        ["credential", "issue", "--actor", owner_id, "--principal-id", owner_id, "--display-name", "Claude Code", "--no-connection-help"]
+    ) == 0
+    issue_output = capsys.readouterr().out
+    assert "Connect an AI client" not in issue_output  # --no-connection-help honored
+    raw_token = next(
+        line.split("Authorization: Bearer ", 1)[1]
+        for line in issue_output.splitlines()
+        if line.startswith("Authorization: Bearer ")
+    )
+
+    assert cli.main(["credential", "list", "--actor", owner_id, "--principal-id", owner_id]) == 0
+    list_output = capsys.readouterr().out
+    assert raw_token not in list_output
+    listed = json.loads(list_output)
+    assert all("token_hash" not in c and "token" not in c for c in listed)
+    assert any(c["display_name"] == "Claude Code" for c in listed)
+
+
+def test_credential_issue_prints_generic_not_talvik_specific_connection_instructions(world, capsys):
+    _organization_id, owner_id, _project_id = world
+    assert cli.main(
+        ["credential", "issue", "--actor", owner_id, "--principal-id", owner_id, "--display-name", "Claude Code"]
+    ) == 0
+    output = capsys.readouterr().out
+    assert "claude mcp add mak4i" in output
+    assert "mak4i serve" in output
+    assert "talvik" not in output.lower()
+
+
+def test_admin_list_show_commands_deny_cross_organization_access(capsys):
+    """§16: unauthorized admin actions / cross-org isolation, exercised at
+    the CLI layer (not just ControlPlane directly)."""
+    assert cli.main(["org", "create", "--name", "Org A", "--owner-display-name", "A"]) == 0
+    owner_a = json.loads(capsys.readouterr().out)["owner"]["principal_id"]
+
+    assert cli.main(["org", "create", "--name", "Org B", "--owner-display-name", "B"]) == 0
+    org_b_payload = json.loads(capsys.readouterr().out)
+    organization_b = org_b_payload["organization"]["organization_id"]
+
+    exit_code = cli.main(["principal", "list", "--actor", owner_a, "--organization-id", organization_b])
+    assert exit_code == 1
+    assert "access denied" in capsys.readouterr().err
+
+    exit_code = cli.main(["project", "list", "--actor", owner_a, "--organization-id", organization_b])
+    assert exit_code == 1
+    assert "access denied" in capsys.readouterr().err

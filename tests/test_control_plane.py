@@ -258,6 +258,104 @@ def test_can_deactivate_an_owner_once_a_second_exists(cp, org_and_owner):
     assert result.status == "deactivated"
 
 
+# -- self-service inspection (org/principal/project/grant/credential) -----
+
+
+def test_list_organizations_is_trusted_operator_only_and_sees_everything(cp):
+    org_a, _owner_a = cp.onboard_organization(organization_name="Org A", owner_display_name="A")
+    org_b, _owner_b = cp.onboard_organization(organization_name="Org B", owner_display_name="B")
+    ids = {org.organization_id for org in cp.list_organizations()}
+    assert {org_a.organization_id, org_b.organization_id} <= ids
+    assert cp.get_organization(org_a.organization_id).name == "Org A"
+    assert cp.get_organization("org_does_not_exist") is None
+
+
+def test_list_and_show_principals_scoped_to_owners_own_org(cp, org_and_owner):
+    _org, owner = org_and_owner
+    dev = cp.create_principal(
+        actor=owner, organization_id=owner.organization_id, type="human", display_name="Dev"
+    )
+    listed_ids = {p.principal_id for p in cp.list_principals(actor=owner, organization_id=owner.organization_id)}
+    assert {owner.principal_id, dev.principal_id} == listed_ids
+    assert cp.show_principal(actor=owner, principal_id=dev.principal_id).display_name == "Dev"
+
+
+def test_list_and_show_principals_deny_cross_org(cp):
+    _org_a, owner_a = cp.onboard_organization(organization_name="Org A", owner_display_name="A")
+    org_b, owner_b = cp.onboard_organization(organization_name="Org B", owner_display_name="B")
+    dev_b = cp.create_principal(
+        actor=owner_b, organization_id=org_b.organization_id, type="human", display_name="Dev B"
+    )
+    with pytest.raises(AccessDeniedError):
+        cp.list_principals(actor=owner_a, organization_id=org_b.organization_id)
+    with pytest.raises(AccessDeniedError):
+        cp.show_principal(actor=owner_a, principal_id=dev_b.principal_id)
+
+
+def test_list_and_show_projects_scoped_to_owners_own_org(cp, org_and_owner):
+    _org, owner = org_and_owner
+    project = cp.create_project(actor=owner, organization_id=owner.organization_id, name="Schedovia")
+    listed_ids = {p.project_id for p in cp.list_projects(actor=owner, organization_id=owner.organization_id)}
+    assert listed_ids == {project.project_id}
+    assert cp.show_project(actor=owner, project_id=project.project_id).name == "Schedovia"
+
+
+def test_list_and_show_projects_deny_cross_org(cp):
+    _org_a, owner_a = cp.onboard_organization(organization_name="Org A", owner_display_name="A")
+    org_b, owner_b = cp.onboard_organization(organization_name="Org B", owner_display_name="B")
+    project_b = cp.create_project(actor=owner_b, organization_id=org_b.organization_id, name="B Project")
+    with pytest.raises(AccessDeniedError):
+        cp.list_projects(actor=owner_a, organization_id=org_b.organization_id)
+    with pytest.raises(AccessDeniedError):
+        cp.show_project(actor=owner_a, project_id=project_b.project_id)
+
+
+def test_list_grants_scoped_to_the_principals_own_org(cp, org_and_owner):
+    _org, owner = org_and_owner
+    project = cp.create_project(actor=owner, organization_id=owner.organization_id, name="Schedovia")
+    dev = cp.create_principal(
+        actor=owner, organization_id=owner.organization_id, type="human", display_name="Dev"
+    )
+    cp.grant(actor=owner, principal_id=dev.principal_id, project_id=project.project_id, permissions=["read"])
+    grants = cp.list_grants(actor=owner, principal_id=dev.principal_id)
+    assert [g.project_id for g in grants] == [project.project_id]
+
+
+def test_list_grants_denies_cross_org(cp):
+    _org_a, owner_a = cp.onboard_organization(organization_name="Org A", owner_display_name="A")
+    org_b, owner_b = cp.onboard_organization(organization_name="Org B", owner_display_name="B")
+    dev_b = cp.create_principal(
+        actor=owner_b, organization_id=org_b.organization_id, type="human", display_name="Dev B"
+    )
+    with pytest.raises(AccessDeniedError):
+        cp.list_grants(actor=owner_a, principal_id=dev_b.principal_id)
+
+
+def test_list_credentials_scoped_to_the_principals_own_org_and_hashes_not_raw_tokens(cp, org_and_owner):
+    _org, owner = org_and_owner
+    dev = cp.create_principal(
+        actor=owner, organization_id=owner.organization_id, type="human", display_name="Dev"
+    )
+    credential, raw_token = cp.issue_credential(actor=owner, principal_id=dev.principal_id, display_name="Claude Code")
+    listed = cp.list_credentials(actor=owner, principal_id=dev.principal_id)
+    assert [c.credential_id for c in listed] == [credential.credential_id]
+    # The store's own model always carries only a hash — confirm it never
+    # equals (or contains) the raw secret, so nothing downstream that
+    # forgets to filter it could leak the token by accident.
+    assert listed[0].token_hash != raw_token
+    assert raw_token not in listed[0].token_hash
+
+
+def test_list_credentials_denies_cross_org(cp):
+    _org_a, owner_a = cp.onboard_organization(organization_name="Org A", owner_display_name="A")
+    org_b, owner_b = cp.onboard_organization(organization_name="Org B", owner_display_name="B")
+    dev_b = cp.create_principal(
+        actor=owner_b, organization_id=org_b.organization_id, type="human", display_name="Dev B"
+    )
+    with pytest.raises(AccessDeniedError):
+        cp.list_credentials(actor=owner_a, principal_id=dev_b.principal_id)
+
+
 # -- migration parity ------------------------------------------------------
 
 

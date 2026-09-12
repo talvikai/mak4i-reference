@@ -220,6 +220,24 @@ pattern:
 | `mak4i grant revoke --principal-id <id> --project-id <id>` | remove a grant |
 | `mak4i credential revoke --credential-id <id>` | revoke a credential immediately, everywhere |
 
+Every `create`/`revoke` above has a read-only counterpart — self-service
+inspection without touching the database directly, owner-only and scoped
+to your own organization (an owner of Org A gets `access denied`, never a
+peek, on Org B's data):
+
+| Command | Purpose |
+|---|---|
+| `mak4i org list` / `mak4i org show --organization-id <id>` | every organization in this deployment / one organization (trusted-operator scope, same as `org create` — there is no per-org owner check here since it predates any organization existing) |
+| `mak4i project list --actor <owner_id> --organization-id <id>` / `mak4i project show --actor <owner_id> --project-id <id>` | projects in your organization |
+| `mak4i principal list --actor <owner_id> --organization-id <id>` / `mak4i principal show --actor <owner_id> --principal-id <id>` | principals in your organization |
+| `mak4i grant list --actor <owner_id> --principal-id <id>` | every grant held by one principal |
+| `mak4i credential list --actor <owner_id> --principal-id <id>` | every credential issued to one principal — **never** prints the raw token or its hash, only `credential_id`/`display_name`/`status`/timestamps |
+
+`mak4i credential issue` also prints ready-to-copy connect instructions
+for both the hosted-HTTP and local-stdio cases right after the token
+(pass `--no-connection-help` to suppress them if you're scripting and
+just want the token).
+
 ### The artifact CLI (operator mode)
 
 Artifact operations are also runnable directly, without a running server

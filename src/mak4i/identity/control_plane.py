@@ -235,6 +235,59 @@ class ControlPlane:
         self._store.put_principal(deactivated)
         return deactivated
 
+    # -- self-service inspection (actor-authorized, owner-only) -------------
+    #
+    # Same `_require_owner` gate every mutation above already uses — these
+    # just read instead of write. This is what lets an enterprise operator
+    # run `mak4i org/principal/project/grant/credential list|show` without
+    # direct database access (requirements §4-§8), while keeping org A from
+    # ever seeing org B's principals/projects/grants/credentials.
+
+    def list_principals(self, *, actor: Principal, organization_id: str) -> list[Principal]:
+        self._require_owner(actor, organization_id)
+        return self._store.list_principals(organization_id)
+
+    def show_principal(self, *, actor: Principal, principal_id: str) -> Principal:
+        principal = self._store.get_principal(principal_id)
+        if principal is None:
+            raise PrincipalNotFoundError(principal_id)
+        self._require_owner(actor, principal.organization_id)
+        return principal
+
+    def list_projects(self, *, actor: Principal, organization_id: str) -> list[Project]:
+        self._require_owner(actor, organization_id)
+        return self._store.list_projects(organization_id)
+
+    def show_project(self, *, actor: Principal, project_id: str) -> Project:
+        project = self._store.get_project(project_id)
+        if project is None:
+            raise ProjectNotFoundError(project_id)
+        self._require_owner(actor, project.organization_id)
+        return project
+
+    def list_grants(self, *, actor: Principal, principal_id: str) -> list[Grant]:
+        """Every grant held by one principal. Indexed by principal, not
+        project — the store has no project→grants index (MVP spec: no
+        query the engine doesn't already need); listing "who can access
+        project X" is a documented gap, not silently unsupported."""
+        principal = self._store.get_principal(principal_id)
+        if principal is None:
+            raise PrincipalNotFoundError(principal_id)
+        self._require_owner(actor, principal.organization_id)
+        return self._store.list_grants_for_principal(principal_id)
+
+    def list_credentials(self, *, actor: Principal, principal_id: str) -> list[Credential]:
+        """Every credential issued to one principal — `Credential.token_hash`
+        is present (it always is; nothing strips it here), never a raw
+        token. `mak4i credential list` in the CLI omits `token_hash` from
+        its printed output; callers embedding this in another tool must do
+        the same rather than surfacing it."""
+        principal = self._store.get_principal(principal_id)
+        if principal is None:
+            raise PrincipalNotFoundError(principal_id)
+        self._require_owner(actor, principal.organization_id)
+        return self._store.list_credentials(principal_id)
+
     # -- operator lookups (trusted CLI only) --------------------------------
 
     def get_principal(self, principal_id: str) -> Principal | None:
@@ -245,6 +298,18 @@ class ControlPlane:
         status/org-active enforcement happens here — those checks still run
         inside `Authorizer.require` via `effective_permissions`."""
         return self._store.get_principal(principal_id)
+
+    def list_organizations(self) -> list[Organization]:
+        """Every organization known to this deployment. Trusted-operator
+        only, like `onboard_organization` — there is no `actor` concept for
+        enumerating tenants on a self-hosted install. Every *other* lookup
+        in this class requires `actor` to own the specific organization it
+        targets; this one is the deliberate exception, at the same trust
+        level as bootstrap itself."""
+        return self._store.list_organizations()
+
+    def get_organization(self, organization_id: str) -> Organization | None:
+        return self._store.get_organization(organization_id)
 
     # -- authorization queries (used by Authorizer + MCP list_projects) ------
 

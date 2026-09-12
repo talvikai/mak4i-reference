@@ -233,6 +233,22 @@ def _cmd_org_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_org_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    _print_json(control_plane.list_organizations())
+    return 0
+
+
+def _cmd_org_show(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    organization = control_plane.get_organization(args.organization_id)
+    if organization is None:
+        print(f"error: no such organization: {args.organization_id!r}", file=sys.stderr)
+        return 1
+    _print_json(organization)
+    return 0
+
+
 def _cmd_project_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_principal(control_plane, args.actor)
@@ -240,6 +256,20 @@ def _cmd_project_create(args: argparse.Namespace) -> int:
         actor=actor, organization_id=args.organization_id, name=args.name
     )
     _print_json(project)
+    return 0
+
+
+def _cmd_project_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    _print_json(control_plane.list_projects(actor=actor, organization_id=args.organization_id))
+    return 0
+
+
+def _cmd_project_show(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    _print_json(control_plane.show_project(actor=actor, project_id=args.project_id))
     return 0
 
 
@@ -257,6 +287,20 @@ def _cmd_principal_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_principal_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    _print_json(control_plane.list_principals(actor=actor, organization_id=args.organization_id))
+    return 0
+
+
+def _cmd_principal_show(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    _print_json(control_plane.show_principal(actor=actor, principal_id=args.principal_id))
+    return 0
+
+
 def _cmd_grant_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_principal(control_plane, args.actor)
@@ -270,6 +314,13 @@ def _cmd_grant_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_grant_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    _print_json(control_plane.list_grants(actor=actor, principal_id=args.principal_id))
+    return 0
+
+
 def _cmd_grant_revoke(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_principal(control_plane, args.actor)
@@ -278,6 +329,31 @@ def _cmd_grant_revoke(args: argparse.Namespace) -> int:
     )
     print(f"revoked grant for principal {args.principal_id!r} on project {args.project_id!r}")
     return 0
+
+
+_CLAUDE_MCP_ADD_HTTP = (
+    "  claude mcp add mak4i --transport http <your-mak4i-endpoint>/mcp \\\n"
+    '    --header "Authorization: Bearer <token>"'
+)
+_CLAUDE_MCP_ADD_STDIO = "  claude mcp add mak4i -- mak4i serve"
+
+
+def _print_connection_instructions(*, raw_token: str) -> None:
+    """Generic, client-agnostic connection instructions shown after
+    issuing a credential (requirements §9). Deliberately says nothing
+    Talvik-hosted-specific — `<your-mak4i-endpoint>` is a placeholder for
+    wherever *this* deployment's MCP server actually runs; any MCP client
+    that supports a static `Authorization: Bearer` header works the same
+    way, not just Claude Code."""
+    print("\nConnect an AI client:\n")
+    print("If you're running the hosted HTTP MCP server:")
+    print(_CLAUDE_MCP_ADD_HTTP.replace("<token>", raw_token))
+    print("\nIf you're running locally via `mak4i serve` (stdio):")
+    print(_CLAUDE_MCP_ADD_STDIO)
+    print(
+        "\nAny MCP client that accepts a static Authorization header works the "
+        "same way — swap the connect command for your client's equivalent."
+    )
 
 
 def _cmd_credential_issue(args: argparse.Namespace) -> int:
@@ -290,8 +366,39 @@ def _cmd_credential_issue(args: argparse.Namespace) -> int:
         display_name=args.display_name,
         expires_at=expires_at,
     )
+    print("Credential created.\n")
     print(f"credential_id: {credential.credential_id}")
-    print(f"token (shown once — store it now): {raw_token}")
+    print(f"Authorization: Bearer {raw_token}")
+    print("\nSave this token now. It will not be shown again.")
+    if not args.no_connection_help:
+        _print_connection_instructions(raw_token=raw_token)
+    return 0
+
+
+def _credential_summary(c) -> dict:
+    """Every CLI-facing view of a `Credential` goes through this — never
+    `token_hash`. It's an internal lookup key, not the secret itself
+    (only the raw token, shown once at issuance, authenticates anything),
+    but omitting it everywhere a `Credential` is displayed is
+    belt-and-suspenders on top of that, and keeps `credential list` and
+    `credential revoke` consistent with each other (requirements §8:
+    "must never show the raw token")."""
+    return {
+        "credential_id": c.credential_id,
+        "principal_id": c.principal_id,
+        "display_name": c.display_name,
+        "status": c.status,
+        "created_at": c.created_at.isoformat(),
+        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+        "revoked_at": c.revoked_at.isoformat() if c.revoked_at else None,
+    }
+
+
+def _cmd_credential_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_principal(control_plane, args.actor)
+    credentials = control_plane.list_credentials(actor=actor, principal_id=args.principal_id)
+    _print_json([_credential_summary(c) for c in credentials])
     return 0
 
 
@@ -299,7 +406,7 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_principal(control_plane, args.actor)
     credential = control_plane.revoke_credential(actor=actor, credential_id=args.credential_id)
-    _print_json(credential)
+    _print_json(_credential_summary(credential))
     return 0
 
 
@@ -409,6 +516,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"\nLocal config: {localconfig.config_path()}  (credential in {localconfig.credentials_path().name}, gitignored)")
     print("\nNext:")
     print("  mak4i serve")
+    print("\nConnect an AI client (once `mak4i serve` is running):")
+    print(_CLAUDE_MCP_ADD_STDIO)
     return 0
 
 
@@ -659,6 +768,13 @@ def build_parser() -> argparse.ArgumentParser:
     org_create.add_argument("--name", required=True)
     org_create.add_argument("--owner-display-name", required=True)
     org_create.set_defaults(func=_cmd_org_create)
+    org_list = org_sub.add_parser(
+        "list", help="List every organization in this deployment (trusted-operator scope, like `org create`)."
+    )
+    org_list.set_defaults(func=_cmd_org_list)
+    org_show = org_sub.add_parser("show", help="Show one organization.")
+    org_show.add_argument("--organization-id", required=True)
+    org_show.set_defaults(func=_cmd_org_show)
 
     project = subparsers.add_parser("project", help="Control-plane: projects.")
     project_sub = project.add_subparsers(dest="project_command", required=True)
@@ -667,6 +783,14 @@ def build_parser() -> argparse.ArgumentParser:
     project_create.add_argument("--organization-id", required=True)
     project_create.add_argument("--name", required=True)
     project_create.set_defaults(func=_cmd_project_create)
+    project_list = project_sub.add_parser("list", help="List every project in an organization (owner-only).")
+    project_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    project_list.add_argument("--organization-id", required=True)
+    project_list.set_defaults(func=_cmd_project_list)
+    project_show = project_sub.add_parser("show", help="Show one project (owner-only, own org).")
+    project_show.add_argument("--actor", required=True, help="owner principal id performing this action")
+    project_show.add_argument("--project-id", required=True)
+    project_show.set_defaults(func=_cmd_project_show)
 
     principal = subparsers.add_parser("principal", help="Control-plane: principals.")
     principal_sub = principal.add_subparsers(dest="principal_command", required=True)
@@ -677,6 +801,16 @@ def build_parser() -> argparse.ArgumentParser:
     principal_create.add_argument("--display-name", required=True)
     principal_create.add_argument("--role", default="member", choices=["member", "owner"])
     principal_create.set_defaults(func=_cmd_principal_create)
+    principal_list = principal_sub.add_parser(
+        "list", help="List every principal in an organization (owner-only)."
+    )
+    principal_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    principal_list.add_argument("--organization-id", required=True)
+    principal_list.set_defaults(func=_cmd_principal_list)
+    principal_show = principal_sub.add_parser("show", help="Show one principal (owner-only, own org).")
+    principal_show.add_argument("--actor", required=True, help="owner principal id performing this action")
+    principal_show.add_argument("--principal-id", required=True)
+    principal_show.set_defaults(func=_cmd_principal_show)
 
     grant = subparsers.add_parser("grant", help="Control-plane: grants (principal x project permissions).")
     grant_sub = grant.add_subparsers(dest="grant_command", required=True)
@@ -686,6 +820,12 @@ def build_parser() -> argparse.ArgumentParser:
     grant_create.add_argument("--project-id", required=True)
     grant_create.add_argument("--permissions", required=True, help="comma-separated: read,write")
     grant_create.set_defaults(func=_cmd_grant_create)
+    grant_list = grant_sub.add_parser(
+        "list", help="List every grant held by one principal (owner-only, own org)."
+    )
+    grant_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    grant_list.add_argument("--principal-id", required=True)
+    grant_list.set_defaults(func=_cmd_grant_list)
     grant_revoke = grant_sub.add_parser("revoke", help="Revoke a principal's grant on a project.")
     grant_revoke.add_argument("--actor", required=True, help="owner principal id performing this action")
     grant_revoke.add_argument("--principal-id", required=True)
@@ -701,7 +841,18 @@ def build_parser() -> argparse.ArgumentParser:
     credential_issue.add_argument("--principal-id", required=True)
     credential_issue.add_argument("--display-name")
     credential_issue.add_argument("--expires-at", help="ISO 8601, e.g. 2027-01-01T00:00:00+00:00")
+    credential_issue.add_argument(
+        "--no-connection-help",
+        action="store_true",
+        help="skip printing generic AI-client connection instructions after issuing",
+    )
     credential_issue.set_defaults(func=_cmd_credential_issue)
+    credential_list = credential_sub.add_parser(
+        "list", help="List every credential issued to one principal — never prints the raw token or its hash."
+    )
+    credential_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    credential_list.add_argument("--principal-id", required=True)
+    credential_list.set_defaults(func=_cmd_credential_list)
     credential_revoke = credential_sub.add_parser("revoke", help="Revoke a credential.")
     credential_revoke.add_argument("--actor", required=True, help="owner principal id performing this action")
     credential_revoke.add_argument("--credential-id", required=True)
