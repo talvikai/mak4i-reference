@@ -524,7 +524,16 @@ def _cmd_init(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     """Start the existing MCP server against the local environment created
     by `mak4i init`. This wraps `mak4i.mcp_server.main()` — it is not a
-    second server implementation."""
+    second server implementation.
+
+    `--transport`/`--host`/`--port` are conveniences over the same
+    `MAK4I_TRANSPORT`/`MAK4I_HOST`/`MAK4I_PORT` environment variables
+    `mcp_server.py` already reads: a flag here only sets the matching env
+    var (when given), so `mcp_server.resolve_transport/host/port()` stay
+    the single source of truth for precedence and validation, whether
+    they're called from here or from a container's `python -m
+    mak4i.mcp_server` with no CLI involved at all.
+    """
     config = localconfig.load()
     if config is None:
         print("MAK4I has not been initialized locally.\n", file=sys.stderr)
@@ -553,18 +562,36 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    os.environ.setdefault("MAK4I_TRANSPORT", "stdio")
-    transport = os.environ["MAK4I_TRANSPORT"]
+    from mak4i import mcp_server
+
+    # A CLI flag overrides whatever's in the environment; when the flag
+    # isn't given, the environment (or mcp_server's own default) decides —
+    # this is the precedence requirements §8 specifies.
+    if args.transport:
+        os.environ["MAK4I_TRANSPORT"] = args.transport
+    if args.host:
+        os.environ["MAK4I_HOST"] = args.host
+    if args.port:
+        os.environ["MAK4I_PORT"] = str(args.port)
+
+    transport = mcp_server.resolve_transport()
+    os.environ["MAK4I_TRANSPORT"] = transport  # write back the normalized value
 
     # Banner goes to stderr — for the stdio transport, stdout carries the
     # MCP JSON-RPC stream and must not be written to.
     print("MAK4I local server starting...", file=sys.stderr)
     print(f"Organization: {config.organization_name}", file=sys.stderr)
     print(f"Project: {config.project_name}", file=sys.stderr)
-    print(f"Transport: {transport}", file=sys.stderr)
+    if transport == "stdio":
+        print("Transport: stdio", file=sys.stderr)
+    else:
+        host = mcp_server.resolve_host()
+        port = mcp_server.resolve_port()
+        print("Transport: Streamable HTTP", file=sys.stderr)
+        print(f"Host: {host}", file=sys.stderr)
+        print(f"Port: {port}", file=sys.stderr)
+        print(f"MCP endpoint: http://{host}:{port}/mcp", file=sys.stderr)
     print("\nMCP server ready.", file=sys.stderr)
-
-    from mak4i import mcp_server
 
     mcp_server.main()
     return 0
@@ -687,6 +714,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser(
         "serve", help="Start the local MCP server using the config from `mak4i init`."
+    )
+    serve.add_argument(
+        "--transport",
+        choices=["stdio", "http", "streamable-http"],
+        help=(
+            "transport to serve (default: stdio, or $MAK4I_TRANSPORT). "
+            "'http' and 'streamable-http' are equivalent — the latter is "
+            "kept for compatibility with existing container configuration."
+        ),
+    )
+    serve.add_argument(
+        "--host",
+        help=(
+            "bind host for --transport http (default: 127.0.0.1, or "
+            "$MAK4I_HOST). Use --host 0.0.0.0 for a container/enterprise "
+            "deployment that must accept connections from other hosts."
+        ),
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        help="bind port for --transport http (default: 8080, or $MAK4I_PORT/$PORT).",
     )
     serve.set_defaults(func=_cmd_serve)
 

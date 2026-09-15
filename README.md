@@ -121,7 +121,43 @@ claude mcp get mak4i          # should report: ✔ connected
 
 In a Claude Code session, the MAK4I tools are now available:
 `mak4i_list_projects`, `mak4i_search`, `mak4i_get_current`,
-`mak4i_create`, `mak4i_supersede`, `mak4i_history`.
+`mak4i_create`, `mak4i_supersede`, `mak4i_history` — this list is for
+orientation only; `tools/list` over MCP is the authoritative source, and
+is identical whichever transport below reaches it.
+
+## Choose how to connect to MAK4I
+
+`mak4i serve` supports two transports. Both expose the exact same
+MAK4IEngine and the exact same six tools — nothing about *what* a tool
+does or *who* is authorized changes with transport; only *how a client
+reaches the server* does.
+
+**Local / stdio** — the default, and what the Quick Start above uses.
+The client (Claude Code, or any other local MCP client) launches
+`mak4i serve` itself and talks over stdin/stdout. There is no network
+port and no URL — stdio is not a listening endpoint.
+
+```bash
+mak4i serve
+```
+
+**Streamable HTTP** — for local protocol testing, and for hosted/server
+deployments and remote MCP clients (Claude.ai, Cowork, Gemini, custom
+agents). The server listens on a real port and exposes `/mcp` over HTTP,
+authenticated the same way as stdio (a MAK4I bearer credential) — see
+`docs/LOCAL_SETUP.md`.
+
+```bash
+mak4i serve --transport http
+# MCP endpoint: http://127.0.0.1:8080/mcp
+```
+
+By default this binds to loopback only — a cloud-hosted AI client
+**cannot** reach `127.0.0.1` on your machine. That's expected for local
+testing. A hosted/server deployment passes `--host 0.0.0.0` (or
+`MAK4I_HOST=0.0.0.0`) explicitly to accept real network connections —
+`docs/DEPLOYMENT.md` has the full lifecycle, from a container through to
+a connected remote client.
 
 ## Verify MAK4I
 

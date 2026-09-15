@@ -123,8 +123,9 @@ MCP server ready.
 
 - The banner is on **stderr**; stdout carries the MCP JSON-RPC stream.
 - Default transport is `stdio` (single-user, one credential for the
-  session). `MAK4I_TRANSPORT=streamable-http` (plus the vars in
-  `docs/DEPLOYMENT.md`) switches to the HTTP transport.
+  session). `--transport http` (or `MAK4I_TRANSPORT=http` /
+  `streamable-http`) switches to Streamable HTTP — see
+  "Local Streamable HTTP testing" below.
 - `.mak4i/` is **authoritative** for `serve`: a stale `MAK4I_TOKEN` or
   `MAK4I_CONTROL_PLANE_DB` exported in your shell is ignored (with a
   one-line heads-up on stderr, never the value), so `mak4i init &&
@@ -133,13 +134,96 @@ MCP server ready.
 - Run `serve` before `init` and it fails clearly, telling you to run
   `init` — it never silently initializes.
 
+### Local Streamable HTTP testing
+
+**`stdio` is not a network endpoint.** The examples above have no port
+and no URL because there is nothing listening — the client launches
+`mak4i serve` itself and talks over stdin/stdout. To get an actual
+`http://…/mcp` URL you can `curl` or point a remote-style MCP client at,
+start the *other* transport:
+
+```bash
+mak4i serve --transport http
+```
+
+```
+MAK4I local server starting...
+Organization: My Org
+Project: Demo Project
+
+Transport: Streamable HTTP
+Host: 127.0.0.1
+Port: 8080
+MCP endpoint: http://127.0.0.1:8080/mcp
+
+MCP server ready.
+```
+
+This is the **same** `MAK4IEngine`, the **same** six tools, and the
+**same** credential-based authentication as stdio — only the transport
+differs. `--host`/`--port` (or `MAK4I_HOST`/`MAK4I_PORT`) override the
+defaults; `--port` beats `$MAK4I_PORT` beats `$PORT` beats the built-in
+default, so an existing `$PORT` in your shell (common on PaaS-style
+setups) still works unless you override it. `'http'` and
+`'streamable-http'` are accepted interchangeably everywhere this reads —
+`streamable-http` is kept for compatibility with existing container
+configuration (`docs/DEPLOYMENT.md`).
+
+Three plain endpoints, once it's running:
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /health` | none | liveness — process is up |
+| `GET /ready` | none | readiness — the control-plane backend is reachable |
+| `POST /mcp` | `Authorization: Bearer <credential>` | the MCP Streamable HTTP endpoint |
+
+```bash
+curl http://127.0.0.1:8080/health   # -> ok
+curl http://127.0.0.1:8080/ready    # -> ready
+```
+
+`/mcp` requires the same bearer credential `.mak4i/credentials.json`
+holds — a real MCP client (initialize → tools/list → tools/call) is the
+practical way to exercise it; raw `curl` needs the full JSON-RPC
+handshake, which is what an MCP client does for you.
+
+**A cloud-hosted AI client (Claude.ai, Cowork, Gemini, …) cannot reach
+`127.0.0.1` on your machine** — that address means "this machine" to
+whatever's asking, and their infrastructure isn't this machine. Binding
+to loopback here is intentional: it's the safe default for a developer
+testing the protocol locally, not a way to expose the server remotely.
+If you need a cloud client to reach a local server temporarily, put a
+secure tunnel (e.g. a reverse-proxy tool that gives you a public HTTPS
+URL for a local port) in front of it — this is a development convenience
+only, never a MAK4I dependency, and never how a hosted/server deployment
+works (`docs/DEPLOYMENT.md`: a real container behind a real ingress).
+
+Stop the server with **Ctrl-C** either way (stdio or HTTP) — it shuts
+down the session manager and exits.
+
+**Troubleshooting:**
+
+- *"MAK4I has not been initialized locally."* — run `mak4i init` first.
+- *`curl: (7) Failed to connect`* — the server isn't running, or you're
+  using the wrong port; check the banner's `Port:` line.
+- *`401 {"error":"unauthorized"}` from `/mcp`* — missing, wrong, expired,
+  or revoked credential. `.mak4i/credentials.json` has the current one;
+  `mak4i init --force` mints a fresh one if needed.
+- *`421 Misdirected Request`* — only possible on a loopback bind; it
+  means the request's `Host` header didn't match `127.0.0.1`/`localhost`
+  — expected behavior from a real browser or proxy, not something to
+  disable.
+- *A cloud AI client says it can't reach your endpoint* — see the
+  loopback note above; you need `--host 0.0.0.0` behind a real ingress
+  (a hosted/server deployment), not a loopback bind.
+
 ---
 
 # Section 2 — Connect an MCP client
 
-`mak4i serve` speaks standard MCP over stdio. Any MCP-capable client that
-can launch a stdio server works. With **Claude Code**, from the repo
-directory (where `.mak4i/` lives) and with the venv active:
+`mak4i serve` speaks standard MCP over stdio by default. Any MCP-capable
+client that can launch a stdio server works. With **Claude Code**, from
+the repo directory (where `.mak4i/` lives) and with the venv active:
 
 ```bash
 claude mcp add mak4i -- mak4i serve
@@ -269,10 +353,12 @@ Two environment changes, no code changes:
   `MAK4I_GCP_PROJECT` for a private GCS bucket instead of `LocalJSONStore`
   (your bucket, your credentials — unrelated to Talvik's).
 
-Then run with `MAK4I_TRANSPORT=streamable-http` behind HTTPS; the
+Then run with `mak4i serve --transport http --host 0.0.0.0` (or the
+equivalent `MAK4I_TRANSPORT`/`MAK4I_HOST`/`MAK4I_PORT` environment
+variables — a container needs no CLI flags at all) behind HTTPS; the
 credential in each request's `Authorization: Bearer` header is the
-authorization boundary. See `docs/DEPLOYMENT.md` for the deployment
-contract.
+authorization boundary. See `docs/DEPLOYMENT.md` for the full deployment
+contract, including `/health`/`/ready` and TLS termination.
 
 SQLite / PostgreSQL / GCS are reference choices, not MAK4I protocol
 requirements — any `ControlPlaneStore` / `ArtifactStore` implementation

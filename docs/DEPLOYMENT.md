@@ -93,7 +93,10 @@ All configuration is environment variables (`src/mak4i/config.py`):
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `MAK4I_TRANSPORT` | for HTTP serving | `streamable-http` for a hosted server; `stdio` (default) for local single-user use |
+| `MAK4I_TRANSPORT` | for HTTP serving | `http` or `streamable-http` (equivalent — the latter is kept for compatibility with configuration already in the field) for a hosted server; `stdio` (default) for local single-user use |
+| `MAK4I_HOST` | no | bind address for the HTTP transport. Defaults to `127.0.0.1` (safe for local protocol testing). **A container/hosted deployment must set this to `0.0.0.0`** to accept connections from outside the container — the default no longer does this implicitly. |
+| `MAK4I_PORT` | no | bind port for the HTTP transport. Takes precedence over `PORT` when both are set. |
+| `PORT` | no | the existing container-platform convention for the bind port (e.g. Cloud Run sets this automatically) — still fully supported; used when `MAK4I_PORT` isn't set. Default `8080` if neither is set. |
 | `MAK4I_CONTROL_PLANE_DB` | yes | SQLAlchemy URL for the control plane. Defaults to `sqlite:///./mak4i-control-plane.db`. Hosted: a `postgresql+psycopg://…` URL. **Keep this in a secret store, never a plaintext env literal or the repo** — it contains the database password. |
 | `MAK4I_STORE` | yes | `local` (default, `LocalJSONStore`) or `gcs` (`GCSArtifactStore`) |
 | `MAK4I_LOCAL_STORE_DIR` | if `MAK4I_STORE=local` | directory for `LocalJSONStore` (default `artifacts/local/`) |
@@ -103,7 +106,28 @@ All configuration is environment variables (`src/mak4i/config.py`):
 | `MAK4I_TOKEN` | stdio only | the one credential a local stdio session authenticates for its lifetime |
 
 The same variables are read by `cli.py` and `mcp_server.py`, so the CLI
-and the server always agree about which backends they mean.
+and the server always agree about which backends they mean — a container
+needs none of `mak4i serve`'s CLI flags; setting these directly (as the
+`Dockerfile`'s `CMD ["python", "-m", "mak4i.mcp_server"]` does) is fully
+equivalent. Where both a CLI flag and an environment variable are given
+(only relevant when using `mak4i serve` rather than the container's
+direct entry point), the flag wins: `--transport` > `MAK4I_TRANSPORT`,
+`--host` > `MAK4I_HOST`, `--port` > `MAK4I_PORT` > `PORT` > default.
+
+### Endpoints
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /health` | none | liveness probe — the process is up |
+| `GET /ready` | none | readiness probe — the control-plane backend is reachable; `503` if not |
+| `POST /mcp` | `Authorization: Bearer <credential>` | the MCP Streamable HTTP endpoint — the only route that serves MAK4I tools |
+
+`/health` and `/ready` intentionally return bare status text/codes only —
+never configuration, connection strings, or any other detail — and carry
+no project knowledge, which is why they're the only unauthenticated
+routes. Point your platform's liveness check at `/health` and its
+readiness check (the one gating whether traffic is routed to this
+instance) at `/ready`.
 
 ## Authorization model
 
@@ -195,17 +219,20 @@ this deployment's PostgreSQL database).
 
 The server is a standard container: build the image from the root
 `Dockerfile`, push it to a registry your runtime can pull from, and run
-it with the environment above (`MAK4I_TRANSPORT=streamable-http`, an
-artifact-store selection, and `MAK4I_CONTROL_PLANE_DB` supplied from a
-secret rather than a literal). Give it a generous request timeout —
-Streamable HTTP sessions are long-lived (an idle session should survive a
-30s idle gap; the reference deployment uses the platform maximum).
+it with the environment above — `MAK4I_TRANSPORT=http` (or
+`streamable-http`), **`MAK4I_HOST=0.0.0.0`** (required — the default is
+loopback-only, safe for local testing but unreachable from outside the
+container), an artifact-store selection, and `MAK4I_CONTROL_PLANE_DB`
+supplied from a secret rather than a literal. Give it a generous request
+timeout — Streamable HTTP sessions are long-lived (an idle session should
+survive a 30s idle gap; the reference deployment uses the platform
+maximum).
 
 Platform-specific provisioning (creating the database, the bucket, the
 runtime identity, the secret, and the deploy invocation itself) depends
 entirely on where you host it and is out of scope for this repo.
 
-## Local stdio dev path
+## Local dev paths (stdio and HTTP)
 
 ```bash
 uv run python -m mak4i.mcp_server
@@ -217,9 +244,17 @@ file. stdio also requires `MAK4I_TOKEN` — a credential authenticated once
 at process startup, since a local stdio session is single-user for its
 whole lifetime.
 
-See **`docs/LOCAL_SETUP.md`** for the full local path: bootstrapping a
-control plane, issuing yourself a credential, and running the server and
-the CLI against it.
+Setting `MAK4I_TRANSPORT=http` instead runs the identical process in
+Streamable HTTP mode, on loopback by default — useful for exercising the
+real `/mcp` protocol endpoint locally before deploying it, without
+needing `MAK4I_TOKEN` at all (the credential travels per-request instead,
+in the `Authorization` header). `mak4i serve --transport http` is the
+CLI convenience over the same thing when working from a `mak4i init`
+environment.
+
+See **`docs/LOCAL_SETUP.md`** for the full local path — both transports,
+bootstrapping a control plane, issuing yourself a credential, and running
+the server and the CLI against it.
 
 ## Security considerations
 
@@ -260,6 +295,22 @@ the CLI against it.
   here; a hosted product layering OAuth or another auth scheme on top
   does so in its *own* code, mapping down to a `Credential` the same way
   this CLI does — never by changing anything in this repository.
+- **DNS-rebinding protection is conditional on the bind host, not
+  disabled outright.** A loopback bind (`127.0.0.1`/`localhost`/`::1` —
+  the local-testing default) keeps it enabled, matching the threat model
+  it exists for (a malicious webpage tricking a browser into reaching a
+  localhost-bound process via a spoofed `Host` header). Any other bind
+  (what `MAK4I_HOST=0.0.0.0` deployment uses) disables it, because that
+  threat model doesn't apply to a server real clients reach under its
+  real hostname, and the guard would otherwise reject every legitimate
+  request with `421`. Credential authentication is the actual boundary
+  either way.
+- **No CORS is configured**, and none should be added without a concrete
+  need. This server is designed for server-to-server MCP clients
+  presenting a bearer credential (Claude.ai/Cowork/Claude Code/Gemini/
+  custom agents), not for a credential-bearing request originating from
+  arbitrary browser JavaScript — adding permissive CORS would only widen
+  the attack surface for no current client.
 
 ## Backups
 
