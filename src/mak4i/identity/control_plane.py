@@ -90,6 +90,18 @@ class ControlPlane:
             raise CredentialInvalidError("organization_inactive")
         return principal
 
+    def is_reachable(self) -> bool:
+        """Cheap backend reachability check for an HTTP `/ready` probe
+        (requirements §16/§11) — one unauthenticated read against the
+        store, backend-agnostic (works identically against
+        `InMemoryControlPlaneStore` and `SqlControlPlaneStore`). Never
+        raises; a failing backend just means "not ready" to the caller."""
+        try:
+            self._store.list_organizations()
+            return True
+        except Exception:
+            return False
+
     # -- onboarding (bootstrap, no actor) ---------------------------------
 
     def onboard_organization(

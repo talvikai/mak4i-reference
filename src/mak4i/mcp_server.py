@@ -12,6 +12,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.routing import Route
 
 from mak4i.api import ArtifactNotActiveError, MAK4IEngine
 from mak4i.audit import AuditLogger
@@ -52,6 +53,65 @@ def _require_principal() -> Principal:
     if principal is None:
         raise ToolError("not authenticated")
     return principal
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+"""Hosts a local developer would bind `--transport http` to. Distinct from
+an enterprise/container bind (typically `0.0.0.0`) — see `resolve_host`
+and `build_http_app`'s DNS-rebinding-protection handling."""
+
+
+def resolve_transport() -> str:
+    """`MAK4I_TRANSPORT`, normalized to `'stdio'` or `'streamable-http'`.
+
+    `'http'` is the CLI-friendly spelling (requirements §6/§2);
+    `'streamable-http'` is the value already used by the deployed
+    Cloud Run service and `docs/DEPLOYMENT.md` and remains accepted so
+    that existing container configuration keeps working unchanged. Both
+    resolve to the identical Streamable HTTP implementation — there is no
+    separate code path per spelling.
+
+    Read directly from the environment (rather than threaded through as
+    an argument) so this one function is the single source of truth for
+    both `cli.py serve` (which sets the env var from a flag, then asks
+    this function to normalize/validate it for the banner) and this
+    module's own `main()` — a container that sets `MAK4I_TRANSPORT=http`
+    directly, with no CLI involved, resolves identically.
+    """
+    transport = os.environ.get("MAK4I_TRANSPORT", "stdio")
+    if transport == "http":
+        return "streamable-http"
+    if transport not in ("stdio", "streamable-http"):
+        raise ValueError(
+            f"unknown MAK4I_TRANSPORT: {transport!r} (expected 'stdio' or 'http'/'streamable-http')"
+        )
+    return transport
+
+
+def resolve_host() -> str:
+    """`MAK4I_HOST`, defaulting to loopback.
+
+    Requirements §9: a developer running `mak4i serve --transport http`
+    for local protocol testing should bind safely by default, not on
+    every interface. Explicit enterprise/container deployment sets
+    `MAK4I_HOST=0.0.0.0` (or `--host 0.0.0.0`) — this default never
+    prevents that, it only changes what happens when nothing is set.
+    """
+    return os.environ.get("MAK4I_HOST", "127.0.0.1")
+
+
+def resolve_port() -> int:
+    """Bind port, in the precedence requirements §8 specifies:
+    `--port` (already folded into `MAK4I_PORT` by the CLI before this
+    runs) > `MAK4I_PORT` (MAK4I-specific alias) > `PORT` (the existing
+    Cloud Run/container convention `config.py`/the Dockerfile already
+    depend on — left authoritative so nothing already deployed breaks)
+    > a default."""
+    for var in ("MAK4I_PORT", "PORT"):
+        value = os.environ.get(var)
+        if value:
+            return int(value)
+    return 8080
 
 
 def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
@@ -249,11 +309,14 @@ class _CredentialAuthMiddleware(BaseHTTPMiddleware):
 
     A bearer token is resolved to a `Principal` via
     `ControlPlane.authenticate` (hash lookup, expiry/revocation checked) —
-    never against a single shared secret. `/health` is exempt since it
-    carries no project knowledge. `current_principal` is set for the
-    duration of the request only, so one request's identity can never leak
-    into another's.
+    never against a single shared secret. `/health` and `/ready` are
+    exempt since neither carries project knowledge — both are
+    infrastructure probes (requirements §11/§16). `current_principal` is
+    set for the duration of the request only, so one request's identity
+    can never leak into another's.
     """
+
+    _UNAUTHENTICATED_PATHS = ("/health", "/ready")
 
     def __init__(self, app, *, control_plane: ControlPlane, audit: AuditLogger | None = None):
         super().__init__(app)
@@ -261,7 +324,7 @@ class _CredentialAuthMiddleware(BaseHTTPMiddleware):
         self._audit = audit
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in self._UNAUTHENTICATED_PATHS:
             return await call_next(request)
 
         correlation_id = str(uuid.uuid4())
@@ -298,22 +361,61 @@ class _CredentialAuthMiddleware(BaseHTTPMiddleware):
 
 
 def build_http_app(
-    server: MCPServer, *, control_plane: ControlPlane, audit: AuditLogger | None = None
+    server: MCPServer,
+    *,
+    control_plane: ControlPlane,
+    audit: AuditLogger | None = None,
+    host: str = "0.0.0.0",
 ) -> Starlette:
-    """Wrap the Streamable HTTP app with credential-based auth.
+    """Wrap the Streamable HTTP app with credential-based auth and a
+    `/ready` probe.
 
-    DNS-rebinding protection is disabled here specifically: that guard
-    exists to stop a malicious webpage from tricking a browser into
-    reaching a *localhost-bound* dev server via a spoofed Host header. This
-    server is deliberately public — real AI clients' cloud infrastructure
-    must reach it — so the threat model it protects against doesn't apply,
-    and enabling it would reject every request to the real Cloud Run
-    hostname with 421. Credential authentication above is the actual
-    boundary.
+    `host` is the address this app is *going to be bound to* by the
+    caller (`main()`'s `uvicorn.run(..., host=host, ...)`) — passing it
+    through here lets DNS-rebinding protection be conditional on it
+    (requirements §9/§15), rather than the previous unconditional
+    disable:
+
+    - A loopback host (`127.0.0.1` / `localhost` / `::1`, matched against
+      `_LOOPBACK_HOSTS`) is a local developer running
+      `mak4i serve --transport http` for protocol testing. DNS-rebinding
+      protection exists exactly for that shape of server — a malicious
+      webpage tricking a browser into reaching a localhost-bound process
+      via a spoofed Host header — so it stays enabled there: passing
+      `transport_security=None` lets the SDK apply its own loopback
+      allowlist (`127.0.0.1:*`/`localhost:*`/`[::1]:*`) automatically.
+    - Any other host (the default, and what an enterprise/container
+      deployment explicitly sets — typically `0.0.0.0`) is deliberately
+      public: real AI clients' cloud infrastructure must reach it under
+      its real hostname, so that threat model doesn't apply and enabling
+      the guard would 421 every legitimate request. Protection is
+      disabled there, exactly as before this change — credential
+      authentication is the actual boundary for that deployment shape.
+
+    The default of `host="0.0.0.0"` (rather than the new loopback-safe
+    default `resolve_host()` uses) preserves this function's prior
+    behavior for any caller that doesn't pass `host` explicitly.
     """
-    app = server.streamable_http_app(
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    is_loopback = host in _LOOPBACK_HOSTS
+    transport_security = (
+        None if is_loopback else TransportSecuritySettings(enable_dns_rebinding_protection=False)
     )
+    app = server.streamable_http_app(host=host, transport_security=transport_security)
+
+    async def ready(request: Request) -> PlainTextResponse:
+        # No secrets or config in the body (requirements §11/§16) — a
+        # bare status word, mirroring /health.
+        if control_plane.is_reachable():
+            return PlainTextResponse("ready")
+        return PlainTextResponse("not ready", status_code=503)
+
+    # Inserted directly into the router (rather than via
+    # `server.custom_route`, which `/health` uses) because this route
+    # needs `control_plane`, which `build_server(engine)` deliberately
+    # doesn't receive — see that function's docstring on why `engine` is
+    # its only required dependency.
+    app.router.routes.insert(0, Route("/ready", ready, methods=["GET"]))
+
     app.add_middleware(_CredentialAuthMiddleware, control_plane=control_plane, audit=audit)
     return app
 
@@ -341,21 +443,20 @@ def main() -> None:
     engine = MAK4IEngine(store, audit=audit, authorizer=authorizer, control_plane=control_plane)
     server = build_server(engine)
 
-    transport = os.environ.get("MAK4I_TRANSPORT", "stdio")
+    transport = resolve_transport()
     if transport == "stdio":
         # A local stdio session is single-user for its whole lifetime —
         # one credential is authenticated once at startup, not per call.
         principal = control_plane.authenticate(os.environ["MAK4I_TOKEN"])
         current_principal.set(principal)
         server.run(transport="stdio")
-    elif transport == "streamable-http":
+    else:
         import uvicorn
 
-        app = build_http_app(server, control_plane=control_plane, audit=audit)
-        port = int(os.environ.get("PORT", "8080"))
-        uvicorn.run(app, host="0.0.0.0", port=port)
-    else:
-        raise ValueError(f"unknown MAK4I_TRANSPORT: {transport!r} (expected 'stdio' or 'streamable-http')")
+        host = resolve_host()
+        port = resolve_port()
+        app = build_http_app(server, control_plane=control_plane, audit=audit, host=host)
+        uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

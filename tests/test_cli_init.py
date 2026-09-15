@@ -21,6 +21,9 @@ _ENV_KEYS = (
     "MAK4I_LOCAL_STORE_DIR",
     "MAK4I_TOKEN",
     "MAK4I_TRANSPORT",
+    "MAK4I_HOST",
+    "MAK4I_PORT",
+    "PORT",
     "MAK4I_CONTROL_PLANE_CREATE_TABLES",
     "MAK4I_PUBLIC_ENDPOINT",
 )
@@ -241,6 +244,128 @@ def test_serve_ignores_a_stale_exported_control_plane_db(capsys, monkeypatch, tm
 
     assert _run("serve") == 0
     assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
+
+
+# -- serve --transport/--host/--port (requirements §6/§8/§9) --------------
+
+
+def test_serve_transport_flag_selects_http(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http") == 0
+    assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
+
+    err = capsys.readouterr().err
+    assert "Transport: Streamable HTTP" in err
+
+
+def test_serve_transport_flag_accepts_the_streamable_http_spelling_too(capsys, monkeypatch):
+    """'http' and 'streamable-http' must be equivalent — the latter is
+    kept for compatibility with the value already deployed via
+    $MAK4I_TRANSPORT (docs/DEPLOYMENT.md)."""
+    assert _init() == 0
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "streamable-http") == 0
+    assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
+
+
+def test_serve_transport_flag_overrides_the_environment_variable(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    monkeypatch.setenv("MAK4I_TRANSPORT", "stdio")
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http") == 0
+    assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
+
+
+def test_serve_http_defaults_to_loopback_host_and_shows_the_endpoint(capsys, monkeypatch):
+    """Requirements §9: local HTTP testing must bind safely by default."""
+    assert _init() == 0
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http") == 0
+    err = capsys.readouterr().err
+    assert "Host: 127.0.0.1" in err
+    assert "Port: 8080" in err
+    assert "MCP endpoint: http://127.0.0.1:8080/mcp" in err
+
+
+def test_serve_host_flag_overrides_the_loopback_default(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http", "--host", "0.0.0.0") == 0
+    assert seen_env["MAK4I_HOST"] == "0.0.0.0"
+    err = capsys.readouterr().err
+    assert "Host: 0.0.0.0" in err
+
+
+def test_serve_port_flag_overrides_default(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http", "--port", "9000") == 0
+    assert seen_env["MAK4I_PORT"] == "9000"
+    err = capsys.readouterr().err
+    assert "Port: 9000" in err
+    assert "MCP endpoint: http://127.0.0.1:9000/mcp" in err
+
+
+def test_serve_port_flag_overrides_mak4i_port_and_port_env_vars(capsys, monkeypatch):
+    """Precedence per requirements §8: --port > $MAK4I_PORT > $PORT >
+    default."""
+    assert _init() == 0
+    capsys.readouterr()
+    monkeypatch.setenv("PORT", "7000")
+    monkeypatch.setenv("MAK4I_PORT", "7100")
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+
+    assert _run("serve", "--transport", "http", "--port", "7200") == 0
+    assert seen_env["MAK4I_PORT"] == "7200"
+
+
+def test_serve_mak4i_port_env_var_overrides_the_existing_port_env_var(capsys, monkeypatch):
+    """$PORT (the existing Cloud Run/container convention `config.py` and
+    the Dockerfile already depend on) must keep working unmodified when
+    $MAK4I_PORT isn't set — but $MAK4I_PORT, when present, wins."""
+    from mak4i import mcp_server
+
+    monkeypatch.setenv("PORT", "7000")
+    monkeypatch.setenv("MAK4I_PORT", "7100")
+    assert mcp_server.resolve_port() == 7100
+
+    monkeypatch.delenv("MAK4I_PORT")
+    assert mcp_server.resolve_port() == 7000
+
+
+def test_serve_stdio_banner_is_unchanged_by_the_new_flags(capsys, monkeypatch):
+    """Backward compatibility (requirements §7): the stdio banner must not
+    grow a Host/Port/endpoint section it never had."""
+    assert _init() == 0
+    capsys.readouterr()
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda: None)
+
+    assert _run("serve") == 0
+    err = capsys.readouterr().err
+    assert "Transport: stdio" in err
+    assert "Host:" not in err
+    assert "Port:" not in err
+    assert "MCP endpoint:" not in err
 
 
 # -- access provision ------------------------------------------------------
