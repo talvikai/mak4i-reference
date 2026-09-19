@@ -16,8 +16,9 @@ into the core.
 >
 > MAK4I is an open, tool-neutral protocol. This is *one* implementation of
 > it — it does not define the protocol, and other independent
-> implementations are possible. It runs locally / self-hosted, and the
-> same core also underpins Talvik's hosted MAK4I where safe to share.
+> implementations are possible. It runs locally / Enterprise Self-Hosted,
+> and the same core also underpins MAK4I Platform (Talvik's separate,
+> hosted product) where safe to share.
 
 ## The problem it solves
 
@@ -130,34 +131,127 @@ is identical whichever transport below reaches it.
 `mak4i serve` supports two transports. Both expose the exact same
 MAK4IEngine and the exact same six tools — nothing about *what* a tool
 does or *who* is authorized changes with transport; only *how a client
-reaches the server* does.
+reaches the server* does. The server process must stay running for the
+whole time a client is using it, over either transport.
 
 **Local / stdio** — the default, and what the Quick Start above uses.
-The client (Claude Code, or any other local MCP client) launches
-`mak4i serve` itself and talks over stdin/stdout. There is no network
-port and no URL — stdio is not a listening endpoint.
+The client (Claude Code, or any other local MCP client that can launch a
+subprocess) launches `mak4i serve` itself and talks over stdin/stdout.
+There is no network port and no URL — stdio is not a listening endpoint.
 
 ```bash
 mak4i serve
 ```
 
-**Streamable HTTP** — for local protocol testing, and for hosted/server
-deployments and remote MCP clients (Claude.ai, Cowork, Gemini, custom
-agents). The server listens on a real port and exposes `/mcp` over HTTP,
-authenticated the same way as stdio (a MAK4I bearer credential) — see
-`docs/LOCAL_SETUP.md`.
+**Local / Streamable HTTP** — recommended for CLI-based AI clients that
+connect to an MCP server by URL rather than launching a subprocess, when
+that client runs on the same machine as MAK4I:
+
+```
+AI CLI client  ─┐
+AI CLI client  ─┼──▶  http://127.0.0.1:8080/mcp  ──▶  MAK4I Reference
+AI CLI client  ─┘
+```
+
+This is the same server, the same tools, and the same credential-based
+authentication as stdio — just reachable at a URL instead of launched as
+a subprocess. Local HTTP is also the way to exercise the real `/mcp`
+protocol endpoint before exposing anything remotely, or for a remote MCP
+client (see "Cloud-hosted AI clients" below).
 
 ```bash
 mak4i serve --transport http
 # MCP endpoint: http://127.0.0.1:8080/mcp
+# Health:       http://127.0.0.1:8080/health
+# Readiness:    http://127.0.0.1:8080/ready
 ```
 
 By default this binds to loopback only — a cloud-hosted AI client
-**cannot** reach `127.0.0.1` on your machine. That's expected for local
-testing. A hosted/server deployment passes `--host 0.0.0.0` (or
+**cannot** reach `127.0.0.1` on your machine; see the next section. An
+Enterprise Self-Hosted deployment passes `--host 0.0.0.0` (or
 `MAK4I_HOST=0.0.0.0`) explicitly to accept real network connections —
 `docs/DEPLOYMENT.md` has the full lifecycle, from a container through to
 a connected remote client.
+
+**Only Claude Code (stdio) has been directly verified against this
+repository's own testing.** Other CLI-based clients that support
+connecting to an MCP server by URL (for example Grok Build or Codex CLI)
+are expected to work the same way, since the endpoint is standard MCP
+Streamable HTTP with no proprietary extensions — but that expectation
+has not itself been verified against those specific clients, and this
+README doesn't claim it has.
+
+## Cloud-hosted AI clients
+
+A cloud-hosted AI client (Claude.ai, Cowork, Gemini, and similar) runs on
+infrastructure that is not your machine, so it **cannot** reach
+`127.0.0.1` or `localhost` on your machine — those addresses always mean
+"this machine" to whatever's asking.
+
+```
+Cloud-hosted AI client
+        │
+        ▼
+https://<hostname>/mcp
+        │
+        ▼
+   HTTPS tunnel
+        │
+        ▼
+MAK4I Reference (localhost:8080)
+```
+
+For development/testing, exposing your local MAK4I server through an
+HTTPS tunnel lets a cloud-hosted client reach it. This is a development
+convenience, not a production architecture — see "Enterprise
+Self-Hosted" below for a real deployment that doesn't depend on tunneling
+your own machine.
+
+### Cloudflare Quick Tunnel (optional, development/testing only)
+
+```bash
+mak4i serve --transport http --host 0.0.0.0
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+`--host 0.0.0.0` matters here: MAK4I's default loopback-only bind
+enables DNS-rebinding protection, which will reject requests carrying the
+tunnel's public hostname as their `Host` header — `docs/LOCAL_SETUP.md`
+covers this interaction in full.
+
+Quick Tunnel is a free, account-less Cloudflare feature that hands you a
+temporary `*.trycloudflare.com` hostname — appropriate for a short
+development/testing session, **not** a MAK4I dependency, and **not** a
+production deployment architecture:
+
+- the hostname is temporary and can change every time the tunnel is
+  restarted;
+- if it changes, you need to update the URL configured in your AI
+  client — nothing about MAK4I's own credential or identity model
+  changes;
+- for anything beyond a short test, prefer a stable HTTPS hostname
+  instead of repeatedly relying on Quick Tunnel — a named/persistent
+  tunnel, a reverse proxy, or an externally reachable Enterprise
+  Self-Hosted deployment (see `docs/DEPLOYMENT.md`) all work, and MAK4I
+  has no dependency on any particular one of them.
+
+### Server/tunnel lifecycle vs. credential lifecycle
+
+These are independent, verified behaviors, not just an intended design:
+
+- **Server restart ≠ credential rotation.** A MAK4I credential is
+  persisted in the control-plane database, not held in server memory —
+  stopping and restarting `mak4i serve` does not invalidate it.
+- **Tunnel restart ≠ credential rotation.** Restarting a Cloudflare Quick
+  Tunnel (or any tunnel) assigns a new public hostname; it has no
+  relationship to any MAK4I credential.
+- **Tunnel hostname change ≠ credential rotation.** The only thing that
+  changes is the URL your AI client is configured to reach — the same
+  credential keeps working there.
+
+A MAK4I credential remains valid until it is explicitly revoked or
+expires — never as a side effect of where the server happens to be
+reachable.
 
 ## Verify MAK4I
 
@@ -187,35 +281,38 @@ The granular admin commands (`mak4i org create`, `mak4i project create`,
 `mak4i credential issue`, …) are unchanged and remain the right tool for
 multiple organizations, extra principals, scripting, or understanding the
 model directly. **`docs/LOCAL_SETUP.md`** covers the recommended path,
-the client connection, and the full manual path, plus scaling up to a
-shared self-hosted instance (your own database and artifact store — two
-environment variables and a migration; deployment contract in
-`docs/DEPLOYMENT.md`). Talvik's hosted implementation is one deployment
-of the open MAK4I protocol, not a definition of it.
+the client connection, and the full manual path, plus scaling up to an
+Enterprise Self-Hosted instance (your own database and artifact store —
+two environment variables and a migration; deployment contract in
+`docs/DEPLOYMENT.md`). MAK4I Platform (Talvik's separately hosted,
+managed implementation — see below) is one deployment of the open MAK4I
+protocol, not a definition of it, and not what this repository is.
 
-## Hosted / server deployments
+## Enterprise Self-Hosted
 
 The same implementation runs as a long-lived HTTP MCP server, not only
-the local stdio path. It ships the generic pieces a hosted MAK4I needs —
-Streamable HTTP transport, a SQL control plane (SQLite or PostgreSQL via
-SQLAlchemy + Alembic), an object-storage `ArtifactStore` abstraction,
-per-principal credential authentication over `Authorization: Bearer`, and
-the organization / project / grant model — all selected by environment
+the local stdio path — you deploy and operate it yourself. It ships the
+generic pieces an Enterprise Self-Hosted deployment needs — Streamable
+HTTP transport, a SQL control plane (SQLite or PostgreSQL via SQLAlchemy
++ Alembic), an object-storage `ArtifactStore` abstraction, per-principal
+credential authentication over `Authorization: Bearer`, and the
+organization / project / grant model — all selected by environment
 variable, nothing baked in. See **`docs/DEPLOYMENT.md`** for the runtime
 contract and the auth model.
 
 `mak4i access provision` is an operator helper for onboarding one external
-collaborator against a hosted or server deployment (a new organization, a
-`member` principal, a project, a read/write grant, and a credential). It
-is an operator command — not public self-service, no signup flow — and it
-fails closed before provisioning anything if no endpoint (`--endpoint` /
-`MAK4I_PUBLIC_ENDPOINT`) is configured.
+collaborator against an Enterprise Self-Hosted deployment (a new
+organization, a `member` principal, a project, a read/write grant, and a
+credential). It is an operator command — not public self-service, no
+signup flow — and it fails closed before provisioning anything if no
+endpoint (`--endpoint` / `MAK4I_PUBLIC_ENDPOINT`) is configured.
 
-Talvik operates a hosted MAK4I Developer Preview built on this
-implementation. It is access-controlled and not a generally available
-product; this reference implementation defines neither the protocol nor
-that service. See <https://github.com/talvikai/mak4i-protocol> for the
-protocol.
+**MAK4I Reference vs. MAK4I Platform:** this repository (MAK4I Reference)
+is what you run yourself, locally or Enterprise Self-Hosted — Talvik does
+not operate it for you. **MAK4I Platform** is a separate product: Talvik's
+own hosted, managed implementation, currently a Developer Preview and
+invite-only. This repository defines neither the MAK4I protocol
+(<https://github.com/talvikai/mak4i-protocol>) nor MAK4I Platform.
 
 ## Core concepts
 
