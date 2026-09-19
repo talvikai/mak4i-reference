@@ -5,9 +5,10 @@ the CLI, and a local MCP server — with no cloud account and no
 relationship to anyone else's data. The same steps scale up to
 self-hosting your own shared instance.
 
-If instead you want to connect an AI client to a hosted MAK4I deployment
-(such as Talvik's), you need none of this — see "Hosted / server
-deployments" in the top-level `README.md`.
+If instead you want to connect an AI client to MAK4I Platform (Talvik's
+separate, hosted product), you need none of this — see "Enterprise
+Self-Hosted" in the top-level `README.md` for how MAK4I Reference and
+MAK4I Platform relate.
 
 ## Prerequisites
 
@@ -187,19 +188,96 @@ holds — a real MCP client (initialize → tools/list → tools/call) is the
 practical way to exercise it; raw `curl` needs the full JSON-RPC
 handshake, which is what an MCP client does for you.
 
+Where a client supports it, prefer reading the credential from an
+environment variable or a file over typing it directly as a command-line
+argument or into a shell prompt — command-line arguments and interactive
+input are both liable to end up recorded in your shell history. Reading
+it out of `.mak4i/credentials.json` (mode `0600`) programmatically, as
+the examples above do, avoids that.
+
 **A cloud-hosted AI client (Claude.ai, Cowork, Gemini, …) cannot reach
 `127.0.0.1` on your machine** — that address means "this machine" to
 whatever's asking, and their infrastructure isn't this machine. Binding
 to loopback here is intentional: it's the safe default for a developer
 testing the protocol locally, not a way to expose the server remotely.
-If you need a cloud client to reach a local server temporarily, put a
-secure tunnel (e.g. a reverse-proxy tool that gives you a public HTTPS
-URL for a local port) in front of it — this is a development convenience
-only, never a MAK4I dependency, and never how a hosted/server deployment
-works (`docs/DEPLOYMENT.md`: a real container behind a real ingress).
+If you need a cloud client to reach a local server temporarily, expose it
+through an HTTPS tunnel — see "Exposing a local server to a cloud client"
+below. This is a development convenience only, never a MAK4I dependency,
+and never how an Enterprise Self-Hosted deployment works
+(`docs/DEPLOYMENT.md`: a real container behind a real ingress).
 
 Stop the server with **Ctrl-C** either way (stdio or HTTP) — it shuts
 down the session manager and exits.
+
+### Credential persistence
+
+A MAK4I credential is a row in the control-plane database
+(`.mak4i/control-plane.db` locally), not something held in the server
+process's memory. **Stopping and restarting `mak4i serve` does not
+invalidate an existing credential** — the same token keeps authenticating
+successfully as long as it hasn't been explicitly revoked or its
+`--expires-at` has not passed, and you point the restarted server at the
+same `.mak4i/` (or `MAK4I_CONTROL_PLANE_DB`). Verified directly: issue a
+credential, authenticate with it, stop the server, restart it, and
+authenticate again with the same, unmodified credential — it keeps
+working with no re-issuing step.
+
+### Exposing a local server to a cloud client
+
+A cloud-hosted AI client cannot reach a server bound to `127.0.0.1`, so
+local testing with one requires two things together:
+
+```bash
+mak4i serve --transport http --host 0.0.0.0
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Two details matter here, both confirmed by direct testing, not just in
+theory:
+
+1. **`--host 0.0.0.0` is required, not optional, once you're tunneling.**
+   The default loopback bind also enables DNS-rebinding protection,
+   which allowlists only `Host` headers naming `127.0.0.1`/`localhost`.
+   A tunnel forwards your request with *its own* public hostname as
+   `Host` — which fails that allowlist and comes back as
+   `421 Misdirected Request`, even though the tunnel and server are both
+   working correctly. `--host 0.0.0.0` is the non-loopback case, where
+   this protection is (correctly) not applied — credential
+   authentication remains the real access-control boundary either way.
+2. **The tunnel's target must be `127.0.0.1`, not `0.0.0.0`, and must be
+   a bare origin with no path.** `--host` controls what the *server*
+   listens on; `cloudflared`'s `--url` is a separate, *destination*
+   address it connects to — `127.0.0.1:<port>` is always the correct
+   target there, regardless of what the server bound to (a server bound
+   to `0.0.0.0` still answers on `127.0.0.1`). Appending a path (e.g.
+   `http://127.0.0.1:8080/mcp` instead of `http://127.0.0.1:8080`) is
+   incorrect: `--url` is the origin every incoming path gets proxied
+   onto, so a path there gets appended a second time on top of whatever
+   path the actual request already has, breaking routing.
+
+Quick Tunnel (`cloudflared tunnel --url ...` with no other setup) is a
+free, account-less Cloudflare feature appropriate for a short
+development/testing session — **not** a MAK4I dependency and **not** a
+production deployment architecture:
+
+- it hands you a temporary `*.trycloudflare.com` hostname, printed to
+  the terminal when it starts;
+- **that hostname can change every time the tunnel is restarted** —
+  confirmed directly: stopping and starting a new Quick Tunnel assigns a
+  different hostname each time;
+- if it changes, update the URL configured in your AI client — nothing
+  about the MAK4I side changes. **Tunnel restart, and a tunnel hostname
+  change, are both independent of MAK4I credential lifecycle** —
+  confirmed by authenticating with the same, unmodified credential
+  through two different tunnel hostnames in succession; both succeeded
+  identically. A MAK4I credential remains valid until it is explicitly
+  revoked or expires, never as a side effect of where the server happens
+  to be reachable;
+- for anything beyond a short test, prefer a stable HTTPS hostname
+  instead of repeatedly relying on Quick Tunnel: a named/persistent
+  tunnel, a reverse proxy, or an externally reachable Enterprise
+  Self-Hosted deployment (`docs/DEPLOYMENT.md`) all work, and MAK4I has
+  no dependency on any particular one of them.
 
 **Troubleshooting:**
 
@@ -207,15 +285,34 @@ down the session manager and exits.
 - *`curl: (7) Failed to connect`* — the server isn't running, or you're
   using the wrong port; check the banner's `Port:` line.
 - *`401 {"error":"unauthorized"}` from `/mcp`* — missing, wrong, expired,
-  or revoked credential. `.mak4i/credentials.json` has the current one;
-  `mak4i init --force` mints a fresh one if needed.
-- *`421 Misdirected Request`* — only possible on a loopback bind; it
-  means the request's `Host` header didn't match `127.0.0.1`/`localhost`
-  — expected behavior from a real browser or proxy, not something to
-  disable.
-- *A cloud AI client says it can't reach your endpoint* — see the
-  loopback note above; you need `--host 0.0.0.0` behind a real ingress
-  (a hosted/server deployment), not a loopback bind.
+  or revoked credential. `.mak4i/credentials.json` has the current one —
+  but if you have more than one local `.mak4i/` instance (see below),
+  check you're reading the one the *running* server actually uses.
+  `mak4i init --force` mints a fresh credential if needed.
+- *`421 Misdirected Request`* while tunneling* — see "Exposing a local
+  server to a cloud client" above: you're bound to `127.0.0.1` while a
+  tunnel is forwarding a non-loopback `Host` header. Restart with
+  `--host 0.0.0.0`.
+- *A cloud AI client can't determine how the server "signs in"* — some
+  clients probe for OAuth support before falling back to a manual
+  bearer-token configuration step. MAK4I doesn't implement OAuth by
+  design (see `docs/DEPLOYMENT.md`'s security considerations) — this is
+  expected, not an error; continue to that client's manual/custom-header
+  auth configuration and enter `Authorization: Bearer <credential>`
+  there.
+- *A working credential suddenly returns `401` after moving directories
+  or changing terminals* — `mak4i serve` resolves `.mak4i/` (or
+  `MAK4I_HOME`) relative to its **current working directory** at
+  startup. Running `mak4i serve` from two different directories creates
+  two independent local instances with two different credentials, which
+  looks identical in the startup banner (same organization/project name
+  if you happened to `mak4i init` both the same way) but authenticates
+  against a different database. Check the running process's working
+  directory if a credential you're sure is correct keeps failing.
+- *A cloud AI client says it can't reach your endpoint at all* — see the
+  loopback note above; you need `--host 0.0.0.0` plus a tunnel (for
+  temporary testing) or a real ingress (for an Enterprise Self-Hosted
+  deployment), not a loopback bind.
 
 ---
 

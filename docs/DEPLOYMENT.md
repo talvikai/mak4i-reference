@@ -1,10 +1,11 @@
 # Deploying the MAK4I MCP server
 
-This document describes the **general shape** of a hosted MAK4I MCP
-server deployment — the runtime contract, the authorization model, the
-database migration step, and the local development path. It is written so
-that someone standing up their **own** MAK4I reference deployment can do
-so without reverse-engineering it from code.
+This document describes the **general shape** of an Enterprise
+Self-Hosted MAK4I MCP server deployment — the runtime contract, the
+authorization model, the database migration step, and the local
+development path. It is written so that someone standing up their
+**own** MAK4I Reference deployment can do so without reverse-engineering
+it from code.
 
 ## Prerequisites
 
@@ -47,12 +48,16 @@ contract, the artifact schema, or the authorization model depends on
 them; swap in a different container host, a different SQL database, or a
 different `ArtifactStore` backend and the behavior is identical.
 
-Operator-specific material for any *particular* hosted instance — the GCP
+Operator-specific material for any *particular* deployment — the GCP
 project, resource names, one-time provisioning commands, deploy runbook,
 service-account operations, Secret Manager administration — is not in
-this repository. If you are an external developer wanting to *use* a
-hosted instance rather than run your own, you deploy nothing at all — see
-the "Hosted / server deployments" section of the top-level `README.md`.
+this repository. This document covers MAK4I Reference Enterprise
+Self-Hosted deployments: you (or your organization) deploy and operate
+it. If instead you want to *use* Talvik's own separately hosted, managed
+implementation rather than run your own, that's **MAK4I Platform** — a
+distinct product this repository does not define — see the "Enterprise
+Self-Hosted" section of the top-level `README.md` for how the two
+relate.
 
 The Dockerfile lives at the repo root so that a source-based build has it
 at the build-context root with no path override.
