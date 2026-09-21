@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -155,6 +156,71 @@ def apply_to_env(config: LocalConfig, token: str | None) -> None:
     """
     for name, value in _desired_local_env(config, token).items():
         os.environ[name] = value
+
+
+#: The three environment variables that together *define* a deployment
+#: for the granular/operator/artifact commands — control plane, store
+#: backend, and (for the local store) its directory. Presence of *any*
+#: one of these is treated as "the caller already configured a target
+#: explicitly" (see `resolve_ambient_local_environment`): the point is
+#: to never mix an explicit choice for one of these with an ambient
+#: `.mak4i/`'s value for another, which would produce a deployment that
+#: matches neither the explicit configuration nor the local one.
+_EXPLICIT_DEPLOYMENT_ENV_KEYS = ("MAK4I_CONTROL_PLANE_DB", "MAK4I_STORE", "MAK4I_LOCAL_STORE_DIR")
+
+
+def resolve_ambient_local_environment() -> LocalConfig | None:
+    """Resolution for every CLI command *except* `serve` and `init`
+    (each of which has its own dedicated resolution — see their
+    docstrings in `cli.py`): `org`/`project`/`principal`/`grant`/
+    `credential`, the artifact commands, and `doctor`.
+
+    Precedence:
+
+    A. If the caller already explicitly configured any part of the
+       deployment (`MAK4I_CONTROL_PLANE_DB`, `MAK4I_STORE`, or
+       `MAK4I_LOCAL_STORE_DIR` already present in the environment),
+       that is honored as-is and this function is a complete no-op —
+       an ambient `.mak4i/` must never silently override an explicit
+       target, and must never fill in the *other* pieces either (that
+       would produce a mixed deployment: an explicit control-plane URL
+       paired with an ambient artifact directory, or vice versa, is
+       exactly the inconsistency this function exists to prevent).
+    B. Otherwise, if an initialized local environment exists at
+       `home_dir()`, its full configuration — control plane, store,
+       and artifact directory together, as one unit — is applied.
+    C. Otherwise, this is a no-op and the existing
+       `config.py` fallback (`MAK4I_CONTROL_PLANE_DB` if set, else the
+       hardcoded default) applies unchanged.
+
+    This is deliberately different from `mak4i serve`'s resolution
+    (`apply_to_env`, called directly from `_cmd_serve`), which treats an
+    initialized local environment as authoritative even over an
+    explicitly exported `MAK4I_CONTROL_PLANE_DB` — that is the RC's
+    existing, preserved, shipped behavior for `serve` specifically, and
+    is intentionally *not* extended to every other command: those
+    commands are also the ones an operator is most likely to run
+    against an explicitly-targeted Enterprise Self-Hosted deployment
+    from an arbitrary working directory, where a leftover local
+    `.mak4i/` silently winning would be a surprising, and in this
+    session's own testing, actively harmful, hijack.
+
+    Enterprise Self-Hosted is unaffected either way: that deployment
+    shape always sets `MAK4I_CONTROL_PLANE_DB` explicitly (case A), so
+    this function never touches its environment regardless of whether a
+    `.mak4i/` happens to exist.
+
+    Never applies `MAK4I_TOKEN` — none of the commands this serves read
+    it (they authenticate via `--actor`/`--principal`, not a bearer
+    credential).
+    """
+    if any(key in os.environ for key in _EXPLICIT_DEPLOYMENT_ENV_KEYS):
+        return None
+    config = load()
+    if config is None:
+        return None
+    apply_to_env(config, token=None)
+    return config
 
 
 def _desired_local_env(config: LocalConfig, token: str | None) -> dict[str, str]:

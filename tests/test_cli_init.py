@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -244,6 +245,215 @@ def test_serve_ignores_a_stale_exported_control_plane_db(capsys, monkeypatch, tm
 
     assert _run("serve") == 0
     assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
+
+
+# -- ambient local-environment resolution for the granular/operator/
+# -- artifact commands (org/project/principal/grant/credential, the
+# -- artifact commands, and doctor) -----------------------------------
+#
+# Regression coverage for the bug where `mak4i serve` correctly resolved
+# an initialized `.mak4i/` environment but every other command went
+# straight to raw `MAK4I_CONTROL_PLANE_DB` (or the hardcoded SQLite
+# default) instead, silently using a different — or nonexistent —
+# database. `world`'s fixture (`tests/test_cli.py`) deliberately bypasses
+# `mak4i init` entirely via `monkeypatch.setenv`, which is exactly why
+# this bug shipped without a failing test.
+#
+# The fix's precedence for these commands is deliberately the *opposite*
+# of `serve`'s: an explicit `MAK4I_CONTROL_PLANE_DB`/`MAK4I_STORE`/
+# `MAK4I_LOCAL_STORE_DIR` always wins over an ambient `.mak4i/` — only
+# when *none* of those are already set does the ambient local
+# environment apply. `_clear_deployment_env` simulates a fresh shell
+# that never exported anything: `mak4i init` itself sets those variables
+# as a side effect of provisioning, which would otherwise make every
+# subsequent call in the same test process look like the "explicit"
+# case by accident.
+
+
+def _clear_deployment_env(monkeypatch):
+    for key in localconfig._EXPLICIT_DEPLOYMENT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_org_list_uses_the_initialized_local_environment(capsys, monkeypatch):
+    assert _init() == 0
+    config = localconfig.load()
+    _clear_deployment_env(monkeypatch)
+    capsys.readouterr()
+
+    assert _run("org", "list") == 0
+    orgs = json.loads(capsys.readouterr().out)
+    assert [o["organization_id"] for o in orgs] == [config.organization_id]
+
+
+def test_project_list_uses_the_initialized_local_environment(capsys, monkeypatch):
+    assert _init() == 0
+    config = localconfig.load()
+    _clear_deployment_env(monkeypatch)
+    capsys.readouterr()
+
+    assert (
+        _run(
+            "project", "list",
+            "--actor", config.owner_principal_id,
+            "--organization-id", config.organization_id,
+        )
+        == 0
+    )
+    projects = json.loads(capsys.readouterr().out)
+    assert [p["project_id"] for p in projects] == [config.project_id]
+
+
+def test_principal_list_uses_the_initialized_local_environment(capsys, monkeypatch):
+    assert _init() == 0
+    config = localconfig.load()
+    _clear_deployment_env(monkeypatch)
+    capsys.readouterr()
+
+    assert (
+        _run(
+            "principal", "list",
+            "--actor", config.owner_principal_id,
+            "--organization-id", config.organization_id,
+        )
+        == 0
+    )
+    principals = json.loads(capsys.readouterr().out)
+    assert [p["principal_id"] for p in principals] == [config.owner_principal_id]
+
+
+def test_credential_list_uses_the_initialized_local_environment(capsys, monkeypatch):
+    assert _init() == 0
+    config = localconfig.load()
+    _clear_deployment_env(monkeypatch)
+    capsys.readouterr()
+
+    assert (
+        _run(
+            "credential", "list",
+            "--actor", config.owner_principal_id,
+            "--principal-id", config.owner_principal_id,
+        )
+        == 0
+    )
+    credentials = json.loads(capsys.readouterr().out)
+    assert [c["credential_id"] for c in credentials] == [config.credential_id]
+
+
+def test_artifact_create_uses_the_initialized_local_environment(capsys, monkeypatch):
+    """At least one artifact operation (task 7's explicit minimum) —
+    `create` here, using the initialized owner as the operator-mode
+    `--principal`."""
+    assert _init() == 0
+    config = localconfig.load()
+    _clear_deployment_env(monkeypatch)
+    capsys.readouterr()
+
+    assert (
+        _run(
+            "create",
+            "--principal", config.owner_principal_id,
+            "--project", config.project_id,
+            "--artifact-id", "regression-001",
+            "--artifact-type", "architecture_decision",
+            "--title", "Regression coverage",
+            "--content", "Written against the initialized local environment.",
+        )
+        == 0
+    )
+    artifact = json.loads(capsys.readouterr().out)
+    assert artifact["artifact_id"] == "regression-001"
+    assert artifact["project"] == config.project_id
+
+
+def test_org_list_honors_an_explicit_control_plane_db_over_ambient_local_environment(
+    capsys, monkeypatch, tmp_path
+):
+    """The precedence this revision asked for, and the exact regression
+    the earlier incident (a real ambient `.mak4i/` getting silently
+    written to by commands that had explicitly configured a different
+    target) needs covered: an explicit `MAK4I_CONTROL_PLANE_DB` must win
+    over an ambient initialized `.mak4i/` — the deliberate inverse of
+    `serve`'s own precedence (see `test_serve_ignores_a_stale_exported_
+    control_plane_db` above, which is unchanged and still correct for
+    `serve` specifically)."""
+    # An initialized ambient local environment exists...
+    assert _init() == 0
+    ambient_db_path = Path(localconfig.load().control_plane_db.removeprefix("sqlite:///"))
+    _clear_deployment_env(monkeypatch)  # simulate a fresh shell: nothing exported yet
+    ambient_size_before = ambient_db_path.stat().st_size
+    ambient_mtime_before = ambient_db_path.stat().st_mtime_ns
+    capsys.readouterr()
+
+    # ...but an explicit, separate control-plane database is configured.
+    explicit_db_path = tmp_path / "explicit-target.db"
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{explicit_db_path}")
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_CREATE_TABLES", "1")
+
+    assert _run("org", "list") == 0
+    orgs = json.loads(capsys.readouterr().out)
+    assert orgs == []  # the explicit, freshly created, empty database — not the ambient one
+
+    # The explicit target was actually used (its file now exists)...
+    assert explicit_db_path.exists()
+    # ...and the ambient database was never touched — not even opened for
+    # a write that happened to change nothing: size and mtime are both
+    # byte-for-byte unchanged.
+    assert ambient_db_path.stat().st_size == ambient_size_before
+    assert ambient_db_path.stat().st_mtime_ns == ambient_mtime_before
+
+
+def test_init_ignores_a_stale_exported_control_plane_db_on_first_run(capsys, monkeypatch, tmp_path):
+    """The related issue folded into this fix: a genuinely first-run
+    `mak4i init` must provision into its own local default, never
+    whatever a stray `MAK4I_CONTROL_PLANE_DB` happens to already point
+    at — that could otherwise silently create a new local organization
+    inside a real (e.g. Enterprise Self-Hosted) database."""
+    stray_db = tmp_path / "stray-enterprise-looking.db"
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{stray_db}")
+
+    assert _init() == 0
+    err = capsys.readouterr().err
+    assert "ignoring MAK4I_CONTROL_PLANE_DB" in err
+
+    config = localconfig.load()
+    assert config.control_plane_db == localconfig.default_control_plane_db()
+    assert str(stray_db) not in config.control_plane_db
+    # The stray database was never created, let alone written to.
+    assert not stray_db.exists()
+
+    # And a subsequent `org list` reads back what `init` actually wrote.
+    orgs = json.loads(_run_and_capture_stdout(capsys, "org", "list"))
+    assert [o["organization_id"] for o in orgs] == [config.organization_id]
+
+
+def test_clean_error_for_an_unreachable_control_plane_database(capsys, monkeypatch, tmp_path):
+    """Task 8: a database/config failure must be one clear line on
+    stderr, exit code 1 — never a raw SQLAlchemy traceback. No local
+    `.mak4i/` environment here, so this exercises the plain
+    MAK4I_CONTROL_PLANE_DB path directly."""
+    monkeypatch.setenv(
+        "MAK4I_CONTROL_PLANE_DB",
+        "postgresql+psycopg://realuser:realpassword@127.0.0.1:1/nonexistent",
+    )
+
+    exit_code = _run("org", "list")
+    assert exit_code == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "OperationalError" in err  # the useful part is kept
+    # No secret leakage (task 7's explicit requirement): the real
+    # credentials embedded in the URL must never appear in the message.
+    assert "realuser" not in err
+    assert "realpassword" not in err
+    assert "***:***" in err  # redacted, not just silently dropped
+
+
+def _run_and_capture_stdout(capsys, *argv: str) -> str:
+    capsys.readouterr()
+    assert _run(*argv) == 0
+    return capsys.readouterr().out
 
 
 # -- serve --transport/--host/--port (requirements §6/§8/§9) --------------

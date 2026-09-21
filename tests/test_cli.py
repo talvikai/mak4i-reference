@@ -12,6 +12,14 @@ NOW = datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def local_store_env(tmp_path, monkeypatch):
+    # MAK4I_HOME is isolated to tmp_path defensively, on top of the
+    # explicit MAK4I_CONTROL_PLANE_DB/MAK4I_STORE/MAK4I_LOCAL_STORE_DIR
+    # below (which already make `localconfig.resolve_ambient_local_
+    # environment()` a no-op here — see its docstring): tests in this
+    # file must never be able to discover, let alone write to, whatever
+    # `.mak4i/` happens to exist in the developer's actual working
+    # directory, regardless of how the resolution precedence evolves.
+    monkeypatch.setenv("MAK4I_HOME", str(tmp_path / ".mak4i"))
     monkeypatch.setenv("MAK4I_STORE", "local")
     monkeypatch.setenv("MAK4I_LOCAL_STORE_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'control-plane.db'}")
