@@ -30,6 +30,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from mak4i import localconfig
 from mak4i.api import OPERATOR_IMPERSONATION, ArtifactNotActiveError, MAK4IEngine
 from mak4i.audit import AuditLogger
@@ -51,6 +53,14 @@ class _CliError(Exception):
 
 
 def _make_control_plane() -> ControlPlane:
+    # Every command that reaches here (org/project/principal/grant/
+    # credential/create/search/get-current/history/supersede/doctor —
+    # everything except `serve` and `init`, which each have their own
+    # dedicated resolution) resolves an ambient local `.mak4i/`
+    # environment first, but only when nothing has already been
+    # explicitly configured — see the function's docstring for the
+    # full precedence.
+    localconfig.resolve_ambient_local_environment()
     return build_control_plane_from_env()
 
 
@@ -462,9 +472,29 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("\nInitializing local MAK4I...\n", file=sys.stderr)
 
     localconfig.ensure_home()
-    os.environ.setdefault("MAK4I_CONTROL_PLANE_DB", localconfig.default_control_plane_db())
-    os.environ.setdefault("MAK4I_STORE", "local")
-    os.environ.setdefault("MAK4I_LOCAL_STORE_DIR", localconfig.default_local_store_dir())
+    # Deliberately NOT `setdefault`: a fresh local environment must always
+    # provision into its own default local SQLite file and artifact
+    # directory, never into whatever happens to already be exported in
+    # the shell (e.g. a real MAK4I_CONTROL_PLANE_DB left over from
+    # Enterprise Self-Hosted work) — that would silently provision a new
+    # local organization into a database this command has no business
+    # touching. `mak4i init --force` on an *existing* local environment
+    # doesn't reach this branch at all — see the `localconfig.exists()`
+    # check above.
+    stray = [
+        key
+        for key in ("MAK4I_CONTROL_PLANE_DB", "MAK4I_STORE", "MAK4I_LOCAL_STORE_DIR")
+        if key in os.environ
+    ]
+    os.environ["MAK4I_CONTROL_PLANE_DB"] = localconfig.default_control_plane_db()
+    os.environ["MAK4I_STORE"] = "local"
+    os.environ["MAK4I_LOCAL_STORE_DIR"] = localconfig.default_local_store_dir()
+    if stray:
+        print(
+            f"note: provisioning a fresh local environment; ignoring "
+            f"{', '.join(sorted(stray))} from the shell.",
+            file=sys.stderr,
+        )
     # `init` owns first-run schema creation for the local instance; the
     # deployed database is still migrated with Alembic (config.py's default
     # leaves this unset).
@@ -552,7 +582,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     # `.mak4i/` is authoritative for `serve`: a stale MAK4I_TOKEN (or DB URL)
     # exported in the shell is replaced, not honored, so `mak4i init &&
-    # mak4i serve` always uses the credential from that init.
+    # mak4i serve` always uses the credential from that init. Unlike every
+    # other command (see `_make_control_plane`), `serve`'s local
+    # environment always wins even over an explicitly exported
+    # MAK4I_CONTROL_PLANE_DB — this is the RC's existing shipped behavior,
+    # preserved unchanged.
     overridden = localconfig.overridden_local_env_keys(config, token)
     localconfig.apply_to_env(config, token)
     if overridden:
@@ -910,10 +944,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _redact_db_url(url: str) -> str:
+    """Strip any embedded credentials from a database URL before it can
+    appear in a user-facing error message. `MAK4I_CONTROL_PLANE_DB` can
+    be a `postgresql+psycopg://user:password@host/db` URL — already
+    flagged as a secret in docs/DEPLOYMENT.md — so this must never be
+    skipped just because the URL looks like a local SQLite path."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable URL, redacted>"
+    if parts.username or parts.password:
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        parts = parts._replace(netloc=f"***:***@{host}" if host else "***:***")
+    return urlunsplit(parts)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        # No blanket local-environment resolution here: `serve` and
+        # `init` each apply their own (see their functions), and every
+        # other command resolves ambient `.mak4i/` lazily, inside
+        # `_make_control_plane()`, only when nothing has already been
+        # explicitly configured.
         return args.func(args)
     except _CliError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -923,6 +982,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except IdentityError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except SQLAlchemyError as exc:
+        db_url = _redact_db_url(os.environ.get("MAK4I_CONTROL_PLANE_DB", ""))
+        print(
+            f"error: could not use the configured control-plane database "
+            f"({db_url}) — {type(exc).__name__}.\n"
+            "Check MAK4I_CONTROL_PLANE_DB, that the database is reachable, "
+            "and that its schema has been created (`mak4i init` for a local "
+            "environment, `MAK4I_CONTROL_PLANE_CREATE_TABLES=1` for a "
+            "throwaway one, or `alembic upgrade head` for a real one).",
+            file=sys.stderr,
+        )
         return 1
 
 
