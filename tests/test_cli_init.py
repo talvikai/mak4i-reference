@@ -691,3 +691,341 @@ def test_existing_granular_control_plane_commands_still_work(hosted_env, capsys)
     payload = json.loads(capsys.readouterr().out)
     assert payload["organization"]["organization_id"].startswith("org_")
     assert payload["owner"]["role"] == "owner"
+
+
+# -- actor auto-derivation: credential -> authentication -> principal -> actor --
+#
+# The reported bug: even after a successful `mak4i init`, `mak4i principal
+# list` (and project/grant/credential) hard-failed at the argparse layer
+# demanding `--actor`, before any code that could read the already-saved
+# `.mak4i/config.json` ever ran — a circular discovery problem ("I need my
+# principal id to list principals, so I can discover my principal id").
+#
+# `--actor`, when given, is unchanged (a bare id lookup, kept for backward
+# compatibility). When omitted, the actor is now derived by *authenticating*
+# a bearer credential (MAK4I_TOKEN if already set, otherwise the local
+# `mak4i init` credential) via the exact same `ControlPlane.authenticate()`
+# the MCP hosted path already uses — never by trusting a cached id. A
+# missing, invalid, expired, or revoked credential is a clear CLI error,
+# never a silent fallback to something weaker.
+
+
+def _parse_issued_credential(stdout: str) -> tuple[str, str]:
+    """`(credential_id, raw_token)` from `credential issue`'s plain-text
+    output (not JSON — see `_cmd_credential_issue`)."""
+    credential_id = None
+    token = None
+    for line in stdout.splitlines():
+        if line.startswith("credential_id: "):
+            credential_id = line.removeprefix("credential_id: ").strip()
+        elif line.startswith("Authorization: Bearer "):
+            token = line.removeprefix("Authorization: Bearer ").strip()
+    assert credential_id and token, f"could not parse credential issue output: {stdout!r}"
+    return credential_id, token
+
+
+# -- Local: derivation from the `mak4i init` credential --------------------
+
+
+def test_principal_list_without_actor_derives_from_the_local_credential(capsys):
+    """The exact reported bug — now fixed."""
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert _run("principal", "list") == 0
+    principals = json.loads(capsys.readouterr().out)
+    assert [p["principal_id"] for p in principals] == [config.owner_principal_id]
+
+
+def test_project_list_without_actor_derives_from_the_local_credential(capsys):
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert _run("project", "list") == 0
+    projects = json.loads(capsys.readouterr().out)
+    assert [p["project_id"] for p in projects] == [config.project_id]
+
+
+def test_principal_show_derives_actor_but_still_requires_an_explicit_principal_id(capsys):
+    """Decision 3: SHOW keeps its explicit target id — only the *actor*
+    performing the lookup is derived."""
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert _run("principal", "show", "--principal-id", config.owner_principal_id) == 0
+    principal = json.loads(capsys.readouterr().out)
+    assert principal["principal_id"] == config.owner_principal_id
+
+    # Omitting --principal-id entirely is still a hard argparse error —
+    # SHOW never guesses a target.
+    with pytest.raises(SystemExit) as exc_info:
+        _run("principal", "show")
+    assert exc_info.value.code == 2
+
+
+# -- Enterprise-style: derivation from an explicit MAK4I_TOKEN -------------
+
+
+def test_granular_command_derives_actor_from_explicit_mak4i_token(hosted_env, capsys, monkeypatch):
+    """No `.mak4i/` involved at all — an operator who exported their own
+    MAK4I_TOKEN, exactly as they would for any other MCP client."""
+    assert _run("org", "create", "--name", "Acme", "--owner-display-name", "Owner") == 0
+    payload = json.loads(capsys.readouterr().out)
+    organization_id = payload["organization"]["organization_id"]
+    owner_id = payload["owner"]["principal_id"]
+
+    assert _run(
+        "credential", "issue", "--actor", owner_id, "--principal-id", owner_id,
+        "--no-connection-help",
+    ) == 0
+    _credential_id, token = _parse_issued_credential(capsys.readouterr().out)
+
+    monkeypatch.setenv("MAK4I_TOKEN", token)
+    assert _run("principal", "list") == 0
+    principals = json.loads(capsys.readouterr().out)
+    assert [p["principal_id"] for p in principals] == [owner_id]
+    assert [p["organization_id"] for p in principals] == [organization_id]
+
+
+# -- credential failure modes: clear errors, never a silent fallback ------
+
+
+def test_actor_derivation_fails_clearly_with_no_credential_available(hosted_env, capsys):
+    """No `.mak4i/`, no MAK4I_TOKEN, no --actor: a clear error, not a bare
+    argparse "required" message and not a traceback."""
+    exit_code = _run("principal", "list", "--organization-id", "org_does-not-matter")
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "no --actor given and no credential available" in err
+    assert "MAK4I_TOKEN" in err and "mak4i init" in err
+
+
+def test_actor_derivation_fails_clearly_with_an_invalid_credential(hosted_env, capsys, monkeypatch):
+    monkeypatch.setenv("MAK4I_TOKEN", "mak4i_totally-not-a-real-token")
+    exit_code = _run("principal", "list", "--organization-id", "org_does-not-matter")
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "invalid or expired credential" in err
+    assert "--actor" in err
+    # `mak4i init --force` does not repair or rotate a credential — it
+    # provisions a brand-new, disconnected organization/project
+    # alongside the existing one (verified directly against a real
+    # environment: every row count doubles). Recommending it here would
+    # be actively harmful advice, so it must never appear in this error.
+    assert "init --force" not in err
+    # A bare `mak4i credential issue` (no --actor) is not a standalone
+    # fix either — it would hit this exact same derivation failure — so
+    # any mention of it here must show --actor alongside it.
+    if "credential issue" in err:
+        assert "--actor" in err.split("credential issue", 1)[1][:40]
+
+
+def test_actor_derivation_fails_clearly_with_a_revoked_credential(hosted_env, capsys, monkeypatch):
+    assert _run("org", "create", "--name", "Acme", "--owner-display-name", "Owner") == 0
+    payload = json.loads(capsys.readouterr().out)
+    owner_id = payload["owner"]["principal_id"]
+
+    assert _run(
+        "credential", "issue", "--actor", owner_id, "--principal-id", owner_id,
+        "--no-connection-help",
+    ) == 0
+    credential_id, token = _parse_issued_credential(capsys.readouterr().out)
+
+    assert _run("credential", "revoke", "--actor", owner_id, "--credential-id", credential_id) == 0
+    capsys.readouterr()
+
+    monkeypatch.setenv("MAK4I_TOKEN", token)
+    exit_code = _run("principal", "list")
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "invalid or expired credential" in err
+    assert "init --force" not in err  # see the audit note above `_resolve_actor`
+
+
+def test_actor_derivation_fails_clearly_with_an_expired_credential(hosted_env, capsys, monkeypatch):
+    assert _run("org", "create", "--name", "Acme", "--owner-display-name", "Owner") == 0
+    payload = json.loads(capsys.readouterr().out)
+    owner_id = payload["owner"]["principal_id"]
+
+    assert _run(
+        "credential", "issue", "--actor", owner_id, "--principal-id", owner_id,
+        "--expires-at", "2020-01-01T00:00:00+00:00",  # already in the past
+        "--no-connection-help",
+    ) == 0
+    _credential_id, token = _parse_issued_credential(capsys.readouterr().out)
+    capsys.readouterr()
+
+    monkeypatch.setenv("MAK4I_TOKEN", token)
+    exit_code = _run("principal", "list")
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "invalid or expired credential" in err
+    assert "init --force" not in err  # see the audit note above `_resolve_actor`
+
+
+def test_local_credential_missing_does_not_fall_back_to_config_json(capsys):
+    """Decision 1's explicit requirement: if `.mak4i/config.json` exists
+    but `credentials.json` doesn't, derivation must fail clearly — never
+    silently trust the cached `owner_principal_id`."""
+    assert _init() == 0
+    capsys.readouterr()
+
+    localconfig.credentials_path().unlink()
+
+    exit_code = _run("principal", "list")
+    assert exit_code == 1
+    assert "no --actor given and no credential available" in capsys.readouterr().err
+
+
+# -- backward compatibility: explicit --actor is unchanged and wins -------
+
+
+def test_explicit_actor_overrides_derivation(capsys):
+    """The clearest possible proof explicit `--actor` isn't just "still
+    accepted" but actually *used* in preference to derivation: the local
+    credential authenticates to org 1's owner, but an explicit `--actor`
+    for org 2's owner correctly scopes to org 2, not org 1."""
+    assert _init(org="Org One") == 0
+    capsys.readouterr()
+
+    assert _run("org", "create", "--name", "Org Two", "--owner-display-name", "Owner Two") == 0
+    org2 = json.loads(capsys.readouterr().out)
+    org2_owner_id = org2["owner"]["principal_id"]
+    org2_id = org2["organization"]["organization_id"]
+
+    assert _run("principal", "list", "--actor", org2_owner_id) == 0
+    principals = json.loads(capsys.readouterr().out)
+    assert [p["principal_id"] for p in principals] == [org2_owner_id]
+    assert [p["organization_id"] for p in principals] == [org2_id]
+
+
+def test_existing_explicit_syntax_still_works_unchanged(capsys):
+    """Today's exact pre-existing syntax — fully explicit --actor and
+    --organization-id together — must keep working byte-for-byte."""
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert (
+        _run(
+            "project", "list",
+            "--actor", config.owner_principal_id,
+            "--organization-id", config.organization_id,
+        )
+        == 0
+    )
+    projects = json.loads(capsys.readouterr().out)
+    assert [p["project_id"] for p in projects] == [config.project_id]
+
+
+# -- authorization is unchanged: derivation never weakens what's checked --
+
+
+def test_non_owner_derived_actor_is_still_denied(capsys, monkeypatch):
+    """A member (non-owner) principal's credential, once derived, must be
+    denied by `_require_owner` exactly as an explicit `--actor` for that
+    same member already is today — derivation changes *where* the actor
+    id comes from, never *what* gets authorized."""
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert _run(
+        "principal", "create",
+        "--actor", config.owner_principal_id,
+        "--organization-id", config.organization_id,
+        "--type", "human", "--display-name", "Member", "--role", "member",
+    ) == 0
+    member = json.loads(capsys.readouterr().out)
+    member_id = member["principal_id"]
+
+    assert _run(
+        "credential", "issue",
+        "--actor", config.owner_principal_id, "--principal-id", member_id,
+        "--no-connection-help",
+    ) == 0
+    _credential_id, member_token = _parse_issued_credential(capsys.readouterr().out)
+    capsys.readouterr()
+
+    monkeypatch.setenv("MAK4I_TOKEN", member_token)
+    exit_code = _run("principal", "list")
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "access denied" in err
+    assert member_id not in err  # no leakage of who/what was denied
+
+
+def test_cross_org_actor_cannot_list_another_organizations_principals(capsys):
+    """Explicit `--actor` from org 1 targeting org 2's `--organization-id`
+    — denied exactly as today, unaffected by this change."""
+    assert _init(org="Org One") == 0
+    config = localconfig.load()
+    capsys.readouterr()
+
+    assert _run("org", "create", "--name", "Org Two", "--owner-display-name", "Owner Two") == 0
+    org2 = json.loads(capsys.readouterr().out)
+    org2_id = org2["organization"]["organization_id"]
+    capsys.readouterr()
+
+    exit_code = _run(
+        "principal", "list",
+        "--actor", config.owner_principal_id,
+        "--organization-id", org2_id,
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "access denied" in err
+    assert "Org Two" not in err  # no cross-org leakage
+
+
+# -- --help reflects the new precedence ------------------------------------
+
+
+def _help_text(*argv: str, capsys) -> str:
+    """argparse's `--help` prints and calls `sys.exit(0)` — it never
+    returns normally from `parser.parse_args()`, so `_run()` isn't usable
+    here directly."""
+    with pytest.raises(SystemExit) as exc_info:
+        _run(*argv)
+    assert exc_info.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_help_text_explains_actor_and_organization_id_derivation(capsys):
+    for argv in (
+        ("project", "create", "--help"),
+        ("project", "list", "--help"),
+        ("project", "show", "--help"),
+        ("principal", "create", "--help"),
+        ("principal", "list", "--help"),
+        ("principal", "show", "--help"),
+        ("grant", "create", "--help"),
+        ("grant", "list", "--help"),
+        ("grant", "revoke", "--help"),
+        ("credential", "issue", "--help"),
+        ("credential", "list", "--help"),
+        ("credential", "revoke", "--help"),
+    ):
+        help_text = _help_text(*argv, capsys=capsys)
+        assert "--actor" in help_text
+        assert "authenticated credential" in help_text or "derived" in help_text
+
+    for argv in (("project", "list", "--help"), ("principal", "list", "--help")):
+        help_text = _help_text(*argv, capsys=capsys)
+        assert "--organization-id" in help_text
+        assert "default" in help_text.lower()
+
+    # SHOW / destructive commands still show their target id as required
+    # (no "[--...]" brackets in argparse's own usage line).
+    for argv, required_flag in (
+        (("org", "show", "--help"), "--organization-id"),
+        (("project", "show", "--help"), "--project-id"),
+        (("principal", "show", "--help"), "--principal-id"),
+        (("grant", "revoke", "--help"), "--project-id"),
+        (("credential", "revoke", "--help"), "--credential-id"),
+    ):
+        usage_line = _help_text(*argv, capsys=capsys).splitlines()[0]
+        assert f"[{required_flag}" not in usage_line  # required, not optional
