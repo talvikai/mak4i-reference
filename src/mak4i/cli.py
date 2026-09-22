@@ -36,7 +36,13 @@ from mak4i import localconfig
 from mak4i.api import OPERATOR_IMPERSONATION, ArtifactNotActiveError, MAK4IEngine
 from mak4i.audit import AuditLogger
 from mak4i.config import build_control_plane_from_env, build_store_from_env
-from mak4i.identity import AccessDeniedError, ControlPlane, IdentityError, Principal
+from mak4i.identity import (
+    AccessDeniedError,
+    ControlPlane,
+    CredentialInvalidError,
+    IdentityError,
+    Principal,
+)
 from mak4i.identity.authz import Authorizer
 from mak4i.identity.errors import PrincipalNotFoundError
 from mak4i.store.base import (
@@ -79,6 +85,73 @@ def _resolve_principal(control_plane: ControlPlane, principal_id: str) -> Princi
     if principal is None:
         raise PrincipalNotFoundError(principal_id)
     return principal
+
+
+def _resolve_actor(control_plane: ControlPlane, args: argparse.Namespace) -> Principal:
+    """The one identity rule for every control-plane subcommand below:
+
+        credential -> authentication -> principal -> actor
+
+    `--actor <id>`, when given, is resolved exactly as before (a bare
+    `get_principal()` lookup, kept only for backward compatibility — see
+    `_resolve_principal`) — this function changes nothing about that
+    path.
+
+    When `--actor` is omitted, the actor is derived by *authenticating* a
+    bearer credential, never by trusting a cached id:
+
+    1. `MAK4I_TOKEN`, if already present in the environment (an
+       Enterprise Self-Hosted operator's own exported credential, or an
+       explicit local override) — the same precedence already
+       established for `MAK4I_CONTROL_PLANE_DB` elsewhere in this file:
+       an explicit value always wins over an ambient one.
+    2. Otherwise, for an initialized local environment, the credential
+       `mak4i init` saved to `.mak4i/credentials.json`.
+
+    Either way the token is *authenticated* via
+    `ControlPlane.authenticate()` — the same call the MCP hosted path
+    already makes — which additionally verifies the credential is
+    active, unexpired, and unrevoked, and that its principal and
+    organization are both active. This is deliberately **not** a
+    fallback to `.mak4i/config.json`'s cached `owner_principal_id`: a
+    missing, invalid, expired, or revoked credential is a clear error
+    here, never silently substituted with a weaker identity check.
+    """
+    if args.actor:
+        return _resolve_principal(control_plane, args.actor)
+
+    token = os.environ.get("MAK4I_TOKEN") or localconfig.load_token()
+    if not token:
+        raise _CliError(
+            "no --actor given and no credential available to derive one "
+            "automatically. Pass --actor <principal-id>, set MAK4I_TOKEN "
+            "to a valid credential, or run `mak4i init` to create a local "
+            "environment."
+        )
+    try:
+        return control_plane.authenticate(token)
+    except CredentialInvalidError as exc:
+        # Deliberately does NOT suggest `mak4i init --force` here: it
+        # does not repair or rotate a credential — it provisions a
+        # brand-new organization/principal/project/grant/credential
+        # alongside the existing one (verified directly: every row
+        # count doubles, the old rows are never touched or deleted, and
+        # the previously-current project becomes invisible under the
+        # new identity) and overwrites `.mak4i/config.json`/
+        # `credentials.json` to point at that new, disconnected
+        # environment. It is not a safe recovery action to name here.
+        # Bare `mak4i credential issue` (with no --actor) is also not a
+        # standalone fix in this situation — it goes through this same
+        # derivation and would fail with this same error — so the
+        # example below always includes --actor explicitly.
+        raise _CliError(
+            f"{exc} — could not automatically derive --actor from the "
+            "current credential. Pass --actor <principal-id> explicitly "
+            "(local environments: see \"owner_principal_id\" in "
+            ".mak4i/config.json) — for example, to issue yourself a new "
+            "credential: `mak4i credential issue --actor <id> "
+            "--principal-id <id>`."
+        ) from exc
 
 
 def _to_json_safe(value: Any) -> Any:
@@ -261,7 +334,7 @@ def _cmd_org_show(args: argparse.Namespace) -> int:
 
 def _cmd_project_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     project = control_plane.create_project(
         actor=actor, organization_id=args.organization_id, name=args.name
     )
@@ -271,21 +344,25 @@ def _cmd_project_create(args: argparse.Namespace) -> int:
 
 def _cmd_project_list(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
-    _print_json(control_plane.list_projects(actor=actor, organization_id=args.organization_id))
+    actor = _resolve_actor(control_plane, args)
+    # LIST = discovery: no --organization-id required — an omitted one
+    # defaults to the authenticated actor's own organization (the only
+    # one `_require_owner` would let them list anyway).
+    organization_id = args.organization_id or actor.organization_id
+    _print_json(control_plane.list_projects(actor=actor, organization_id=organization_id))
     return 0
 
 
 def _cmd_project_show(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     _print_json(control_plane.show_project(actor=actor, project_id=args.project_id))
     return 0
 
 
 def _cmd_principal_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     principal = control_plane.create_principal(
         actor=actor,
         organization_id=args.organization_id,
@@ -299,21 +376,25 @@ def _cmd_principal_create(args: argparse.Namespace) -> int:
 
 def _cmd_principal_list(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
-    _print_json(control_plane.list_principals(actor=actor, organization_id=args.organization_id))
+    actor = _resolve_actor(control_plane, args)
+    # LIST = discovery: no --organization-id required — an omitted one
+    # defaults to the authenticated actor's own organization (the only
+    # one `_require_owner` would let them list anyway).
+    organization_id = args.organization_id or actor.organization_id
+    _print_json(control_plane.list_principals(actor=actor, organization_id=organization_id))
     return 0
 
 
 def _cmd_principal_show(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     _print_json(control_plane.show_principal(actor=actor, principal_id=args.principal_id))
     return 0
 
 
 def _cmd_grant_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     grant = control_plane.grant(
         actor=actor,
         principal_id=args.principal_id,
@@ -326,14 +407,14 @@ def _cmd_grant_create(args: argparse.Namespace) -> int:
 
 def _cmd_grant_list(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     _print_json(control_plane.list_grants(actor=actor, principal_id=args.principal_id))
     return 0
 
 
 def _cmd_grant_revoke(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     control_plane.revoke_grant(
         actor=actor, principal_id=args.principal_id, project_id=args.project_id
     )
@@ -368,7 +449,7 @@ def _print_connection_instructions(*, raw_token: str) -> None:
 
 def _cmd_credential_issue(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     expires_at = datetime.fromisoformat(args.expires_at) if args.expires_at else None
     credential, raw_token = control_plane.issue_credential(
         actor=actor,
@@ -406,7 +487,7 @@ def _credential_summary(c) -> dict:
 
 def _cmd_credential_list(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     credentials = control_plane.list_credentials(actor=actor, principal_id=args.principal_id)
     _print_json([_credential_summary(c) for c in credentials])
     return 0
@@ -414,7 +495,7 @@ def _cmd_credential_list(args: argparse.Namespace) -> int:
 
 def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
-    actor = _resolve_principal(control_plane, args.actor)
+    actor = _resolve_actor(control_plane, args)
     credential = control_plane.revoke_credential(actor=actor, credential_id=args.credential_id)
     _print_json(_credential_summary(credential))
     return 0
@@ -856,29 +937,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     org_list.set_defaults(func=_cmd_org_list)
     org_show = org_sub.add_parser("show", help="Show one organization.")
-    org_show.add_argument("--organization-id", required=True)
+    org_show.add_argument(
+        "--organization-id", required=True, help="the specific organization to show"
+    )
     org_show.set_defaults(func=_cmd_org_show)
 
     project = subparsers.add_parser("project", help="Control-plane: projects.")
     project_sub = project.add_subparsers(dest="project_command", required=True)
     project_create = project_sub.add_parser("create", help="Create a project in an organization.")
-    project_create.add_argument("--actor", required=True, help="owner principal id performing this action")
+    project_create.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     project_create.add_argument("--organization-id", required=True)
     project_create.add_argument("--name", required=True)
     project_create.set_defaults(func=_cmd_project_create)
     project_list = project_sub.add_parser("list", help="List every project in an organization (owner-only).")
-    project_list.add_argument("--actor", required=True, help="owner principal id performing this action")
-    project_list.add_argument("--organization-id", required=True)
+    project_list.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
+    project_list.add_argument(
+        "--organization-id",
+        help="filter to one organization (default: the authenticated actor's own organization)",
+    )
     project_list.set_defaults(func=_cmd_project_list)
     project_show = project_sub.add_parser("show", help="Show one project (owner-only, own org).")
-    project_show.add_argument("--actor", required=True, help="owner principal id performing this action")
-    project_show.add_argument("--project-id", required=True)
+    project_show.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
+    project_show.add_argument("--project-id", required=True, help="the specific project to show")
     project_show.set_defaults(func=_cmd_project_show)
 
     principal = subparsers.add_parser("principal", help="Control-plane: principals.")
     principal_sub = principal.add_subparsers(dest="principal_command", required=True)
     principal_create = principal_sub.add_parser("create", help="Create a principal in an organization.")
-    principal_create.add_argument("--actor", required=True, help="owner principal id performing this action")
+    principal_create.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     principal_create.add_argument("--organization-id", required=True)
     principal_create.add_argument("--type", required=True, choices=["human", "service", "agent"])
     principal_create.add_argument("--display-name", required=True)
@@ -887,18 +981,29 @@ def build_parser() -> argparse.ArgumentParser:
     principal_list = principal_sub.add_parser(
         "list", help="List every principal in an organization (owner-only)."
     )
-    principal_list.add_argument("--actor", required=True, help="owner principal id performing this action")
-    principal_list.add_argument("--organization-id", required=True)
+    principal_list.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
+    principal_list.add_argument(
+        "--organization-id",
+        help="filter to one organization (default: the authenticated actor's own organization)",
+    )
     principal_list.set_defaults(func=_cmd_principal_list)
     principal_show = principal_sub.add_parser("show", help="Show one principal (owner-only, own org).")
-    principal_show.add_argument("--actor", required=True, help="owner principal id performing this action")
-    principal_show.add_argument("--principal-id", required=True)
+    principal_show.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
+    principal_show.add_argument(
+        "--principal-id", required=True, help="the specific principal to show"
+    )
     principal_show.set_defaults(func=_cmd_principal_show)
 
     grant = subparsers.add_parser("grant", help="Control-plane: grants (principal x project permissions).")
     grant_sub = grant.add_subparsers(dest="grant_command", required=True)
     grant_create = grant_sub.add_parser("create", help="Grant a principal permissions on a project.")
-    grant_create.add_argument("--actor", required=True, help="owner principal id performing this action")
+    grant_create.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     grant_create.add_argument("--principal-id", required=True)
     grant_create.add_argument("--project-id", required=True)
     grant_create.add_argument("--permissions", required=True, help="comma-separated: read,write")
@@ -906,11 +1011,15 @@ def build_parser() -> argparse.ArgumentParser:
     grant_list = grant_sub.add_parser(
         "list", help="List every grant held by one principal (owner-only, own org)."
     )
-    grant_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    grant_list.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     grant_list.add_argument("--principal-id", required=True)
     grant_list.set_defaults(func=_cmd_grant_list)
     grant_revoke = grant_sub.add_parser("revoke", help="Revoke a principal's grant on a project.")
-    grant_revoke.add_argument("--actor", required=True, help="owner principal id performing this action")
+    grant_revoke.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     grant_revoke.add_argument("--principal-id", required=True)
     grant_revoke.add_argument("--project-id", required=True)
     grant_revoke.set_defaults(func=_cmd_grant_revoke)
@@ -920,7 +1029,9 @@ def build_parser() -> argparse.ArgumentParser:
     credential_issue = credential_sub.add_parser(
         "issue", help="Issue a credential for a principal — prints the raw token once."
     )
-    credential_issue.add_argument("--actor", required=True, help="owner principal id performing this action")
+    credential_issue.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     credential_issue.add_argument("--principal-id", required=True)
     credential_issue.add_argument("--display-name")
     credential_issue.add_argument("--expires-at", help="ISO 8601, e.g. 2027-01-01T00:00:00+00:00")
@@ -933,11 +1044,15 @@ def build_parser() -> argparse.ArgumentParser:
     credential_list = credential_sub.add_parser(
         "list", help="List every credential issued to one principal — never prints the raw token or its hash."
     )
-    credential_list.add_argument("--actor", required=True, help="owner principal id performing this action")
+    credential_list.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     credential_list.add_argument("--principal-id", required=True)
     credential_list.set_defaults(func=_cmd_credential_list)
     credential_revoke = credential_sub.add_parser("revoke", help="Revoke a credential.")
-    credential_revoke.add_argument("--actor", required=True, help="owner principal id performing this action")
+    credential_revoke.add_argument("--actor", help=(
+        "owner principal id performing this action (default: derived from the authenticated credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+    ))
     credential_revoke.add_argument("--credential-id", required=True)
     credential_revoke.set_defaults(func=_cmd_credential_revoke)
 
