@@ -6,8 +6,10 @@ from mak4i.identity import (
     AccessDeniedError,
     ControlPlane,
     CredentialInvalidError,
+    CrossOrganizationGrantError,
     LastOwnerError,
     Organization,
+    ProjectAlreadyExistsError,
     utc_now,
 )
 from mak4i.identity.memory_store import InMemoryControlPlaneStore
@@ -144,6 +146,26 @@ def test_owner_cannot_administer_another_organization(cp):
         cp.create_project(
             actor=owner_a, organization_id=org_b.organization_id, name="Cross"
         )
+
+
+def test_create_project_duplicate_active_name_is_rejected(cp, org_and_owner):
+    _org, owner = org_and_owner
+    original = cp.create_project(
+        actor=owner, organization_id=owner.organization_id, name="Schedovia"
+    )
+
+    with pytest.raises(ProjectAlreadyExistsError) as exc:
+        cp.create_project(
+            actor=owner, organization_id=owner.organization_id, name="Schedovia"
+        )
+    assert "Schedovia" in str(exc.value)
+    assert "already exists" in str(exc.value)
+    # also a ValueError — existing callers that catch ValueError keep working.
+    assert isinstance(exc.value, ValueError)
+
+    # The original project row is untouched by the rejected attempt.
+    projects = cp.list_projects(actor=owner, organization_id=owner.organization_id)
+    assert [p.project_id for p in projects] == [original.project_id]
 
 
 # -- grants -------------------------------------------------------------------

@@ -384,6 +384,51 @@ def test_project_list_and_show(world, capsys):
     assert shown["project_id"] == project_id
 
 
+def test_project_create_duplicate_name_errors_cleanly(world, capsys):
+    """`world` already created a project named 'schedovia' — creating it
+    again in the same organization must be a clean CLI error, not a raw
+    Python traceback (regression test for the duplicate-project bug)."""
+    organization_id, owner_id, _project_id = world
+    exit_code = cli.main(
+        ["project", "create", "--actor", owner_id, "--organization-id", organization_id, "--name", "schedovia"]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "an active project named 'schedovia' already exists in this organization" in err
+    assert "Traceback" not in err
+
+
+def test_grant_create_cross_organization_errors_cleanly(capsys):
+    """Granting a principal access to another organization's project must
+    be a clean CLI error, not a raw Python traceback."""
+    assert cli.main(["org", "create", "--name", "Org A", "--owner-display-name", "Owner A"]) == 0
+    org_a_payload = json.loads(capsys.readouterr().out)
+    organization_a = org_a_payload["organization"]["organization_id"]
+    owner_a = org_a_payload["owner"]["principal_id"]
+
+    assert cli.main(
+        ["project", "create", "--actor", owner_a, "--organization-id", organization_a, "--name", "Project A"]
+    ) == 0
+    project_a = json.loads(capsys.readouterr().out)["project_id"]
+
+    assert cli.main(["org", "create", "--name", "Org B", "--owner-display-name", "Owner B"]) == 0
+    owner_b = json.loads(capsys.readouterr().out)["owner"]["principal_id"]
+
+    exit_code = cli.main(
+        [
+            "grant", "create",
+            "--actor", owner_b,
+            "--principal-id", owner_b,
+            "--project-id", project_a,
+            "--permissions", "read",
+        ]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "cannot grant a principal access to another organization's project" in err
+    assert "Traceback" not in err
+
+
 def test_principal_list_and_show(world, capsys):
     organization_id, owner_id, _project_id = world
     assert cli.main(
