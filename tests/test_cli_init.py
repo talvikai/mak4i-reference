@@ -76,6 +76,46 @@ def test_init_first_run_creates_full_environment(capsys):
     assert token is not None and token.startswith("mak4i_")
 
 
+def test_init_output_presents_both_local_transport_choices(capsys):
+    """`init`'s Next section offers stdio and Streamable HTTP as two ways
+    to serve the *same* local environment — stdio first, as the default."""
+    assert _init() == 0
+    out = capsys.readouterr().out
+    next_section = out[out.index("Next:"):]
+
+    # Both transports use this one initialized environment.
+    assert "same" in next_section and "local environment" in next_section
+
+    # Option 1 — stdio, with the Claude Code stdio example.
+    assert "Option 1 — stdio (default)" in next_section
+    assert "\n  mak4i serve\n" in next_section
+    assert "launches MAK4I as its own process" in next_section
+    assert "claude mcp add mak4i -- mak4i serve" in next_section
+
+    # Option 2 — Streamable HTTP, with its three local endpoints.
+    assert "Option 2 — Streamable HTTP" in next_section
+    assert "  mak4i serve --transport http" in next_section
+    assert "multiple local MCP clients" in next_section
+    assert "MCP:    http://127.0.0.1:8080/mcp" in next_section
+    assert "Health: http://127.0.0.1:8080/health" in next_section
+    assert "Ready:  http://127.0.0.1:8080/ready" in next_section
+    assert str(localconfig.credentials_path()) in next_section
+
+    assert next_section.index("Option 1") < next_section.index("Option 2")
+    # The HTTP option points at the credentials file; the token itself is
+    # never printed.
+    assert localconfig.load_token() not in out
+
+
+def test_init_http_urls_match_serve_defaults_and_stdio_stays_default():
+    """The URLs `init` prints are exactly where `mak4i serve --transport
+    http` listens by default, and plain `mak4i serve` is still stdio."""
+    from mak4i import mcp_server
+
+    assert cli._LOCAL_HTTP_BASE == f"http://{mcp_server.resolve_host()}:{mcp_server.resolve_port()}"
+    assert mcp_server.resolve_transport() == "stdio"
+
+
 def test_init_creates_read_write_grant(capsys):
     assert _init() == 0
     config = localconfig.load()
