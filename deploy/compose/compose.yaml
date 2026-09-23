@@ -1,0 +1,129 @@
+# MAK4I Reference — Enterprise Self-Hosted Developer Preview (single VM).
+#
+# A reference deployment for evaluating MAK4I on one Linux VM, not the
+# production architecture. See docs/ENTERPRISE_SELF_HOSTED.md for the
+# step-by-step guide and docs/DEPLOYMENT.md for the runtime contract and
+# production alternatives (managed PostgreSQL, object storage, a container
+# platform, a secret manager).
+#
+#   postgres  control-plane database (PostgreSQL 16). Never published on
+#             the host: reach it only through `docker compose exec`.
+#   migrate   one-shot `alembic upgrade head`; runs on every `up` and
+#             exits 0 when the schema is current.
+#   mak4i     the MCP server (Streamable HTTP) + the `mak4i` operator CLI.
+#             Published on 127.0.0.1 only by default.
+#   caddy     optional (`--profile tls`): automatic HTTPS in front of mak4i.
+#
+# Usage (from this directory):
+#   cp .env.example .env && chmod 600 .env   # then edit .env
+#   docker compose up -d --build             # HTTP on 127.0.0.1:8080
+#   docker compose --profile tls up -d --build   # + HTTPS on :443
+
+name: mak4i
+
+x-mak4i-hardening: &mak4i-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-control-plane-db: &control-plane-db
+  MAK4I_CONTROL_PLANE_DB: "postgresql+psycopg://${POSTGRES_USER:-mak4i}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-mak4i}"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mak4i}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-mak4i}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no `ports:` — the control-plane database is never
+    # reachable from outside the Compose network. Anyone who can reach it
+    # can act as any principal through the CLI.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  migrate:
+    <<: *mak4i-hardening
+    # Same image the `mak4i` service builds (only one service may build a
+    # given tag, or parallel builds collide); never pulled from a registry.
+    image: mak4i-reference:local
+    pull_policy: never
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *control-plane-db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  mak4i:
+    <<: *mak4i-hardening
+    image: mak4i-reference:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *control-plane-db
+      MAK4I_TRANSPORT: http
+      # Required inside a container: the image's default bind is loopback,
+      # which is unreachable from outside the container. Host exposure is
+      # controlled by `ports:` below, not by this bind address.
+      MAK4I_HOST: 0.0.0.0
+      MAK4I_PORT: "8080"
+      MAK4I_STORE: local
+      MAK4I_LOCAL_STORE_DIR: /data/artifacts
+      # The client-facing MCP URL; used by `mak4i credential issue` and
+      # `mak4i access provision` to print exact connect instructions.
+      MAK4I_PUBLIC_ENDPOINT: ${MAK4I_PUBLIC_ENDPOINT:-http://127.0.0.1:8080/mcp}
+    volumes:
+      - artifacts:/data/artifacts
+    ports:
+      - "${MAK4I_HTTP_BIND:-127.0.0.1}:${MAK4I_HTTP_PORT:-8080}:8080"
+    # LocalJSONStore is single-writer (per-process file locks on a local
+    # volume). Keep exactly one mak4i container; do not `--scale` it.
+    deploy:
+      replicas: 1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /ready = process up AND control-plane database reachable.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  caddy:
+    image: caddy:2
+    profiles: ["tls"]
+    restart: unless-stopped
+    environment:
+      # Required for this profile. (Not `:?`-enforced: Compose interpolates
+      # every service, so that would also break the default no-TLS stack.)
+      MAK4I_DOMAIN: ${MAK4I_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      mak4i:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  artifacts:
+  caddy_data:
+  caddy_config:

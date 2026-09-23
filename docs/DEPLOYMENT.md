@@ -7,6 +7,13 @@ development path. It is written so that someone standing up their
 **own** MAK4I Reference deployment can do so without reverse-engineering
 it from code.
 
+> **Installing for the first time?** Start with
+> [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md): a step-by-step
+> Developer Preview quick start (one Linux VM, Docker Compose, PostgreSQL,
+> optional automatic HTTPS). This document is the platform-neutral
+> reference that guide relies on: the runtime contract, security
+> properties, and production deployment options.
+
 ## Prerequisites
 
 - A container runtime (or any way to run the `Dockerfile` at the repo
@@ -104,11 +111,12 @@ All configuration is environment variables (`src/mak4i/config.py`):
 | `PORT` | no | the existing container-platform convention for the bind port (e.g. Cloud Run sets this automatically) — still fully supported; used when `MAK4I_PORT` isn't set. Default `8080` if neither is set. |
 | `MAK4I_CONTROL_PLANE_DB` | yes | SQLAlchemy URL for the control plane. Defaults to `sqlite:///./mak4i-control-plane.db`. Hosted: a `postgresql+psycopg://…` URL. **Keep this in a secret store, never a plaintext env literal or the repo** — it contains the database password. |
 | `MAK4I_STORE` | yes | `local` (default, `LocalJSONStore`) or `gcs` (`GCSArtifactStore`) |
-| `MAK4I_LOCAL_STORE_DIR` | if `MAK4I_STORE=local` | directory for `LocalJSONStore` (default `artifacts/local/`) |
+| `MAK4I_LOCAL_STORE_DIR` | if `MAK4I_STORE=local` | directory for `LocalJSONStore` (default `artifacts/local/`; the container image sets `/data/artifacts`, its one writable path — mount a persistent volume there). See "`LocalJSONStore` is single-writer" below. |
 | `MAK4I_GCS_BUCKET` | if `MAK4I_STORE=gcs` | bucket name for `GCSArtifactStore` |
 | `MAK4I_GCP_PROJECT` | if `MAK4I_STORE=gcs` | GCP project for the GCS client |
 | `MAK4I_CONTROL_PLANE_CREATE_TABLES` | no | `1` builds the control-plane schema directly from metadata (dev/CI convenience against a throwaway SQLite file). Leave unset for a real database — migrate with Alembic instead. |
-| `MAK4I_TOKEN` | stdio only | the one credential a local stdio session authenticates for its lifetime |
+| `MAK4I_TOKEN` | stdio only | the one credential a local stdio session authenticates for its lifetime. The operator CLI also accepts it to derive `--actor` (see "Bootstrapping a fresh enterprise deployment"). |
+| `MAK4I_PUBLIC_ENDPOINT` | no (CLI only) | the full client-facing MCP URL, **including `/mcp`** (e.g. `https://mak4i.example.com/mcp`). Not read by the server. `mak4i credential issue` uses it to print an exact, HTTP-only connect command; `mak4i access provision` requires it (or `--endpoint`). |
 
 The same variables are read by `cli.py` and `mcp_server.py`, so the CLI
 and the server always agree about which backends they mean — a container
@@ -161,6 +169,14 @@ No long-lived key files are committed anywhere; the reference deployment
 uses the platform's workload identity / Application Default Credentials
 rather than a downloaded key.
 
+**Control-plane database access is administrative access.** The MCP
+endpoint is protected by credentials, but the operator CLI talks to the
+control-plane database directly and accepts `--actor <principal-id>`
+without a credential (it's how the very first owner acts before any
+credential exists). Anyone who can connect to that database can therefore
+act as any principal. Never expose it publicly: keep it on a private
+network reachable only by the MCP server and your operators.
+
 ## Applying the control-plane schema
 
 The control plane is migrated with Alembic (`migrations/`, config in
@@ -171,21 +187,56 @@ The control plane is migrated with Alembic (`migrations/`, config in
 MAK4I_CONTROL_PLANE_DB="<your control-plane URL>" uv run alembic upgrade head
 ```
 
-Run this once before first serving traffic, and again after pulling
-changes that add a migration. For a throwaway local SQLite database you
-can instead set `MAK4I_CONTROL_PLANE_CREATE_TABLES=1` and skip Alembic.
+The container image includes `alembic.ini` and `migrations/`, so the
+same image that serves traffic can also migrate, with no Python toolchain
+on the host:
+
+```bash
+docker run --rm -e MAK4I_CONTROL_PLANE_DB="<your control-plane URL>" <mak4i-image> alembic upgrade head
+```
+
+(The Compose quick start runs exactly this as its one-shot `migrate`
+service before the server starts.) Run it once before first serving
+traffic, and again after every upgrade. It's a no-op when the schema is
+already current.
+
+For a throwaway local SQLite database you can instead set
+`MAK4I_CONTROL_PLANE_CREATE_TABLES=1` and skip Alembic. **Never use it on
+a database you intend to keep.** It creates the tables without recording
+an Alembic revision, so the next `alembic upgrade head` (your upgrade
+path) tries to create them again and fails.
 
 ## Bootstrapping a fresh enterprise deployment
 
 Once the container is up and the schema is migrated, everything else —
 the first organization, its owner, a project, a grant, and the first
 credential — is self-service from the CLI. No Talvik involvement, no
-database access, and nothing here is specific to this repository's own
+hand-written SQL, and nothing here is specific to this repository's own
 operator (a **different** organization's admin runs the exact same
-commands against their own deployment):
+commands against their own deployment).
+
+The contract, on any platform:
+
+- **The CLI must reach the same control-plane database as the server.**
+  The simplest way is to run it inside the MCP server's own container,
+  which already has the CLI and the right `MAK4I_CONTROL_PLANE_DB`
+  (`docker compose exec mak4i mak4i …` in the Compose quick start;
+  `docker exec`/`kubectl exec` or a one-off task elsewhere).
+- **`--actor <owner principal id>` is required until a credential
+  exists.** After step 4, `MAK4I_TOKEN=<that credential>` lets the CLI
+  derive the actor by authenticating it instead.
+- **Do not use `mak4i init`.** It's the [Local setup](LOCAL_SETUP.md)
+  bootstrap: it always provisions a separate local SQLite environment and
+  deliberately ignores `MAK4I_CONTROL_PLANE_DB`.
+
+The Compose-specific, copy-paste version of this sequence, including a
+second principal and client, is
+[`ENTERPRISE_SELF_HOSTED.md` step 7](ENTERPRISE_SELF_HOSTED.md#7-bootstrap-your-organization).
+The generic form:
 
 ```bash
-# Point the CLI at the same control-plane database the server uses.
+# Point the CLI at the same control-plane database the server uses
+# (already set if you run the CLI inside the server's container).
 export MAK4I_CONTROL_PLANE_DB=<your control-plane URL>
 
 # 1. First organization + its owner principal.
@@ -201,8 +252,8 @@ mak4i grant create --actor <owner_principal_id> \
   --principal-id <owner_principal_id> --project-id <project_id> \
   --permissions read,write
 
-# 4. A credential for an AI client — prints the raw token once, plus
-#    ready-to-copy connect instructions for the hosted HTTP endpoint.
+# 4. A credential for an AI client — prints the raw token once, plus a
+#    ready-to-copy connect command for $MAK4I_PUBLIC_ENDPOINT when set.
 mak4i credential issue --actor <owner_principal_id> \
   --principal-id <owner_principal_id> --display-name "Claude Code"
 ```
@@ -233,9 +284,64 @@ timeout — Streamable HTTP sessions are long-lived (an idle session should
 survive a 30s idle gap; the reference deployment uses the platform
 maximum).
 
+The image runs as an unprivileged user (uid `10001`). Its only writable
+path is `/data`; `MAK4I_LOCAL_STORE_DIR` defaults to `/data/artifacts`
+in the image. The same image also runs migrations (`alembic upgrade
+head`) and the operator CLI (`mak4i`).
+
+### `LocalJSONStore` is single-writer
+
+`LocalJSONStore` serializes writes with per-artifact `fcntl` file locks
+and atomic renames on a local filesystem. That is safe for **exactly one
+MCP server process** on a local disk or block volume. Don't run more
+than one replica against the same directory, and don't put it on a
+network filesystem (NFS/SMB lock semantics vary). To scale beyond one
+instance, use an object-storage `ArtifactStore` (`GCSArtifactStore`, or
+your own implementation of the interface).
+
+### Reverse proxy / TLS requirements
+
+MAK4I serves plain HTTP; TLS is terminated in front of it (see "Security
+considerations"). Whatever proxy or load balancer you use must:
+
+- **not buffer responses.** Streamable HTTP streams server-sent events.
+  Disable response buffering or flush immediately (Caddy
+  `flush_interval -1`; nginx `proxy_buffering off`).
+- **allow long-lived requests.** Set upstream read/idle timeouts well
+  above the 30 s idle gap a session must survive (minutes, not seconds).
+- **pass the `Host` header through**, and **reach MAK4I on a
+  non-loopback bind** (`MAK4I_HOST=0.0.0.0` inside the container, or the
+  host's private address). With a loopback bind, MAK4I's DNS-rebinding
+  guard stays on and rejects requests for your real hostname with `421`.
+  Restrict exposure with the container's port publishing or a firewall
+  instead.
+- expose only HTTPS to clients. Credentials travel in a header on every
+  request.
+
+`deploy/compose/Caddyfile` is a working example of all of the above.
+
 Platform-specific provisioning (creating the database, the bucket, the
 runtime identity, the secret, and the deploy invocation itself) depends
-entirely on where you host it and is out of scope for this repo.
+on where you host it; see "Production deployment options" below. The
+single-VM Compose stack in `deploy/compose/` automates all of it for a
+Developer Preview.
+
+## Production deployment options
+
+MAK4I doesn't prescribe a hosting stack. Three shapes, from smallest to
+largest:
+
+| Option | Control plane | Artifact store | Where it's described |
+|---|---|---|---|
+| **Single-VM Developer Preview** | PostgreSQL 16 container, named volume | `LocalJSONStore` on a named volume (one replica) | [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md), `deploy/compose/` |
+| **Container platform + managed services** | managed PostgreSQL (backups, PITR) | object-storage `ArtifactStore` | this document: the runtime contract above + your platform's docs |
+| **Reference cloud deployment** | Cloud SQL for PostgreSQL | `GCSArtifactStore` (private bucket) | "MAK4I is deployment- and storage-neutral" above |
+
+Moving from the Compose stack to production mostly means replacing
+parts, not re-architecting. Point `MAK4I_CONTROL_PLANE_DB` at a managed
+database (restored from `pg_dump`), switch `MAK4I_STORE` to an object
+store (migrating the existing artifacts into it), keep the database URL in a secret manager
+instead of `.env`, and terminate TLS at your load balancer or ingress.
 
 ## Local dev paths (stdio and HTTP)
 
@@ -288,6 +394,10 @@ the server and the CLI against it.
   password) — keep it in your platform's secret manager, never a
   plaintext env literal committed anywhere. The same applies to any
   artifact-store credentials (e.g. cloud storage service-account keys).
+  (The single-VM Compose quick start is the one documented exception: for
+  a Developer Preview, it keeps the database password in a `chmod 600`
+  `.env` file on the VM. That is an evaluation convenience, not a
+  production pattern.)
 - **Least privilege for the runtime identity.** The container needs only
   read/write on its own artifact store and network reachability plus
   read access to the control-plane database — nothing broader.
@@ -342,6 +452,9 @@ gap) rather than corrupting anything; a control plane restored without
 its matching artifacts just has projects that report no current context
 until the artifact store catches up.
 
+The exact backup and restore commands for the Compose quick start are in
+[`ENTERPRISE_SELF_HOSTED.md` step 11](ENTERPRISE_SELF_HOSTED.md#11-operate-backups-upgrades-logs).
+
 ## Upgrading
 
 1. **Read the release notes** for what changed, particularly any new
@@ -349,9 +462,15 @@ until the artifact store catches up.
 2. **Back up first** (see above) — routine practice before any schema
    change.
 3. **Deploy the new container image / pull the new code.**
-4. **Apply migrations**: `MAK4I_CONTROL_PLANE_DB="<url>" uv run alembic
-   upgrade head` — safe to run even when there's nothing new to apply.
+4. **Apply migrations**: `alembic upgrade head` from the new image (see
+   "Applying the control-plane schema"), or `MAK4I_CONTROL_PLANE_DB="<url>"
+   uv run alembic upgrade head` from a source checkout. Safe to run even
+   when there's nothing new to apply.
 5. **Restart the server** so it picks up the new code.
+
+In the Compose quick start, steps 3–5 are a single
+`docker compose up -d --build --wait`: the `migrate` service runs before
+the server restarts.
 
 There is no separate "upgrade command" beyond the same `alembic upgrade
 head` used for first-time bootstrap — migrations are additive and

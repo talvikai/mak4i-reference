@@ -432,15 +432,29 @@ _CLAUDE_MCP_ADD_STDIO = "  claude mcp add mak4i -- mak4i serve"
 def _print_connection_instructions(*, raw_token: str) -> None:
     """Generic, client-agnostic connection instructions shown after
     issuing a credential (requirements §9). Deliberately says nothing
-    Talvik-hosted-specific — `<your-mak4i-endpoint>` is a placeholder for
-    wherever *this* deployment's MCP server actually runs; any MCP client
-    that supports a static `Authorization: Bearer` header works the same
-    way, not just Claude Code."""
+    Talvik-hosted-specific; any MCP client that supports a static
+    `Authorization: Bearer` header works the same way, not just Claude
+    Code.
+
+    When `MAK4I_PUBLIC_ENDPOINT` is set (the full client-facing MCP URL,
+    the same variable and meaning `access provision` uses), this is an
+    Enterprise Self-Hosted HTTP deployment: print the exact connect
+    command for that endpoint and nothing about the local stdio path,
+    which doesn't apply there. Otherwise fall back to both generic
+    variants with `<your-mak4i-endpoint>` as a placeholder."""
+    endpoint = os.environ.get("MAK4I_PUBLIC_ENDPOINT", "").strip()
     print("\nConnect an AI client:\n")
-    print("If you're running the hosted HTTP MCP server:")
-    print(_CLAUDE_MCP_ADD_HTTP.replace("<token>", raw_token))
-    print("\nIf you're running locally via `mak4i serve` (stdio):")
-    print(_CLAUDE_MCP_ADD_STDIO)
+    if endpoint:
+        print(f"MCP endpoint: {endpoint}\n")
+        print(
+            f"  claude mcp add mak4i --transport http {endpoint} \\\n"
+            f'    --header "Authorization: Bearer {raw_token}"'
+        )
+    else:
+        print("If you're running the hosted HTTP MCP server:")
+        print(_CLAUDE_MCP_ADD_HTTP.replace("<token>", raw_token))
+        print("\nIf you're running locally via `mak4i serve` (stdio):")
+        print(_CLAUDE_MCP_ADD_STDIO)
     print(
         "\nAny MCP client that accepts a static Authorization header works the "
         "same way — swap the connect command for your client's equivalent."
@@ -785,7 +799,7 @@ def _cmd_access_provision(args: argparse.Namespace) -> int:
     return 0
 
 
-_ACCESS_DOCS_URL = "https://github.com/talvikai/mak4i-reference#hosted--server-deployments"
+_ACCESS_DOCS_URL = "https://github.com/talvikai/mak4i-reference/blob/main/docs/DEMO.md#connecting-a-client"
 
 
 def _write_access_file(path: str, *, endpoint: str, project_id: str, token: str) -> None:

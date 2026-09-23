@@ -170,8 +170,8 @@ By default this binds to loopback only — a cloud-hosted AI client
 **cannot** reach `127.0.0.1` on your machine; see the next section. An
 Enterprise Self-Hosted deployment passes `--host 0.0.0.0` (or
 `MAK4I_HOST=0.0.0.0`) explicitly to accept real network connections —
-`docs/DEPLOYMENT.md` has the full lifecycle, from a container through to
-a connected remote client.
+`docs/ENTERPRISE_SELF_HOSTED.md` walks the full lifecycle, from a clean
+VM through to connected remote clients (reference: `docs/DEPLOYMENT.md`).
 
 **Only Claude Code (stdio) has been directly verified against this
 repository's own testing.** Other CLI-based clients that support
@@ -281,10 +281,9 @@ The granular admin commands (`mak4i org create`, `mak4i project create`,
 `mak4i credential issue`, …) are unchanged and remain the right tool for
 multiple organizations, extra principals, scripting, or understanding the
 model directly. **`docs/LOCAL_SETUP.md`** covers the recommended path,
-the client connection, and the full manual path, plus scaling up to an
-Enterprise Self-Hosted instance (your own database and artifact store —
-two environment variables and a migration; deployment contract in
-`docs/DEPLOYMENT.md`). MAK4I Platform (Talvik's separately hosted,
+the client connection, and the full manual path. For a shared instance
+that several people and AI clients connect to, see "Enterprise
+Self-Hosted" below. MAK4I Platform (Talvik's separately hosted,
 managed implementation — see below) is one deployment of the open MAK4I
 protocol, not a definition of it, and not what this repository is.
 
@@ -297,8 +296,19 @@ HTTP transport, a SQL control plane (SQLite or PostgreSQL via SQLAlchemy
 + Alembic), an object-storage `ArtifactStore` abstraction, per-principal
 credential authentication over `Authorization: Bearer`, and the
 organization / project / grant model — all selected by environment
-variable, nothing baked in. See **`docs/DEPLOYMENT.md`** for the runtime
-contract and the auth model.
+variable, nothing baked in.
+
+**Quick start on one Linux VM:** **`docs/ENTERPRISE_SELF_HOSTED.md`**
+walks from a clean VM with Docker to a running server that multiple
+remote AI clients share. It uses the Developer Preview Compose stack in
+`deploy/compose/` (PostgreSQL, automatic migrations, persistent volumes,
+optional automatic HTTPS). Its bootstrap is explicit CLI commands, not
+`mak4i init`, which is for local setup only.
+
+**Deployment reference:** **`docs/DEPLOYMENT.md`** covers the runtime
+contract, auth model, proxy and storage requirements, and production
+deployment options (managed PostgreSQL, object storage, your own
+container platform).
 
 `mak4i access provision` is an operator helper for onboarding one external
 collaborator against an Enterprise Self-Hosted deployment (a new
@@ -423,7 +433,9 @@ scripts/
   migrate_gcs_layout.py  # copy-and-validate object-store layout migration
   benchmark_latency.py
 tests/
-Dockerfile     # at repo root — container build for the MCP server
+Dockerfile     # at repo root — container build for the MCP server (also runs migrations + CLI)
+deploy/
+  compose/     # Developer Preview single-VM stack: PostgreSQL, migrate, MCP server, optional Caddy TLS
 docs/
 ```
 
@@ -431,8 +443,9 @@ docs/
 
 | Document | What's in it |
 |---|---|
-| `docs/LOCAL_SETUP.md` | Running MAK4I locally and self-hosting your own instance |
-| `docs/DEPLOYMENT.md` | Deployment contract: runtime env vars, auth model, migrations, storage neutrality |
+| `docs/LOCAL_SETUP.md` | Running MAK4I locally on your own machine (`mak4i init` / `mak4i serve`) |
+| `docs/ENTERPRISE_SELF_HOSTED.md` | Enterprise Self-Hosted quick start: clean Linux VM → shared MCP server with Docker Compose |
+| `docs/DEPLOYMENT.md` | Deployment reference: runtime env vars, auth model, migrations, proxy/storage requirements, production options |
 | `docs/MVP_ARCHITECTURE.md` | Architecture design — engine, control plane, resolver, and the multi-org authorization layer |
 | `docs/DEMO.md` | Demo walkthrough: connecting a client, then a full create → evolve → history → denial tour |
 | `docs/TOKEN_MEASUREMENT.md` | Measured token/context comparison (no fixed savings % claimed) |
