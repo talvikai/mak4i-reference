@@ -2,8 +2,9 @@
 
 Everything needed to run MAK4I entirely on your own machine — the engine,
 the CLI, and a local MCP server — with no cloud account and no
-relationship to anyone else's data. The same steps scale up to
-self-hosting your own shared instance.
+relationship to anyone else's data. To run a shared instance that other
+people and remote AI clients connect to, see
+[`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md) instead.
 
 If instead you want to connect an AI client to MAK4I Platform (Talvik's
 separate, hosted product), you need none of this — see "Enterprise
@@ -441,21 +442,26 @@ mak4i history     --principal <id> --project <project_id> --lineage-id ...
 
 ### Self-hosting a shared instance
 
-Two environment changes, no code changes:
+A shared instance that several people and remote AI clients connect to is
+**Enterprise Self-Hosted**, and it's set up differently from this local
+path:
 
-- **Control plane** — point `MAK4I_CONTROL_PLANE_DB` at any
-  SQLAlchemy-supported database (e.g. a PostgreSQL URL) and migrate it
-  with `uv run alembic upgrade head`.
-- **Artifact store** — `MAK4I_STORE=gcs` with `MAK4I_GCS_BUCKET` and
-  `MAK4I_GCP_PROJECT` for a private GCS bucket instead of `LocalJSONStore`
-  (your bucket, your credentials — unrelated to Talvik's).
+- **One Linux VM:** follow
+  [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md). It uses
+  Docker Compose with PostgreSQL, automatic migrations, persistent
+  volumes (`LocalJSONStore` works fine there), and optional automatic
+  HTTPS.
+- **Any other platform** (managed PostgreSQL, object storage, your own
+  container platform): [`DEPLOYMENT.md`](DEPLOYMENT.md) has the runtime
+  contract and production deployment options.
 
-Then run with `mak4i serve --transport http --host 0.0.0.0` (or the
-equivalent `MAK4I_TRANSPORT`/`MAK4I_HOST`/`MAK4I_PORT` environment
-variables — a container needs no CLI flags at all) behind HTTPS; the
-credential in each request's `Authorization: Bearer` header is the
-authorization boundary. See `docs/DEPLOYMENT.md` for the full deployment
-contract, including `/health`/`/ready` and TLS termination.
+Don't build a shared instance from `mak4i init` / `mak4i serve`. Both are
+bound to this machine's local `.mak4i/` environment: `init` always
+provisions a local SQLite control plane, and `serve` uses that local
+environment even if `MAK4I_CONTROL_PLANE_DB` is exported. A shared
+deployment runs the server directly (`python -m mak4i.mcp_server`, the
+container's default command) and is bootstrapped with the granular
+commands from this section, pointed at its own database.
 
 SQLite / PostgreSQL / GCS are reference choices, not MAK4I protocol
 requirements — any `ControlPlaneStore` / `ArtifactStore` implementation

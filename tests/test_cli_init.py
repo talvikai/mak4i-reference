@@ -653,6 +653,29 @@ def test_access_provision_output_file_is_minimal_and_secret(hosted_env, capsys, 
         assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
 
 
+def test_access_file_documentation_link_targets_an_existing_heading():
+    """The docs URL written into a collaborator's access file must point at
+    a heading that actually exists in this repository (a previous anchor,
+    `#hosted--server-deployments`, matched nothing)."""
+    import re
+    from pathlib import Path
+
+    from mak4i import cli
+
+    match = re.fullmatch(
+        r"https://github\.com/talvikai/mak4i-reference/blob/main/(?P<path>[^#]+)#(?P<anchor>.+)",
+        cli._ACCESS_DOCS_URL,
+    )
+    assert match, cli._ACCESS_DOCS_URL
+    doc = Path(__file__).resolve().parent.parent / match["path"]
+    headings = [
+        re.sub(r"[^\w\- ]", "", line.lstrip("#").strip().lower()).replace(" ", "-")
+        for line in doc.read_text().splitlines()
+        if line.startswith("#")
+    ]
+    assert match["anchor"] in headings
+
+
 def test_access_provision_never_logs_the_raw_token(hosted_env, capsys, caplog):
     assert _provision("--endpoint", "https://hosted.example/mcp") == 0
     captured = capsys.readouterr()

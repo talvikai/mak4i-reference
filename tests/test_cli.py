@@ -437,15 +437,39 @@ def test_credential_list_never_prints_a_token_or_hash(world, capsys):
     assert any(c["display_name"] == "Claude Code" for c in listed)
 
 
-def test_credential_issue_prints_generic_not_talvik_specific_connection_instructions(world, capsys):
+def test_credential_issue_prints_generic_not_talvik_specific_connection_instructions(world, capsys, monkeypatch):
+    monkeypatch.delenv("MAK4I_PUBLIC_ENDPOINT", raising=False)
     _organization_id, owner_id, _project_id = world
     assert cli.main(
         ["credential", "issue", "--actor", owner_id, "--principal-id", owner_id, "--display-name", "Claude Code"]
     ) == 0
     output = capsys.readouterr().out
     assert "claude mcp add mak4i" in output
+    assert "<your-mak4i-endpoint>/mcp" in output
     assert "mak4i serve" in output
     assert "talvik" not in output.lower()
+
+
+def test_credential_issue_uses_public_endpoint_and_omits_stdio_guidance(world, capsys, monkeypatch):
+    """An Enterprise Self-Hosted operator sets MAK4I_PUBLIC_ENDPOINT (the
+    full client-facing MCP URL); the connect command must use it verbatim
+    and must not suggest the local stdio `mak4i serve` path."""
+    monkeypatch.setenv("MAK4I_PUBLIC_ENDPOINT", "https://mak4i.example.com/mcp")
+    _organization_id, owner_id, _project_id = world
+    assert cli.main(
+        ["credential", "issue", "--actor", owner_id, "--principal-id", owner_id, "--display-name", "Claude Code"]
+    ) == 0
+    output = capsys.readouterr().out
+    raw_token = next(
+        line.split("Authorization: Bearer ", 1)[1]
+        for line in output.splitlines()
+        if line.startswith("Authorization: Bearer ")
+    )
+    assert "claude mcp add mak4i --transport http https://mak4i.example.com/mcp" in output
+    assert f'--header "Authorization: Bearer {raw_token}"' in output
+    assert "<your-mak4i-endpoint>" not in output
+    assert "mak4i serve" not in output
+    assert "stdio" not in output
 
 
 def test_admin_list_show_commands_deny_cross_organization_access(capsys):
