@@ -639,11 +639,40 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"Principal:    {owner.principal_id}")
     print(f"Project:      {project.project_id}")
     print(f"\nLocal config: {localconfig.config_path()}  (credential in {localconfig.credentials_path().name}, gitignored)")
-    print("\nNext:")
-    print("  mak4i serve")
-    print("\nConnect an AI client (once `mak4i serve` is running):")
-    print(_CLAUDE_MCP_ADD_STDIO)
+    _print_local_transport_choices()
     return 0
+
+
+_LOCAL_HTTP_BASE = "http://127.0.0.1:8080"
+
+
+def _print_local_transport_choices() -> None:
+    """`init`'s "Next" section: the two ways to serve the environment it
+    just created. Both are `mak4i serve` against the same `.mak4i/`
+    environment — transport choices, not different storage or deployment
+    modes. The URLs are `serve --transport http`'s defaults (loopback,
+    port 8080). Deliberately never prints the raw token: HTTP clients are
+    pointed at the credentials file instead."""
+    print(
+        "\nNext: start the local MCP server. Both options below serve this same\n"
+        "local environment (same organization, project, credential, and data);\n"
+        "they differ only in how MCP clients connect."
+    )
+    print("\nOption 1 — stdio (default)")
+    print("  mak4i serve")
+    print("\n  The simple local mode: an MCP client launches MAK4I as its own process.")
+    print("  Connect Claude Code:")
+    print(_CLAUDE_MCP_ADD_STDIO)
+    print("\nOption 2 — Streamable HTTP")
+    print("  mak4i serve --transport http")
+    print("\n  One running local server that multiple local MCP clients can share.")
+    print(f"  MCP:    {_LOCAL_HTTP_BASE}/mcp")
+    print(f"  Health: {_LOCAL_HTTP_BASE}/health")
+    print(f"  Ready:  {_LOCAL_HTTP_BASE}/ready")
+    print(
+        '  Clients send "Authorization: Bearer <token>", using the token in '
+        f"{localconfig.credentials_path()}."
+    )
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:

@@ -34,8 +34,11 @@ uv sync --extra dev --no-editable
 source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 
 mak4i init
-mak4i serve
+mak4i serve                        # stdio (default) — or: mak4i serve --transport http
 ```
+
+`mak4i init` finishes by offering two ways to serve the environment it
+created. See "After `mak4i init`: choose stdio or Streamable HTTP" below.
 
 ### `uv sync --extra dev --no-editable`
 
@@ -92,6 +95,29 @@ Run it again and it does **not** overwrite — it prints the existing
 environment and exits. `mak4i init --force` provisions a fresh
 organization/project/credential and repoints the local config; the
 previous rows stay in the database (nothing is deleted).
+
+### After `mak4i init`: choose stdio or Streamable HTTP
+
+A successful `init` ends with two ways to start the local MCP server:
+
+| | Option 1 — stdio (default) | Option 2 — Streamable HTTP |
+|---|---|---|
+| Command | `mak4i serve` | `mak4i serve --transport http` |
+| When to use it | The simple local mode: an MCP client launches MAK4I as its own process and talks to it over stdin/stdout. | One running local server that **multiple local MCP clients** share, each connecting by URL. |
+| How a client connects | `claude mcp add mak4i -- mak4i serve` (the client starts the server itself) | MCP `http://127.0.0.1:8080/mcp` with header `Authorization: Bearer <token>` (the token is in `.mak4i/credentials.json`). Also `http://127.0.0.1:8080/health` and `http://127.0.0.1:8080/ready`. |
+| Network | none (not a listening endpoint) | loopback only (`127.0.0.1`), port 8080 by default |
+
+**Both options use the same initialized `.mak4i/` environment:** the same
+organization, owner principal, project, credential, SQLite control plane,
+and artifact store. Knowledge written through one is visible through the
+other. They are **transport choices**, not different storage or
+deployment modes. Switching between them needs no re-initialization.
+Stop one server and start the other.
+
+`mak4i serve` with no flag stays **stdio**. Details for each: "`mak4i
+serve`" and "Local Streamable HTTP testing" below. (A shared server for
+*remote* clients and other people is a different thing, Enterprise
+Self-Hosted. See the end of Section 3.)
 
 ### Where the local configuration is stored
 
@@ -320,7 +346,9 @@ production deployment architecture:
 # Section 2 — Connect an MCP client
 
 `mak4i serve` speaks standard MCP over stdio by default. Any MCP-capable
-client that can launch a stdio server works. With **Claude Code**, from
+client that can launch a stdio server works. (To share one running local
+server between several clients by URL instead, use Option 2 in "After
+`mak4i init`: choose stdio or Streamable HTTP".) With **Claude Code**, from
 the repo directory (where `.mak4i/` lives) and with the venv active:
 
 ```bash
