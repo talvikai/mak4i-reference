@@ -9,9 +9,11 @@ from mak4i.identity.errors import (
     AccessDeniedError,
     CredentialInvalidError,
     CredentialNotFoundError,
+    CrossOrganizationGrantError,
     LastOwnerError,
     OrganizationNotFoundError,
     PrincipalNotFoundError,
+    ProjectAlreadyExistsError,
     ProjectNotFoundError,
 )
 from mak4i.identity.models import (
@@ -133,7 +135,7 @@ class ControlPlane:
             for p in self._store.list_projects(organization_id)
         )
         if clash:
-            raise ValueError(
+            raise ProjectAlreadyExistsError(
                 f"an active project named {name!r} already exists in this organization"
             )
         project = Project(organization_id=organization_id, name=name)
@@ -175,7 +177,9 @@ class ControlPlane:
             raise ProjectNotFoundError(project_id)
         self._require_owner(actor, principal.organization_id)
         if principal.organization_id != project.organization_id:
-            raise ValueError("cannot grant a principal access to another organization's project")
+            raise CrossOrganizationGrantError(
+                "cannot grant a principal access to another organization's project"
+            )
         grant = Grant(
             principal_id=principal_id, project_id=project_id, permissions=permissions
         )

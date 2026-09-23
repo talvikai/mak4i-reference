@@ -46,6 +46,20 @@ class LastOwnerError(IdentityError):
         self.organization_id = organization_id
 
 
+class ProjectAlreadyExistsError(IdentityError, ValueError):
+    """Refused: an active project with this name already exists in the
+    organization. Also inherits `ValueError` — this condition was
+    previously raised as a bare `ValueError`, so existing callers that
+    catch `ValueError` keep working unchanged."""
+
+
+class CrossOrganizationGrantError(IdentityError, ValueError):
+    """Refused: a grant was attempted between a principal and a project
+    belonging to different organizations. Also inherits `ValueError` —
+    this condition was previously raised as a bare `ValueError`, so
+    existing callers that catch `ValueError` keep working unchanged."""
+
+
 class EntityNotFoundError(IdentityError):
     """A control-plane entity referenced by an operator/CLI operation does
     not exist. Used only on trusted operator paths — never on a
