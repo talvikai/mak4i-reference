@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 
 from mcp.server.mcpserver import MCPServer
@@ -430,10 +431,16 @@ def configure_audit_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
-def main() -> None:
+def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     """One entry point for both transports — the container's CMD and a
     developer's local `python -m mak4i.mcp_server` are the same command;
-    MAK4I_TRANSPORT picks which one runs."""
+    MAK4I_TRANSPORT picks which one runs.
+
+    `on_http_started`, if given, is called once the HTTP server has
+    actually bound its port and finished startup — never before, and never
+    if the bind fails. `mak4i serve` uses it to print its "ready" line only
+    when that is true. Without it (the container entry point), HTTP serving
+    is exactly `uvicorn.run(...)` as before."""
     configure_audit_logging()
 
     store = build_store_from_env()
@@ -456,7 +463,19 @@ def main() -> None:
         host = resolve_host()
         port = resolve_port()
         app = build_http_app(server, control_plane=control_plane, audit=audit, host=host)
-        uvicorn.run(app, host=host, port=port)
+        if on_http_started is None:
+            uvicorn.run(app, host=host, port=port)
+            return
+
+        class _NotifyingServer(uvicorn.Server):
+            # uvicorn sets `started` only after a successful bind; a failed
+            # bind exits inside `startup` before reaching this check.
+            async def startup(self, sockets=None) -> None:
+                await super().startup(sockets=sockets)
+                if self.started:
+                    on_http_started()
+
+        _NotifyingServer(uvicorn.Config(app, host=host, port=port)).run()
 
 
 if __name__ == "__main__":

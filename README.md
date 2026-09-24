@@ -149,7 +149,7 @@ that client runs on the same machine as MAK4I:
 
 ```
 AI CLI client  ─┐
-AI CLI client  ─┼──▶  http://127.0.0.1:8080/mcp  ──▶  MAK4I Reference
+AI CLI client  ─┼──▶  http://127.0.0.1:9090/mcp  ──▶  MAK4I Reference
 AI CLI client  ─┘
 ```
 
@@ -161,10 +161,15 @@ client (see "Cloud-hosted AI clients" below).
 
 ```bash
 mak4i serve --transport http
-# MCP endpoint: http://127.0.0.1:8080/mcp
-# Health:       http://127.0.0.1:8080/health
-# Readiness:    http://127.0.0.1:8080/ready
+# MCP endpoint: http://127.0.0.1:9090/mcp
+# Health:       http://127.0.0.1:9090/health
+# Readiness:    http://127.0.0.1:9090/ready
 ```
+
+9090 is the default Local HTTP port. `mak4i init` lets you choose a
+different one (`--http-port`), remembers it, and prints your actual
+URLs; `--port` overrides it for a single run. See `docs/LOCAL_SETUP.md`,
+"Choosing the Local HTTP port".
 
 By default this binds to loopback only — a cloud-hosted AI client
 **cannot** reach `127.0.0.1` on your machine; see the next section. An
@@ -198,7 +203,7 @@ https://<hostname>/mcp
    HTTPS tunnel
         │
         ▼
-MAK4I Reference (localhost:8080)
+MAK4I Reference (localhost:9090)
 ```
 
 For development/testing, exposing your local MAK4I server through an
@@ -211,7 +216,7 @@ your own machine.
 
 ```bash
 mak4i serve --transport http --host 0.0.0.0
-cloudflared tunnel --url http://127.0.0.1:8080
+cloudflared tunnel --url http://127.0.0.1:9090
 ```
 
 `--host 0.0.0.0` matters here: MAK4I's default loopback-only bind
