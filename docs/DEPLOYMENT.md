@@ -125,7 +125,10 @@ needs none of `mak4i serve`'s CLI flags; setting these directly (as the
 equivalent. Where both a CLI flag and an environment variable are given
 (only relevant when using `mak4i serve` rather than the container's
 direct entry point), the flag wins: `--transport` > `MAK4I_TRANSPORT`,
-`--host` > `MAK4I_HOST`, `--port` > `MAK4I_PORT` > `PORT` > default.
+`--host` > `MAK4I_HOST`, and `--port` > `MAK4I_PORT` > the Local HTTP port
+saved by `mak4i init` > 9090 (`mak4i serve` is Local-only and does not
+read `PORT`; the container entry point's port resolution above is
+unchanged).
 
 ### Endpoints
 

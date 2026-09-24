@@ -41,6 +41,9 @@ def clean_env(tmp_path, monkeypatch):
     # Under pytest stdin is captured (isatty() is False); make it explicit
     # so the non-interactive path is exercised deterministically.
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    # `serve --transport http` pre-checks its port; these tests stub the
+    # server, so don't probe real host ports unless a test opts in.
+    monkeypatch.setattr(cli, "_address_in_use", lambda host, port: False)
     yield
     for key in _ENV_KEYS:
         os.environ.pop(key, None)
@@ -96,9 +99,9 @@ def test_init_output_presents_both_local_transport_choices(capsys):
     assert "Option 2 — Streamable HTTP" in next_section
     assert "  mak4i serve --transport http" in next_section
     assert "multiple local MCP clients" in next_section
-    assert "MCP:    http://127.0.0.1:8080/mcp" in next_section
-    assert "Health: http://127.0.0.1:8080/health" in next_section
-    assert "Ready:  http://127.0.0.1:8080/ready" in next_section
+    assert "MCP:    http://127.0.0.1:9090/mcp" in next_section
+    assert "Health: http://127.0.0.1:9090/health" in next_section
+    assert "Ready:  http://127.0.0.1:9090/ready" in next_section
     assert str(localconfig.credentials_path()) in next_section
 
     assert next_section.index("Option 1") < next_section.index("Option 2")
@@ -107,13 +110,360 @@ def test_init_output_presents_both_local_transport_choices(capsys):
     assert localconfig.load_token() not in out
 
 
-def test_init_http_urls_match_serve_defaults_and_stdio_stays_default():
-    """The URLs `init` prints are exactly where `mak4i serve --transport
-    http` listens by default, and plain `mak4i serve` is still stdio."""
+# -- Local HTTP port: init selection, persistence, serve precedence --------
+
+
+def _interactive(monkeypatch, answers):
+    """Drive `init`'s prompts: stdin is a terminal and `input()` returns
+    `answers` in order."""
+    replies = iter(answers)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+
+
+def _serve_env(monkeypatch, *argv):
+    """Run `serve` with the server stubbed; return (exit code, the
+    environment the server would have started with, main's kwargs)."""
+    seen_env, seen_kwargs = {}, {}
+
+    def fake_main(**kwargs):
+        seen_env.update(os.environ)
+        seen_kwargs.update(kwargs)
+
+    monkeypatch.setattr("mak4i.mcp_server.main", fake_main)
+    return _run("serve", *argv), seen_env, seen_kwargs
+
+
+def test_tests_never_touch_the_developers_real_local_environment(tmp_path):
+    assert localconfig.home_dir().resolve().is_relative_to(tmp_path.resolve())
+
+
+def test_interactive_init_accepts_the_default_http_port(capsys, monkeypatch):
+    _interactive(monkeypatch, ["My Org", "Alex Dev", "Demo Project", ""])
+    assert _run("init") == 0
+    assert localconfig.load().http_port == 9090
+    assert "http://127.0.0.1:9090/mcp" in capsys.readouterr().out
+
+
+def test_interactive_init_accepts_a_custom_http_port(capsys, monkeypatch):
+    prompts = []
+    replies = iter(["WD_Tech_Soln", "WD Technology Solutions", "Milo", "9095"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": (prompts.append(prompt), next(replies))[1])
+
+    assert _run("init") == 0
+    assert "Local HTTP port [9090]: " in prompts
+    assert localconfig.load().http_port == 9095
+
+
+def _interactive_then_eof(monkeypatch, answers):
+    """Like `_interactive`, but `input()` raises EOFError (Ctrl-D) once
+    `answers` run out."""
+    replies = iter(answers)
+
+    def fake_input(prompt=""):
+        try:
+            return next(replies)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def _assert_cancelled_cleanly(capsys, exit_code):
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "Initialization cancelled." in err
+    assert "Traceback" not in err and "EOFError" not in err
+    assert "Initializing local MAK4I" not in err  # provisioning never began
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        [],  # EOF at "Organization name"
+        ["My Org"],  # EOF at "Your display name"
+        ["My Org", "Alex Dev"],  # EOF at "First project name"
+        ["My Org", "Alex Dev", "Demo Project"],  # EOF at "Local HTTP port"
+    ],
+    ids=["org-name", "display-name", "project-name", "http-port"],
+)
+def test_eof_at_any_init_prompt_cancels_cleanly_without_provisioning(capsys, monkeypatch, answers):
+    _interactive_then_eof(monkeypatch, answers)
+    _assert_cancelled_cleanly(capsys, _run("init"))
+    assert not localconfig.home_dir().exists()  # no partial Local environment
+    assert localconfig.load_token() is None
+
+
+def test_eof_at_http_port_prompt_after_an_invalid_entry_cancels_cleanly(capsys, monkeypatch):
+    _interactive_then_eof(monkeypatch, ["My Org", "Alex Dev", "Demo Project", "abc"])
+    _assert_cancelled_cleanly(capsys, _run("init"))
+    assert not localconfig.home_dir().exists()
+
+
+def test_eof_at_http_port_prompt_when_names_came_from_flags(capsys, monkeypatch):
+    _interactive_then_eof(monkeypatch, [])  # only the port is prompted for
+    _assert_cancelled_cleanly(capsys, _init())
+    assert not localconfig.home_dir().exists()
+
+
+def test_eof_during_init_force_leaves_the_existing_environment_untouched(capsys, monkeypatch):
+    assert _init() == 0
+    config_before = localconfig.config_path().read_bytes()
+    token_before = localconfig.load_token()
+    capsys.readouterr()
+
+    _interactive_then_eof(monkeypatch, ["New Org"])
+    _assert_cancelled_cleanly(capsys, _run("init", "--force"))
+    assert localconfig.config_path().read_bytes() == config_before
+    assert localconfig.load_token() == token_before
+
+
+def test_interactive_init_reprompts_on_an_invalid_http_port(capsys, monkeypatch):
+    _interactive(monkeypatch, ["My Org", "Alex Dev", "Demo Project", "abc", "70000", "0", "9095"])
+    assert _run("init") == 0
+    err = capsys.readouterr().err
+    assert "invalid Local HTTP port 'abc'" in err
+    assert "invalid Local HTTP port '70000'" in err
+    assert "invalid Local HTTP port '0'" in err
+    assert "Traceback" not in err
+    assert localconfig.load().http_port == 9095
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "90.5", ""])
+def test_invalid_http_port_flag_is_rejected_cleanly_before_provisioning(capsys, bad):
+    exit_code = _init(extra=("--http-port", bad))
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "error: invalid Local HTTP port" in err
+    assert "1 to 65535" in err
+    assert "Traceback" not in err
+    assert not localconfig.exists()  # nothing was provisioned
+
+
+@pytest.mark.parametrize("edge", ["1", "65535"])
+def test_http_port_range_edges_are_accepted(edge):
+    assert _init(extra=("--http-port", edge)) == 0
+    assert localconfig.load().http_port == int(edge)
+
+
+def test_non_interactive_init_http_port_flag_is_persisted(capsys):
+    assert _init(extra=("--http-port", "9095")) == 0
+    assert localconfig.load().http_port == 9095
+    raw = json.loads(localconfig.config_path().read_text())
+    assert raw["http_port"] == 9095
+
+
+def test_non_interactive_init_without_http_port_defaults_to_9090(capsys):
+    assert _init() == 0
+    assert json.loads(localconfig.config_path().read_text())["http_port"] == 9090
+
+
+def test_init_output_uses_the_configured_http_port(capsys):
+    assert _init(extra=("--http-port", "9095")) == 0
+    out = capsys.readouterr().out
+    next_section = out[out.index("Next:"):]
+    assert "MCP:    http://127.0.0.1:9095/mcp" in next_section
+    assert "Health: http://127.0.0.1:9095/health" in next_section
+    assert "Ready:  http://127.0.0.1:9095/ready" in next_section
+    assert "9090" not in next_section
+    assert "8080" not in next_section
+
+
+def _strip_http_port_from_config():
+    """Rewrite the saved config the way a pre-`http_port` release wrote it."""
+    raw = json.loads(localconfig.config_path().read_text())
+    del raw["http_port"]
+    localconfig.config_path().write_text(json.dumps(raw, indent=2) + "\n")
+
+
+def test_existing_config_without_http_port_still_loads_and_defaults_to_9090(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    _strip_http_port_from_config()
+
+    config = localconfig.load()
+    assert config.http_port is None
+    assert localconfig.effective_http_port(config) == 9090
+
+    capsys.readouterr()
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9090"
+    assert "http://127.0.0.1:9090/mcp" in capsys.readouterr().err
+    assert "http_port" not in json.loads(localconfig.config_path().read_text())  # no silent migration
+
+
+def test_existing_init_message_shows_the_http_port(capsys):
+    assert _init(extra=("--http-port", "9095")) == 0
+    capsys.readouterr()
+    assert _init() == 0
+    assert "HTTP port:    9095" in capsys.readouterr().out
+
+
+def test_serve_http_uses_the_persisted_port(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    capsys.readouterr()
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9095"
+    err = capsys.readouterr().err
+    assert "Port: 9095" in err
+    assert "MCP endpoint: http://127.0.0.1:9095/mcp" in err
+
+
+def test_serve_port_flag_overrides_the_persisted_port_for_one_run_only(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    before = localconfig.config_path().read_bytes()
+
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http", "--port", "9100")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9100"
+    assert localconfig.config_path().read_bytes() == before  # config not mutated
+
+    monkeypatch.delenv("MAK4I_PORT", raising=False)  # fresh process for the next run
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9095"
+
+
+def test_serve_explicit_mak4i_port_env_overrides_the_persisted_port(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    monkeypatch.setenv("MAK4I_PORT", "9200")
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9200"
+
+
+def test_serve_port_flag_beats_mak4i_port_env_and_persisted_port(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    monkeypatch.setenv("MAK4I_PORT", "9200")
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http", "--port", "9300")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9300"
+
+
+def test_serve_ignores_the_generic_container_port_env_var(capsys, monkeypatch):
+    """`PORT` is a container-platform convention, not a Local setting: an
+    ambient `PORT` in a developer shell must not override the Local port."""
+    assert _init(extra=("--http-port", "9095")) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("PORT", "7000")
+    exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert env["MAK4I_PORT"] == "9095"
+    assert "ignoring PORT from the shell" in capsys.readouterr().err
+
+
+def test_serve_stdio_stays_default_and_ignores_the_http_port(capsys, monkeypatch):
+    assert _init(extra=("--http-port", "9095")) == 0
+    capsys.readouterr()
+    exit_code, env, kwargs = _serve_env(monkeypatch)
+    assert exit_code == 0
+    assert env["MAK4I_TRANSPORT"] == "stdio"
+    assert "MAK4I_PORT" not in env
+    assert kwargs == {}  # stdio starts exactly as before
+    err = capsys.readouterr().err
+    assert "Transport: stdio" in err
+    assert "MCP server ready." in err
+
+
+def test_serve_http_reports_ready_only_from_the_started_callback(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    exit_code, _env, kwargs = _serve_env(monkeypatch, "--transport", "http")
+    assert exit_code == 0
+    assert "MCP server ready." not in capsys.readouterr().err  # not before startup
+    kwargs["on_http_started"]()
+    assert "MCP server ready." in capsys.readouterr().err
+
+
+_REAL_ADDRESS_IN_USE = cli._address_in_use
+
+
+def _occupied_port():
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen()
+    return sock, sock.getsockname()[1]
+
+
+def test_serve_port_conflict_gives_a_clear_error_and_never_reports_ready(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    monkeypatch.setattr(cli, "_address_in_use", _REAL_ADDRESS_IN_USE)
+    sock, port = _occupied_port()
+    with sock:
+        exit_code, env, _ = _serve_env(monkeypatch, "--transport", "http", "--port", str(port))
+    assert exit_code == 1
+    assert env == {}  # the server was never started
+    err = capsys.readouterr().err
+    assert "ERROR: MAK4I could not start." in err
+    assert f"127.0.0.1:{port} is already in use." in err
+    assert f"mak4i serve --transport http --port {port + 1}" in err
+    assert "MCP server ready." not in err
+    assert "Traceback" not in err
+
+
+def test_address_in_use_is_false_for_a_free_port():
+    sock, port = _occupied_port()
+    sock.close()
+    assert _REAL_ADDRESS_IN_USE("127.0.0.1", port) is False
+
+
+def test_server_never_calls_started_callback_when_bind_fails(tmp_path, monkeypatch):
+    """At the server level (no CLI pre-check): if uvicorn can't bind, the
+    started callback — which prints "ready" — must not fire."""
     from mak4i import mcp_server
 
-    assert cli._LOCAL_HTTP_BASE == f"http://{mcp_server.resolve_host()}:{mcp_server.resolve_port()}"
-    assert mcp_server.resolve_transport() == "stdio"
+    monkeypatch.setenv("MAK4I_TRANSPORT", "http")
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'cp.db'}")
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_CREATE_TABLES", "1")
+    monkeypatch.setenv("MAK4I_STORE", "local")
+    monkeypatch.setenv("MAK4I_LOCAL_STORE_DIR", str(tmp_path / "artifacts"))
+    sock, port = _occupied_port()
+    monkeypatch.setenv("MAK4I_PORT", str(port))
+    started = []
+    with sock, pytest.raises(SystemExit):
+        mcp_server.main(on_http_started=lambda: started.append(True))
+    assert started == []
+
+
+# -- Enterprise / container entry point is unchanged ----------------------
+
+
+def test_container_entry_point_port_default_is_unchanged(monkeypatch):
+    from mak4i import mcp_server
+
+    monkeypatch.delenv("MAK4I_PORT", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    assert mcp_server.resolve_port() == 8080
+    monkeypatch.setenv("PORT", "7000")
+    assert mcp_server.resolve_port() == 7000
+
+
+def test_container_entry_point_ignores_the_local_http_port(tmp_path, monkeypatch, capsys):
+    """`python -m mak4i.mcp_server` (the container CMD) must not pick up a
+    Local `.mak4i/` http_port, and still serves via plain `uvicorn.run`."""
+    import uvicorn
+
+    from mak4i import mcp_server
+
+    assert _init(extra=("--http-port", "9095")) == 0  # an ambient Local config exists
+    for key in _ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MAK4I_TRANSPORT", "http")
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'deploy.db'}")
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_CREATE_TABLES", "1")
+    monkeypatch.setenv("MAK4I_STORE", "local")
+    monkeypatch.setenv("MAK4I_LOCAL_STORE_DIR", str(tmp_path / "deploy-artifacts"))
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: calls.append((host, port)))
+
+    mcp_server.main()
+    assert calls == [("127.0.0.1", 8080)]
 
 
 def test_init_creates_read_write_grant(capsys):
@@ -200,7 +550,7 @@ def test_init_non_interactive_missing_value_fails_clearly(capsys):
 
 def test_init_interactive_prompts(capsys, monkeypatch):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    answers = iter(["Prompted Org", "Prompted Dev", "Prompted Project"])
+    answers = iter(["Prompted Org", "Prompted Dev", "Prompted Project", ""])  # "" = default port
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     assert _run("init") == 0
     config = localconfig.load()
@@ -213,7 +563,7 @@ def test_init_interactive_prompts(capsys, monkeypatch):
 
 def test_serve_before_init_fails_clearly(capsys, monkeypatch):
     called = []
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: called.append(True))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: called.append(True))
     exit_code = _run("serve")
     assert exit_code == 1
     err = capsys.readouterr().err
@@ -229,7 +579,7 @@ def test_serve_reads_local_config_and_starts_the_existing_server(capsys, monkeyp
     capsys.readouterr()
 
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve") == 0
     assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
@@ -248,7 +598,7 @@ def test_serve_respects_an_explicit_transport_override(capsys, monkeypatch):
     capsys.readouterr()
     monkeypatch.setenv("MAK4I_TRANSPORT", "streamable-http")
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
     assert _run("serve") == 0
     assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
 
@@ -262,7 +612,7 @@ def test_serve_ignores_a_stale_exported_token(capsys, caplog, monkeypatch):
 
     monkeypatch.setenv("MAK4I_TOKEN", "mak4i_STALE0000000000000000000000000000000000")
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve") == 0
     assert seen_env["MAK4I_TOKEN"] == real_token  # local wins, deterministically
@@ -281,7 +631,7 @@ def test_serve_ignores_a_stale_exported_control_plane_db(capsys, monkeypatch, tm
 
     monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'somewhere-else.db'}")
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve") == 0
     assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
@@ -503,7 +853,7 @@ def test_serve_transport_flag_selects_http(capsys, monkeypatch):
     assert _init() == 0
     capsys.readouterr()
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http") == 0
     assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
@@ -519,7 +869,7 @@ def test_serve_transport_flag_accepts_the_streamable_http_spelling_too(capsys, m
     assert _init() == 0
     capsys.readouterr()
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "streamable-http") == 0
     assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
@@ -530,7 +880,7 @@ def test_serve_transport_flag_overrides_the_environment_variable(capsys, monkeyp
     capsys.readouterr()
     monkeypatch.setenv("MAK4I_TRANSPORT", "stdio")
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http") == 0
     assert seen_env["MAK4I_TRANSPORT"] == "streamable-http"
@@ -541,20 +891,20 @@ def test_serve_http_defaults_to_loopback_host_and_shows_the_endpoint(capsys, mon
     assert _init() == 0
     capsys.readouterr()
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http") == 0
     err = capsys.readouterr().err
     assert "Host: 127.0.0.1" in err
-    assert "Port: 8080" in err
-    assert "MCP endpoint: http://127.0.0.1:8080/mcp" in err
+    assert "Port: 9090" in err
+    assert "MCP endpoint: http://127.0.0.1:9090/mcp" in err
 
 
 def test_serve_host_flag_overrides_the_loopback_default(capsys, monkeypatch):
     assert _init() == 0
     capsys.readouterr()
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http", "--host", "0.0.0.0") == 0
     assert seen_env["MAK4I_HOST"] == "0.0.0.0"
@@ -566,7 +916,7 @@ def test_serve_port_flag_overrides_default(capsys, monkeypatch):
     assert _init() == 0
     capsys.readouterr()
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http", "--port", "9000") == 0
     assert seen_env["MAK4I_PORT"] == "9000"
@@ -583,7 +933,7 @@ def test_serve_port_flag_overrides_mak4i_port_and_port_env_vars(capsys, monkeypa
     monkeypatch.setenv("PORT", "7000")
     monkeypatch.setenv("MAK4I_PORT", "7100")
     seen_env = {}
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: seen_env.update(os.environ))
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
 
     assert _run("serve", "--transport", "http", "--port", "7200") == 0
     assert seen_env["MAK4I_PORT"] == "7200"
@@ -608,7 +958,7 @@ def test_serve_stdio_banner_is_unchanged_by_the_new_flags(capsys, monkeypatch):
     grow a Host/Port/endpoint section it never had."""
     assert _init() == 0
     capsys.readouterr()
-    monkeypatch.setattr("mak4i.mcp_server.main", lambda: None)
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: None)
 
     assert _run("serve") == 0
     err = capsys.readouterr().err

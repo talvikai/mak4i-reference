@@ -104,8 +104,8 @@ A successful `init` ends with two ways to start the local MCP server:
 |---|---|---|
 | Command | `mak4i serve` | `mak4i serve --transport http` |
 | When to use it | The simple local mode: an MCP client launches MAK4I as its own process and talks to it over stdin/stdout. | One running local server that **multiple local MCP clients** share, each connecting by URL. |
-| How a client connects | `claude mcp add mak4i -- mak4i serve` (the client starts the server itself) | MCP `http://127.0.0.1:8080/mcp` with header `Authorization: Bearer <token>` (the token is in `.mak4i/credentials.json`). Also `http://127.0.0.1:8080/health` and `http://127.0.0.1:8080/ready`. |
-| Network | none (not a listening endpoint) | loopback only (`127.0.0.1`), port 8080 by default |
+| How a client connects | `claude mcp add mak4i -- mak4i serve` (the client starts the server itself) | MCP `http://127.0.0.1:<port>/mcp` with header `Authorization: Bearer <token>` (the token is in `.mak4i/credentials.json`). Also `/health` and `/ready` on the same port. `init` prints these URLs with your actual port. |
+| Network | none (not a listening endpoint) | loopback only (`127.0.0.1`), on your Local HTTP port (chosen at `init`, default **9090**) |
 
 **Both options use the same initialized `.mak4i/` environment:** the same
 organization, owner principal, project, credential, SQLite control plane,
@@ -119,11 +119,69 @@ serve`" and "Local Streamable HTTP testing" below. (A shared server for
 *remote* clients and other people is a different thing, Enterprise
 Self-Hosted. See the end of Section 3.)
 
+### Choosing the Local HTTP port
+
+`mak4i init` asks for the port Option 2 listens on. Press Enter for the
+default, **9090**:
+
+```
+Organization name: WD_Tech_Soln
+Your display name: WD Technology Solutions
+First project name: Milo
+Local HTTP port [9090]: 9095
+```
+
+Non-interactively, pass `--http-port` (omit it for 9090):
+
+```bash
+mak4i init --org-name WD_Tech_Soln --display-name "WD Technology Solutions" \
+  --project-name Milo --http-port 9095
+```
+
+The value must be a whole number from 1 to 65535. An invalid value is
+rejected with a clear message: interactively you're asked again; with
+`--http-port`, `init` stops before creating anything.
+
+**The port is remembered.** It's saved as `http_port` in
+`.mak4i/config.json`, so every later `mak4i serve --transport http`
+listens there with no flag. With the example above, that's
+`http://127.0.0.1:9095/mcp`. It has no effect on stdio.
+
+**Overriding it for one run:**
+
+| To | Do |
+|---|---|
+| use another port for this run only | `mak4i serve --transport http --port 9100`. The saved port is **not** changed; the next plain `mak4i serve --transport http` uses 9095 again. |
+| override it from the environment | `MAK4I_PORT=9200 mak4i serve --transport http` |
+| change it permanently | edit `"http_port"` in `.mak4i/config.json` |
+
+Precedence for `mak4i serve --transport http`: `--port` → `MAK4I_PORT` →
+the saved `http_port` → 9090. The generic `PORT` variable (a
+container-platform convention) is not used by `mak4i serve`; if it's set
+in your shell, `serve` notes that it's ignoring it.
+
+A config created before this setting existed has no `http_port`. It keeps
+working as-is and uses 9090; there's no need to re-run `init`.
+
+**If the port is already in use**, `serve` stops without starting and
+without choosing a different port. MCP clients are configured with a
+fixed URL, so a silently changed port would break them:
+
+```
+ERROR: MAK4I could not start.
+
+127.0.0.1:9095 is already in use.
+
+Stop the process using that port or choose another port:
+
+  mak4i serve --transport http --port 9096
+```
+
 ### Where the local configuration is stored
 
 | Path | Contents | Mode |
 |---|---|---|
-| `.mak4i/config.json` | organization / principal / project / credential **ids and names** + resolved backend settings | 0644 — no secret |
+| `.mak4i/config.json` | organization / principal / project / credential **ids and names** + resolved backend settings + the Local HTTP port (`http_port`) | 0644 — no secret |
 | `.mak4i/credentials.json` | `{"token": "mak4i_…"}` — the raw credential | **0600** |
 | `.mak4i/control-plane.db` | local SQLite control plane | stores only the credential's SHA-256 **hash** |
 | `.mak4i/artifacts/` | local `LocalJSONStore` | directory 0700 |
@@ -178,21 +236,27 @@ mak4i serve --transport http
 MAK4I local server starting...
 Organization: My Org
 Project: Demo Project
-
 Transport: Streamable HTTP
 Host: 127.0.0.1
-Port: 8080
-MCP endpoint: http://127.0.0.1:8080/mcp
+Port: 9090
+MCP endpoint: http://127.0.0.1:9090/mcp
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+StreamableHTTP session manager started
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:9090 (Press CTRL+C to quit)
 
 MCP server ready.
 ```
 
+(Shown with the default port; yours is whatever `init` saved.) "MCP
+server ready." appears only once the server has actually bound the port
+and started.
+
 This is the **same** `MAK4IEngine`, the **same** six tools, and the
 **same** credential-based authentication as stdio — only the transport
-differs. `--host`/`--port` (or `MAK4I_HOST`/`MAK4I_PORT`) override the
-defaults; `--port` beats `$MAK4I_PORT` beats `$PORT` beats the built-in
-default, so an existing `$PORT` in your shell (common on PaaS-style
-setups) still works unless you override it. `'http'` and
+differs. `--host` (or `MAK4I_HOST`) overrides the loopback default; the
+port comes from "Choosing the Local HTTP port" above. `'http'` and
 `'streamable-http'` are accepted interchangeably everywhere this reads —
 `streamable-http` is kept for compatibility with existing container
 configuration (`docs/DEPLOYMENT.md`).
@@ -206,8 +270,8 @@ Three plain endpoints, once it's running:
 | `POST /mcp` | `Authorization: Bearer <credential>` | the MCP Streamable HTTP endpoint |
 
 ```bash
-curl http://127.0.0.1:8080/health   # -> ok
-curl http://127.0.0.1:8080/ready    # -> ready
+curl http://127.0.0.1:9090/health   # -> ok      (use your Local HTTP port)
+curl http://127.0.0.1:9090/ready    # -> ready
 ```
 
 `/mcp` requires the same bearer credential `.mak4i/credentials.json`
@@ -256,7 +320,7 @@ local testing with one requires two things together:
 
 ```bash
 mak4i serve --transport http --host 0.0.0.0
-cloudflared tunnel --url http://127.0.0.1:8080
+cloudflared tunnel --url http://127.0.0.1:9090   # your Local HTTP port
 ```
 
 Two details matter here, both confirmed by direct testing, not just in
@@ -277,7 +341,7 @@ theory:
    address it connects to — `127.0.0.1:<port>` is always the correct
    target there, regardless of what the server bound to (a server bound
    to `0.0.0.0` still answers on `127.0.0.1`). Appending a path (e.g.
-   `http://127.0.0.1:8080/mcp` instead of `http://127.0.0.1:8080`) is
+   `http://127.0.0.1:9090/mcp` instead of `http://127.0.0.1:9090`) is
    incorrect: `--url` is the origin every incoming path gets proxied
    onto, so a path there gets appended a second time on top of whatever
    path the actual request already has, breaking routing.

@@ -28,12 +28,17 @@ import stat
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 _DIR_ENV_VAR = "MAK4I_HOME"
 _DEFAULT_DIR = ".mak4i"
 _CONFIG_FILE = "config.json"
 _CREDENTIALS_FILE = "credentials.json"
+
+DEFAULT_HTTP_PORT = 9090
+"""Local-only default for `mak4i serve --transport http`. Distinct from
+`mcp_server.resolve_port()`'s own default, which the container/Enterprise
+entry point (`python -m mak4i.mcp_server`) keeps using unchanged."""
 
 
 class LocalConfig(BaseModel):
@@ -53,6 +58,16 @@ class LocalConfig(BaseModel):
     store: str
     local_store_dir: str | None = None
     created_at: str
+    # Optional so configs written before this field existed still load;
+    # `effective_http_port` supplies the default for them.
+    http_port: int | None = Field(default=None, ge=1, le=65535)
+
+
+def effective_http_port(config: LocalConfig) -> int:
+    """The Local Streamable HTTP port this environment uses when neither
+    `--port` nor `MAK4I_PORT` is given: the port chosen at `mak4i init`, or
+    `DEFAULT_HTTP_PORT` for a config that predates the setting."""
+    return config.http_port if config.http_port is not None else DEFAULT_HTTP_PORT
 
 
 def home_dir() -> Path:

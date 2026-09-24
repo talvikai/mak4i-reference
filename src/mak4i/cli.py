@@ -24,8 +24,10 @@ credential.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import socket
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -541,6 +543,39 @@ def _prompt(label: str, provided: str | None) -> str:
         print("  (a value is required)", file=sys.stderr)
 
 
+def _parse_http_port(raw: str) -> int:
+    """A Local HTTP port as typed by the user: an integer in 1–65535.
+    Raises `_CliError` (clean message, no traceback) otherwise."""
+    value = raw.strip()
+    try:
+        port = int(value)
+    except ValueError:
+        port = None
+    if port is None or not 1 <= port <= 65535:
+        raise _CliError(f"invalid Local HTTP port {value!r}: must be a whole number from 1 to 65535")
+    return port
+
+
+def _prompt_http_port(provided: str | None) -> int:
+    """The Local HTTP port for `init`: `--http-port` if given, else asked
+    interactively with `DEFAULT_HTTP_PORT` on Enter, else (non-interactive,
+    flag omitted) the default — unlike the name prompts, this one has a
+    sensible default, so scripted callers aren't required to pass it."""
+    if provided is not None:
+        return _parse_http_port(provided)
+    default = localconfig.DEFAULT_HTTP_PORT
+    if not sys.stdin.isatty():
+        return default
+    while True:
+        value = input(f"Local HTTP port [{default}]: ").strip()
+        if not value:
+            return default
+        try:
+            return _parse_http_port(value)
+        except _CliError as exc:
+            print(f"  ({exc})", file=sys.stderr)
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     """Local/self-hosted first-run bootstrap: one organization, one owner
     principal, one project, a read+write grant, one credential — then save
@@ -555,14 +590,27 @@ def _cmd_init(args: argparse.Namespace) -> int:
             print(f"  Organization: {existing.organization_name} ({existing.organization_id})")
             print(f"  Principal:    {existing.owner_principal_id}")
             print(f"  Project:      {existing.project_name} ({existing.project_id})")
+            print(f"  HTTP port:    {localconfig.effective_http_port(existing)}")
             print(f"  Config:       {localconfig.config_path()}")
         print("\nRun `mak4i serve` to start it, or `mak4i init --force` to")
         print("provision a fresh one (leaves the existing data in place).")
         return 0
 
-    organization_name = _prompt("Organization name", args.org_name)
-    owner_display_name = _prompt("Your display name", args.display_name)
-    project_name = _prompt("First project name", args.project_name)
+    # Validate an explicit --http-port before asking anything else, so a
+    # typo fails immediately rather than after the other prompts.
+    if args.http_port is not None:
+        _parse_http_port(args.http_port)
+
+    # EOF (Ctrl-D) at any prompt cancels cleanly. Every prompt runs before
+    # anything is provisioned or written, so there's nothing to undo.
+    try:
+        organization_name = _prompt("Organization name", args.org_name)
+        owner_display_name = _prompt("Your display name", args.display_name)
+        project_name = _prompt("First project name", args.project_name)
+        http_port = _prompt_http_port(args.http_port)
+    except EOFError:
+        print("\nInitialization cancelled.", file=sys.stderr)
+        return 1
 
     print("\nInitializing local MAK4I...\n", file=sys.stderr)
 
@@ -629,6 +677,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         store=os.environ["MAK4I_STORE"],
         local_store_dir=os.environ.get("MAK4I_LOCAL_STORE_DIR"),
         created_at=datetime.now(timezone.utc).isoformat(),
+        http_port=http_port,
     )
     localconfig.save(config)
     localconfig.save_token(raw_token)
@@ -639,20 +688,22 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"Principal:    {owner.principal_id}")
     print(f"Project:      {project.project_id}")
     print(f"\nLocal config: {localconfig.config_path()}  (credential in {localconfig.credentials_path().name}, gitignored)")
-    _print_local_transport_choices()
+    _print_local_transport_choices(http_port)
     return 0
 
 
-_LOCAL_HTTP_BASE = "http://127.0.0.1:8080"
+_LOCAL_HTTP_HOST = "127.0.0.1"
 
 
-def _print_local_transport_choices() -> None:
+def _print_local_transport_choices(http_port: int) -> None:
     """`init`'s "Next" section: the two ways to serve the environment it
     just created. Both are `mak4i serve` against the same `.mak4i/`
     environment — transport choices, not different storage or deployment
-    modes. The URLs are `serve --transport http`'s defaults (loopback,
-    port 8080). Deliberately never prints the raw token: HTTP clients are
-    pointed at the credentials file instead."""
+    modes. The URLs are where `serve --transport http` listens by default:
+    loopback, on the Local HTTP port saved in the config. Deliberately
+    never prints the raw token: HTTP clients are pointed at the
+    credentials file instead."""
+    base = f"http://{_LOCAL_HTTP_HOST}:{http_port}"
     print(
         "\nNext: start the local MCP server. Both options below serve this same\n"
         "local environment (same organization, project, credential, and data);\n"
@@ -666,9 +717,9 @@ def _print_local_transport_choices() -> None:
     print("\nOption 2 — Streamable HTTP")
     print("  mak4i serve --transport http")
     print("\n  One running local server that multiple local MCP clients can share.")
-    print(f"  MCP:    {_LOCAL_HTTP_BASE}/mcp")
-    print(f"  Health: {_LOCAL_HTTP_BASE}/health")
-    print(f"  Ready:  {_LOCAL_HTTP_BASE}/ready")
+    print(f"  MCP:    {base}/mcp")
+    print(f"  Health: {base}/health")
+    print(f"  Ready:  {base}/ready")
     print(
         '  Clients send "Authorization: Bearer <token>", using the token in '
         f"{localconfig.credentials_path()}."
@@ -735,24 +786,90 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     transport = mcp_server.resolve_transport()
     os.environ["MAK4I_TRANSPORT"] = transport  # write back the normalized value
 
-    # Banner goes to stderr — for the stdio transport, stdout carries the
-    # MCP JSON-RPC stream and must not be written to.
+    if transport == "stdio":
+        # Banner goes to stderr — for the stdio transport, stdout carries
+        # the MCP JSON-RPC stream and must not be written to.
+        _print_serve_banner(config)
+        print("Transport: stdio", file=sys.stderr)
+        print("\nMCP server ready.", file=sys.stderr)
+        mcp_server.main()
+        return 0
+
+    # Local HTTP port precedence: --port (already folded into MAK4I_PORT
+    # above) > an explicitly exported MAK4I_PORT > the port saved by
+    # `mak4i init` > DEFAULT_HTTP_PORT (the last two via
+    # `effective_http_port`). Writing the local value into MAK4I_PORT
+    # means `mcp_server.resolve_port()` — shared with the container entry
+    # point, whose own default is untouched — returns it unchanged. The
+    # generic container `PORT` convention is not consulted here: `serve`
+    # only ever runs a Local environment. Never written back to config.
+    if not os.environ.get("MAK4I_PORT"):
+        local_port = localconfig.effective_http_port(config)
+        if os.environ.get("PORT") and os.environ["PORT"] != str(local_port):
+            print(
+                f"note: using the local HTTP port {local_port}; ignoring PORT from the "
+                "shell (use --port or MAK4I_PORT to override).",
+                file=sys.stderr,
+            )
+        os.environ["MAK4I_PORT"] = str(local_port)
+
+    host = mcp_server.resolve_host()
+    port = mcp_server.resolve_port()
+    if _address_in_use(host, port):
+        alternative = port + 1 if port < 65535 else port - 1
+        print(
+            "ERROR: MAK4I could not start.\n\n"
+            f"{host}:{port} is already in use.\n\n"
+            "Stop the process using that port or choose another port:\n\n"
+            f"  mak4i serve --transport http --port {alternative}",
+            file=sys.stderr,
+        )
+        return 1
+
+    _print_serve_banner(config)
+    print("Transport: Streamable HTTP", file=sys.stderr)
+    print(f"Host: {host}", file=sys.stderr)
+    print(f"Port: {port}", file=sys.stderr)
+    print(f"MCP endpoint: http://{host}:{port}/mcp", file=sys.stderr)
+    # Only once the server has actually bound the port and started.
+    mcp_server.main(on_http_started=lambda: print("\nMCP server ready.", file=sys.stderr, flush=True))
+    return 0
+
+
+def _print_serve_banner(config: localconfig.LocalConfig) -> None:
     print("MAK4I local server starting...", file=sys.stderr)
     print(f"Organization: {config.organization_name}", file=sys.stderr)
     print(f"Project: {config.project_name}", file=sys.stderr)
-    if transport == "stdio":
-        print("Transport: stdio", file=sys.stderr)
-    else:
-        host = mcp_server.resolve_host()
-        port = mcp_server.resolve_port()
-        print("Transport: Streamable HTTP", file=sys.stderr)
-        print(f"Host: {host}", file=sys.stderr)
-        print(f"Port: {port}", file=sys.stderr)
-        print(f"MCP endpoint: http://{host}:{port}/mcp", file=sys.stderr)
-    print("\nMCP server ready.", file=sys.stderr)
 
-    mcp_server.main()
-    return 0
+
+def _address_in_use(host: str, port: int) -> bool:
+    """Whether binding `host:port` would fail with "address already in
+    use", checked the way uvicorn will bind it (asyncio's `create_server`:
+    every address `host` resolves to, SO_REUSEADDR on POSIX, IPv6 sockets
+    v6-only) so the answer matches what uvicorn is about to see. Any other
+    bind problem is left for uvicorn to report. A quick pre-check only —
+    the server still fails safely (and never reports ready) if the port is
+    taken between this check and its own bind."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+    except OSError:
+        return False
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        try:
+            sock = socket.socket(family, socktype, proto)
+        except OSError:
+            continue
+        with sock:
+            if os.name == "posix":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                sock.bind(sockaddr)
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return True
+    return False
 
 
 def _cmd_access_provision(args: argparse.Namespace) -> int:
@@ -864,6 +981,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--display-name", help="your display name (prompted if omitted)")
     init.add_argument("--project-name", help="first project name (prompted if omitted)")
     init.add_argument(
+        "--http-port",
+        help="Local HTTP port for `mak4i serve --transport http`, saved in the local config "
+        "(prompted if omitted and interactive; default 9090)",
+    )
+    init.add_argument(
         "--force",
         action="store_true",
         help="provision a fresh local environment even if one already exists (existing data is left in place)",
@@ -893,7 +1015,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--port",
         type=int,
-        help="bind port for --transport http (default: 8080, or $MAK4I_PORT/$PORT).",
+        help=(
+            "bind port for --transport http, for this run only (default: $MAK4I_PORT, "
+            "else the Local HTTP port saved by `mak4i init`, else 9090)."
+        ),
     )
     serve.set_defaults(func=_cmd_serve)
 
