@@ -156,6 +156,70 @@ def test_interactive_init_accepts_a_custom_http_port(capsys, monkeypatch):
     assert localconfig.load().http_port == 9095
 
 
+def _interactive_then_eof(monkeypatch, answers):
+    """Like `_interactive`, but `input()` raises EOFError (Ctrl-D) once
+    `answers` run out."""
+    replies = iter(answers)
+
+    def fake_input(prompt=""):
+        try:
+            return next(replies)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def _assert_cancelled_cleanly(capsys, exit_code):
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "Initialization cancelled." in err
+    assert "Traceback" not in err and "EOFError" not in err
+    assert "Initializing local MAK4I" not in err  # provisioning never began
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        [],  # EOF at "Organization name"
+        ["My Org"],  # EOF at "Your display name"
+        ["My Org", "Alex Dev"],  # EOF at "First project name"
+        ["My Org", "Alex Dev", "Demo Project"],  # EOF at "Local HTTP port"
+    ],
+    ids=["org-name", "display-name", "project-name", "http-port"],
+)
+def test_eof_at_any_init_prompt_cancels_cleanly_without_provisioning(capsys, monkeypatch, answers):
+    _interactive_then_eof(monkeypatch, answers)
+    _assert_cancelled_cleanly(capsys, _run("init"))
+    assert not localconfig.home_dir().exists()  # no partial Local environment
+    assert localconfig.load_token() is None
+
+
+def test_eof_at_http_port_prompt_after_an_invalid_entry_cancels_cleanly(capsys, monkeypatch):
+    _interactive_then_eof(monkeypatch, ["My Org", "Alex Dev", "Demo Project", "abc"])
+    _assert_cancelled_cleanly(capsys, _run("init"))
+    assert not localconfig.home_dir().exists()
+
+
+def test_eof_at_http_port_prompt_when_names_came_from_flags(capsys, monkeypatch):
+    _interactive_then_eof(monkeypatch, [])  # only the port is prompted for
+    _assert_cancelled_cleanly(capsys, _init())
+    assert not localconfig.home_dir().exists()
+
+
+def test_eof_during_init_force_leaves_the_existing_environment_untouched(capsys, monkeypatch):
+    assert _init() == 0
+    config_before = localconfig.config_path().read_bytes()
+    token_before = localconfig.load_token()
+    capsys.readouterr()
+
+    _interactive_then_eof(monkeypatch, ["New Org"])
+    _assert_cancelled_cleanly(capsys, _run("init", "--force"))
+    assert localconfig.config_path().read_bytes() == config_before
+    assert localconfig.load_token() == token_before
+
+
 def test_interactive_init_reprompts_on_an_invalid_http_port(capsys, monkeypatch):
     _interactive(monkeypatch, ["My Org", "Alex Dev", "Demo Project", "abc", "70000", "0", "9095"])
     assert _run("init") == 0

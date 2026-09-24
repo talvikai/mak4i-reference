@@ -601,10 +601,16 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if args.http_port is not None:
         _parse_http_port(args.http_port)
 
-    organization_name = _prompt("Organization name", args.org_name)
-    owner_display_name = _prompt("Your display name", args.display_name)
-    project_name = _prompt("First project name", args.project_name)
-    http_port = _prompt_http_port(args.http_port)
+    # EOF (Ctrl-D) at any prompt cancels cleanly. Every prompt runs before
+    # anything is provisioned or written, so there's nothing to undo.
+    try:
+        organization_name = _prompt("Organization name", args.org_name)
+        owner_display_name = _prompt("Your display name", args.display_name)
+        project_name = _prompt("First project name", args.project_name)
+        http_port = _prompt_http_port(args.http_port)
+    except EOFError:
+        print("\nInitialization cancelled.", file=sys.stderr)
+        return 1
 
     print("\nInitializing local MAK4I...\n", file=sys.stderr)
 
