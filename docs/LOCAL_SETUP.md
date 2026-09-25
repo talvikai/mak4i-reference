@@ -26,7 +26,7 @@ Python 3.11+ (`requires-python = ">=3.11"` in `pyproject.toml`).
 # Section 1 — Recommended Quick Start
 
 ```bash
-git clone --branch v0.1.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.2 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 
 uv sync --extra dev --no-editable
@@ -34,7 +34,13 @@ uv sync --extra dev --no-editable
 source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 
 mak4i init
-mak4i serve                        # stdio (default) — or: mak4i serve --transport http
+
+Run one of the below commands based on the requirement. You can stop and start them as needed.
+Your organization, project, credentials, and stored context are preserved when switching modes
+
+mak4i serve → local stdio
+mak4i serve --transport http → local clients connecting by URL - http
+mak4i serve --transport http --host 0.0.0.0 + https tunnel → cloud-hosted AI connecting to Local MAK4I - e.g: claude.ai
 ```
 
 `mak4i init` finishes by offering two ways to serve the environment it
