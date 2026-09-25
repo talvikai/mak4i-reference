@@ -26,7 +26,7 @@ Python 3.11+ (`requires-python = ">=3.11"` in `pyproject.toml`).
 # Section 1 — Recommended Quick Start
 
 ```bash
-git clone https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 
 uv sync --extra dev --no-editable
