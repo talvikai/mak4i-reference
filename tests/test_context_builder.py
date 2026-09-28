@@ -49,6 +49,7 @@ def test_build_wraps_resolution_result():
 def test_build_carries_conflicts_and_integrity_errors():
     conflict = Conflict(
         artifact_type="architecture_decision",
+        subject_key="application-cache",
         lineage_ids=["decision-cache-001", "decision-cache-004"],
         artifacts=[_artifact(), _artifact(artifact_id="decision-cache-004")],
     )

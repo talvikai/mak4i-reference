@@ -82,9 +82,13 @@ upgrades.
 ## 3. Get the code
 
 ```bash
-git clone https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference/deploy/compose
 ```
+
+The `docker compose` commands in this guide are the same in Windows
+PowerShell (for example, when evaluating with Docker Desktop). Where a step
+also needs file commands, the guide gives a separate PowerShell block.
 
 **Run every remaining command in this guide from `deploy/compose/`.**
 
@@ -358,42 +362,73 @@ The commands behave the same against this PostgreSQL control plane.
 
 ## 11. Operate: backups, upgrades, logs
 
+Run these from `deploy/compose/`. If you started with `--profile tls`, add
+`--profile tls` to the `down`, `stop` and `up` commands so `caddy` is
+included. The `docker compose` commands are identical in macOS/Linux shells
+and Windows PowerShell; only file commands and date formatting differ.
+
 ### Backups
 
 Back up both stores, on the same schedule. They're independent, and a
 complete recovery needs both. See [`DEPLOYMENT.md` → Backups](DEPLOYMENT.md#backups).
+Also keep a copy of `.env` somewhere safe: without the same
+`POSTGRES_PASSWORD`, the existing `pgdata` volume can't be opened.
+
+The backup is written inside the container and then copied out with
+`docker compose cp`. This avoids shell redirection (`>`), which in Windows
+PowerShell re-encodes output and corrupts binary backups.
 
 ```bash
-# Control plane (PostgreSQL custom-format dump)
-docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > mak4i-control-plane-$(date +%F).dump
+# 1. Control plane: dump inside the postgres container, verify it, copy it out.
+docker compose exec -T postgres sh -c 'pg_dump -U $POSTGRES_USER -d $POSTGRES_DB -Fc -f /tmp/mak4i-control-plane.dump'
+docker compose exec -T postgres sh -c 'pg_restore --list /tmp/mak4i-control-plane.dump > /dev/null && echo dump-ok'
+docker compose cp postgres:/tmp/mak4i-control-plane.dump ./mak4i-control-plane.dump
+docker compose exec -T postgres rm /tmp/mak4i-control-plane.dump
 
-# Artifacts (the LocalJSONStore volume)
-docker compose exec -T mak4i tar -C /data -cf - artifacts > mak4i-artifacts-$(date +%F).tar
+# 2. Artifacts (the LocalJSONStore volume), copied out as a directory.
+docker compose cp mak4i:/data/artifacts ./mak4i-artifacts-backup
 ```
 
-Restore into a freshly started stack (after `up`, before bootstrapping):
+The commands above work unchanged in Windows PowerShell. Move both backups
+(`mak4i-control-plane.dump` and the `mak4i-artifacts-backup` directory)
+and a copy of `.env` somewhere outside this directory, e.g. into a folder
+named with today's date.
+
+A backup is **verified** when `dump-ok` was printed and
+`mak4i-artifacts-backup` contains your organization directories (one
+`org_…` directory per organization, holding one `.json` file per artifact
+version).
+
+**Restore** into a freshly started stack (after `up`, before bootstrapping
+anything), with the backups in `deploy/compose/`:
 
 ```bash
-docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' \
-  < mak4i-control-plane-YYYY-MM-DD.dump
-docker compose exec -T mak4i tar -C /data -xf - < mak4i-artifacts-YYYY-MM-DD.tar
+docker compose cp ./mak4i-control-plane.dump postgres:/tmp/mak4i-control-plane.dump
+docker compose exec -T postgres sh -c 'pg_restore -U $POSTGRES_USER -d $POSTGRES_DB --clean --if-exists --no-owner /tmp/mak4i-control-plane.dump && rm /tmp/mak4i-control-plane.dump'
+docker compose cp ./mak4i-artifacts-backup/. mak4i:/data/artifacts/
+docker compose run --rm --no-deps -u root --cap-add CHOWN --entrypoint chown mak4i -R mak4i:mak4i /data/artifacts
 docker compose restart mak4i
 ```
 
-Also keep a copy of `.env`. Without the same `POSTGRES_PASSWORD`, the
-existing `pgdata` volume can't be opened.
+These restore commands also work unchanged in Windows PowerShell. The
+`chown` step is required: files copied in with `docker compose cp` are
+owned by root, and the MAK4I server (which runs as an unprivileged user
+with all capabilities dropped) can't write to them until they're re-owned.
 
 ### Upgrades
 
+Back up first. Then switch the checkout to the new release tag and rebuild;
+`migrate` applies any new migration automatically before `mak4i`
+restarts. The general procedure is in
+[`DEPLOYMENT.md` → Upgrading](DEPLOYMENT.md#upgrading).
+
 ```bash
-git pull
+git fetch --depth 1 origin tag v0.1.0-rc.3
+git checkout v0.1.0-rc.3
 docker compose up -d --build --wait     # add --profile tls if you use it
 ```
 
-`migrate` applies any new migration automatically before `mak4i`
-restarts. Back up first. The general procedure is in
-[`DEPLOYMENT.md` → Upgrading](DEPLOYMENT.md#upgrading).
+The same commands work in Windows PowerShell.
 
 ### Logs and audit
 
@@ -402,16 +437,82 @@ docker compose logs -f mak4i      # structured JSON audit events, one per line
 docker compose logs migrate       # migration run (empty output + exit 0 = success)
 ```
 
-### Stop, start, remove
+### Stop, remove and purge
+
+Four different operations, from least to most destructive.
+
+**Stop the containers, keeping everything.** Nothing is deleted:
 
 ```bash
-docker compose down        # stops and removes containers; volumes (your data) are kept
+docker compose stop        # containers stop; start again with: docker compose start
+docker compose down        # containers and network are removed; volumes (all data) are kept
 docker compose up -d --wait
-docker compose down -v     # DANGER: also deletes the pgdata and artifacts volumes
 ```
 
-Services use `restart: unless-stopped`, so the stack comes back after a
-VM reboot as long as Docker starts at boot.
+Both keep the named volumes `mak4i_pgdata` (the control-plane database:
+organizations, principals, projects, grants, credential hashes) and
+`mak4i_artifacts` (every artifact, with lineage and history), plus Caddy's
+certificates. Services use `restart: unless-stopped`, so a running stack
+comes back after a VM reboot as long as Docker starts at boot.
+
+**Remove the application but keep the data.** Removes the containers and,
+optionally, this repository clone. The data volumes stay on the Docker host,
+and they're named by the Compose project (`mak4i`), not by this directory.
+Copy `.env` somewhere safe **first**: it holds `POSTGRES_PASSWORD`, which you
+need to open `mak4i_pgdata` again.
+
+```bash
+cp .env ../../../mak4i-compose.env.backup    # outside the repository
+docker compose down
+cd ../../..
+rm -rf mak4i-reference
+```
+
+```powershell
+Copy-Item .\.env ..\..\..\mak4i-compose.env.backup
+docker compose down
+Set-Location ..\..\..
+Remove-Item -Recurse -Force .\mak4i-reference
+```
+
+To bring it back: clone the release again (§3), copy the saved file to
+`deploy/compose/.env`, and run `docker compose up -d --build --wait`.
+
+**Completely purge all Enterprise Self-Hosted data.** **Destructive and
+irreversible.** Take a backup (above) and confirm it's **verified** first.
+`down -v` deletes the named volumes:
+- `mak4i_pgdata`: organizations, principals, projects, grants, credentials (every issued token stops working), and the control-plane database itself;
+- `mak4i_artifacts`: every artifact, with its complete lineage and history;
+- `mak4i_caddy_data` / `mak4i_caddy_config`: TLS certificates and the ACME account, if you used the `tls` profile.
+
+It doesn't touch `.env`, built images, or MCP client configurations on other
+machines. Remove those registrations from each client
+([`LOCAL_SETUP.md` → Section 4, step 4](LOCAL_SETUP.md#4-remove-the-mcp-registration-from-each-client));
+they'd otherwise point at a server that no longer exists.
+
+```bash
+docker compose --profile tls down -v
+rm .env        # optional: deletes the database password (keep a copy if you'll restore)
+```
+
+```powershell
+docker compose --profile tls down -v
+Remove-Item .\.env        # optional: deletes the database password (keep a copy if you'll restore)
+```
+
+**Remove built images (only when you explicitly want to).** Images aren't
+data; removing them only means the next `up` rebuilds or re-pulls them.
+Remove the MAK4I image this stack built:
+
+```bash
+docker image rm mak4i-reference:local
+```
+
+The same command works in PowerShell. `postgres:16` and `caddy:2` are shared
+public images; remove them (`docker image rm postgres:16 caddy:2`) only if no
+other project on this host uses them. Avoid `docker system prune` or
+`docker volume prune` here: they affect every project on the host, not just
+MAK4I.
 
 ## 12. Troubleshooting
 

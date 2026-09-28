@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
-from mak4i.api import ArtifactNotActiveError, MAK4IEngine
+from mak4i.api import ArtifactNotActiveError, MAK4IEngine, SubjectKeyChangeError
 from mak4i.audit import AuditLogger
 from mak4i.config import build_control_plane_from_env, build_store_from_env
 from mak4i.context import ContextPackage
@@ -217,7 +217,15 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
             raise ToolError(str(exc)) from exc
 
     @server.tool(
-        description="Create new durable project knowledge. " + _DURABLE_VS_CONVERSATION_GUIDANCE
+        description=(
+            "Create new durable project knowledge. " + _DURABLE_VS_CONVERSATION_GUIDANCE
+            + " Optional `subject_key`: a stable, machine-readable key (not display "
+            "text) naming the one logical subject this artifact decides, e.g. "
+            "\"session-cache\". Current artifacts of the same type that share a "
+            "subject_key are reported as a conflict; omit it for artifacts that "
+            "are independent by nature (e.g. separate requirement documents). "
+            "Tags are for classification and search only and never create conflicts."
+        )
     )
     def mak4i_create(
         project: str,
@@ -227,6 +235,7 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
         content: str,
         rationale: str | None = None,
         tags: list[str] | None = None,
+        subject_key: str | None = None,
     ) -> Artifact:
         principal = _require_principal()
         try:
@@ -239,8 +248,9 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 content=content,
                 rationale=rationale,
                 tags=tags,
+                subject_key=subject_key,
             )
-        except (ArtifactAlreadyExistsError, AccessDeniedError) as exc:
+        except (ArtifactAlreadyExistsError, AccessDeniedError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
 
     @server.tool(
@@ -250,6 +260,12 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
             "superseded, never deleted. `reason` is required and becomes "
             "the new artifact's rationale: a supersede without a stated "
             "reason is not explainable. " + _DURABLE_VS_CONVERSATION_GUIDANCE
+            + " The lineage's `subject_key` is kept as-is and cannot be changed "
+            "here. To resolve a conflict between lineages that claim the same "
+            "subject_key, supersede the losing lineage with "
+            "`release_subject_key=true`: its new version stops claiming that "
+            "subject (its history keeps the old key); the winning lineage is "
+            "left unchanged."
         )
     )
     def mak4i_supersede(
@@ -259,6 +275,8 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
         reason: str,
         title: str | None = None,
         tags: list[str] | None = None,
+        subject_key: str | None = None,
+        release_subject_key: bool = False,
     ) -> Artifact:
         principal = _require_principal()
         try:
@@ -270,10 +288,14 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 reason=reason,
                 title=title,
                 tags=tags,
+                subject_key=subject_key,
+                release_subject_key=release_subject_key,
             )
         except (
             ArtifactNotFoundError,
             ArtifactNotActiveError,
+            SubjectKeyChangeError,
+            ValueError,
             ArtifactAlreadyExistsError,
             ConcurrentModificationError,
             AccessDeniedError,

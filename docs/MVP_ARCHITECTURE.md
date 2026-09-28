@@ -296,7 +296,7 @@ decision-db-002 · v2.0   MySQL        active     → supersedes:    decision-db
 
 Mechanism unchanged from Revision 2 (§6 there): applicability → group by `lineage_id` → integrity check (fail closed, §5) → cross-lineage conflict check (§18) → resolved/conflict/integrity-error outcome, every step captured in a `resolution_trace`.
 
-**[MVP CHOICE — flagged, §24]**: the cross-lineage conflict-grouping rule (same `artifact_type` + tag overlap, no lineage link) is still this design's own reading — the full MAK-0004 text has never been available across any revision.
+**Cross-lineage conflict grouping (v0.1.0-rc.3, issue #5)**: two current artifacts from different lineages are grouped as a conflict only when they share `artifact_type` **and** the same non-empty `subject_key` (§18.1). Tags play no part in it. This replaces the earlier MVP rule (same `artifact_type` + at least two shared tags), which grouped independent artifacts — e.g. four separate requirements documents — merely because they were classified alike. MAK-0004 §1 (conflict definition) is still an open draft decision in the protocol repository; §18.1 is this implementation's explicit reading of it.
 
 ---
 
@@ -440,7 +440,35 @@ Mechanism unchanged in principle from Revision 2 — restated for GCS/Cloud Run:
 
 **[PROTOCOL]**: never auto-select between genuinely conflicting active artifacts; surface, require clarification, record the resolution — locked in Revision 2, unchanged here, now explicitly distinguished in the requirements doc's own acceptance criteria from an integrity error: *"Integrity errors within a lineage are distinguishable from genuine cross-lineage conflicts and fail closed."* Both fail closed in the sense of never guessing, but they mean different things and are logged as different event types (`CONFLICT` vs. `INTEGRITY_ERROR`, §5/§9) — a conflict is two legitimate decisions disagreeing; an integrity error is the store contradicting its own invariants.
 
-Demo Flow E: create two genuinely conflicting active artifacts in **distinct lineages** (not a supersession pair); any client's read must surface the conflict and require clarification; the eventual resolution (typically a follow-up supersede) is itself logged.
+Demo Flow E: create two genuinely conflicting active artifacts in **distinct lineages** (not a supersession pair) that claim the same subject (same `artifact_type` and `subject_key`); any client's read must surface the conflict and require clarification; the eventual resolution — an explicit subject release on the losing lineage (§18.1) — is itself logged.
+
+### 18.1 Identity, subject authority, classification, and release (v0.1.0-rc.3)
+
+Four distinct concepts, deliberately kept separate:
+
+1. **Lineage identity** — `lineage_id` (set at create; `artifact_id` of the first version) plus the `supersedes`/`superseded_by` chain. It answers "is this a version of that?". Only an explicit `supersede` extends a lineage; nothing is ever inferred to be a version of something else.
+2. **Subject authority** — the optional `subject_key`: a stable, machine-readable key (not display text) naming the one logical subject an artifact decides, e.g. `session-cache`. It answers "do these independent lineages claim authority over the same thing?". Two current artifacts form a **conflict** only when **all** hold:
+   - same organization and project (every resolution is already scoped to one project);
+   - same `artifact_type`;
+   - same non-empty `subject_key`;
+   - different lineages;
+   - both current and applicable to the query;
+   - neither supersedes the other (automatic, since supersession never crosses lineages).
+
+   `subject_key` is optional and never derived from title, content or tags. Normalization is minimal: surrounding whitespace is trimmed and an empty value is rejected. Artifacts without one — including every artifact written by v0.1.0-rc.2 or earlier — never take part in a cross-lineage conflict. No semantic (content-level) incompatibility is inferred.
+3. **Classification tags** — `tags` (and `artifact_type` as a filter) are for discovery and search only. They **never** establish identity, lineage, or conflict membership; any number of independent artifacts may share any tags.
+4. **Explicit release of a subject claim** — `subject_key` is stable within a lineage:
+   - a normal supersede carries it forward (omitted) or may restate it unchanged;
+   - a normal supersede that supplies a different key, or tries to give a key to a lineage that has none, is rejected and writes nothing (audited `SUPERSEDE_REJECTED`);
+   - `supersede(..., release_subject_key=true)` creates the next version of the same lineage with **no** `subject_key` and records `released_subject_key` on that version (and on the audited `SUPERSEDE` event). The released lineage stays current in its own right but no longer claims the subject, so it leaves that subject's conflict set; the competing lineage is not touched; history still shows the earlier versions carrying the key;
+   - a released lineage cannot reclaim or change its key in this release (reclaiming would need a future explicit operation); creating a new lineage that claims the subject is allowed;
+   - combining `release_subject_key` with a `subject_key`, or releasing on a lineage that has no key, is rejected as ambiguous.
+
+   Resolving a conflict therefore means: supersede the losing lineage with content recording the outcome (e.g. "Memcached rejected; Redis selected for session-cache") and `release_subject_key=true`.
+
+A generic withdrawn/retired lineage state is intentionally **not** part of this release; it is tracked as a separate future protocol question.
+
+**Compatibility**: `subject_key` and `released_subject_key` are optional, additive fields. Stores omit them while unset, so artifacts that don't use them keep the exact v0.1.0-rc.2 on-disk shape (an RC2 install can still read them); an artifact that carries either field requires v0.1.0-rc.3 or later to read.
 
 ---
 
@@ -660,7 +688,7 @@ sequenceDiagram
     participant S as GCSArtifactStore
     participant AL as Audit Logger
 
-    Note over U,S: Two genuinely independent active artifacts in DISTINCT lineages,<br/>both applicable to the same caching decision
+    Note over U,S: Two independent active artifacts in DISTINCT lineages,<br/>same artifact_type and same subject_key (e.g. session-cache)
     U->>AnyC: "What caching technology should we use?"
     AnyC->>MCP: tool_call mak4i_get_current(...)
     MCP->>API: handle_task(task)
@@ -670,7 +698,7 @@ sequenceDiagram
     API-->>MCP: ContextPackage(conflicts=[Redis, Memcached], artifacts=[])
     MCP-->>AnyC: no single current decision
     AnyC-->>U: "MAK4I found two conflicting active decisions — which is correct?"
-    Note over U,AL: User clarifies → follow-up mak4i_supersede closes the conflict → new SUPERSEDE event
+    Note over U,AL: User clarifies → mak4i_supersede(losing lineage, release_subject_key=true) closes the conflict → SUPERSEDE event with released_subject_key
 ```
 
 **Flow F — Control/efficiency** is not a system sequence; it's the operator-run measurement methodology in §19.
@@ -693,8 +721,8 @@ sequenceDiagram
 | 8 | Cloud Run Streamable HTTP timeout/concurrency settings | **[NEEDS VERIFICATION]** at deploy time — §10. |
 | 9 | Cowork's connector mechanism and plan gating | **[NEEDS VERIFICATION]**, unchanged from Revision 2 — §14. |
 | 10 | GCP project, region, bucket naming | Open, low-stakes — pick at implementation time. |
-| 11 | Whether a clarified conflict must always end in a supersede, or two artifacts can coexist at narrower scope | **Open question**, unchanged since Revision 1. |
-| 12 | Conflict-grouping rule (same type + tag overlap, no lineage link) | Assumption, unchanged since Revision 1 — validate against the real MAK-0004 spec if one exists. |
+| 11 | Whether a clarified conflict must always end in a supersede, or two artifacts can coexist at narrower scope | **Resolved for v0.1.0-rc.3** — a conflict ends with an explicit subject release (`release_subject_key`) on the losing lineage (§18.1); both lineages then coexist, only one claiming the subject. A generic withdrawn/retired lineage state remains a future protocol question. |
+| 12 | Conflict-grouping rule | **Resolved for v0.1.0-rc.3 (issue #5)** — same `artifact_type` + same non-empty `subject_key`, different lineages (§18.1); tags never participate. MAK-0004 §1 in the protocol repository remains an open draft decision. |
 
 Nothing **in Revision 3's scope above** introduced a vector database, Cloud SQL, Firestore, a production registry, or multi-tenancy — all explicitly out of scope in v0.3.1 §4 and §15, and none were needed to satisfy anything through §23. **Revision 4 (Developer Preview) supersedes this one item deliberately** — see the changelog at the top of this document and §25: multi-organization authorization is a separately-scoped, explicitly-requested capability layer, not a reversal of the "avoid multi-tenancy unless proven necessary" principle, which the Developer Preview still honors via the "smallest secure identity/authorization model" constraint (no OAuth/OIDC/SSO/SCIM, no RBAC hierarchy, no billing).
 

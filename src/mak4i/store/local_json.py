@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from mak4i.models import Artifact
+from mak4i.models import Artifact, dump_for_storage
 from mak4i.store._filtering import filter_artifacts
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
@@ -145,7 +145,7 @@ class LocalJSONStore:
         tmp_path = path.with_suffix(".json.tmp")
         record = {
             "generation": generation,
-            "artifact": json.loads(artifact.model_dump_json()),
+            "artifact": json.loads(dump_for_storage(artifact)),
         }
         tmp_path.write_text(json.dumps(record, indent=2))
         os.replace(tmp_path, path)  # atomic within the same filesystem

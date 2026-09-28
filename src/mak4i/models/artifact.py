@@ -36,6 +36,17 @@ class Artifact(BaseModel):
     supersedes: str | None = None
     superseded_by: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Optional, stable, machine-readable key naming the logical subject this
+    # artifact decides (e.g. "session-cache"). Two current artifacts from
+    # DIFFERENT lineages compete only when they share artifact_type AND the
+    # same subject_key (see resolution/resolver.py). Tags are classification
+    # and search metadata only and never establish identity or conflicts.
+    # Never derived from title/content/tags; absent on pre-RC3 artifacts.
+    subject_key: str | None = None
+    # Provenance for an explicit subject release: set ONLY on the version
+    # created by `supersede(..., release_subject_key=True)`, recording which
+    # subject_key this lineage gave up (its `subject_key` is then None).
+    released_subject_key: str | None = None
 
     @field_validator(
         "artifact_id", "artifact_type", "organization_id", "project", "title",
@@ -61,6 +72,36 @@ class Artifact(BaseModel):
             if not isinstance(tag, str) or not tag.strip():
                 raise ValueError("tags must be non-empty strings")
         return value
+
+    @field_validator("subject_key", "released_subject_key")
+    @classmethod
+    def _subject_key_normalized(cls, value: str | None) -> str | None:
+        return normalize_subject_key(value)
+
+
+# Fields added after v0.1.0-rc.2. Stores omit them while unset so artifacts
+# that don't use them stay readable by an RC2 install (whose model rejects
+# unknown fields) — only artifacts that actually carry a subject_key are
+# RC3-only on disk.
+_OMIT_WHEN_UNSET = ("subject_key", "released_subject_key")
+
+
+def dump_for_storage(artifact: Artifact) -> str:
+    """JSON for persisting `artifact`, omitting post-RC2 fields while unset."""
+    exclude = {name for name in _OMIT_WHEN_UNSET if getattr(artifact, name) is None}
+    return artifact.model_dump_json(exclude=exclude)
+
+
+def normalize_subject_key(value: str | None) -> str | None:
+    """Minimal, predictable normalization for `subject_key`: `None` stays
+    `None`; otherwise surrounding whitespace is trimmed and an empty result
+    is rejected. Nothing else (no case folding, no derivation)."""
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        raise ValueError("subject_key must not be empty; omit it instead")
+    return trimmed
 
 
 def bump_version(version: str) -> str:

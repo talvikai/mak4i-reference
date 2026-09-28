@@ -225,6 +225,7 @@ async def test_get_current_surfaces_conflict_without_raising(server, world):
                 "title": "Application caching technology",
                 "content": "Use Redis for application caching.",
                 "tags": ["caching", "redis", "architecture"],
+                "subject_key": "application-cache",
             },
         )
         await client.call_tool(
@@ -236,6 +237,7 @@ async def test_get_current_surfaces_conflict_without_raising(server, world):
                 "title": "Application caching technology",
                 "content": "Use Memcached for application caching.",
                 "tags": ["caching", "memcached", "architecture"],
+                "subject_key": "application-cache",
             },
         )
 
@@ -244,6 +246,7 @@ async def test_get_current_surfaces_conflict_without_raising(server, world):
         package = result.structured_content
         assert package["artifacts"] == []
         assert len(package["conflicts"]) == 1
+        assert package["conflicts"][0]["subject_key"] == "application-cache"
 
 
 async def test_unauthenticated_call_is_a_tool_error(server):
@@ -256,3 +259,47 @@ async def test_unauthenticated_call_is_a_tool_error(server):
         )
         assert result.is_error
         assert "not authenticated" in result.content[0].text
+
+
+async def test_subject_key_conflict_and_explicit_release_over_mcp(server, world):
+    """Issue #5 end to end through the MCP tools: shared tags alone don't
+    conflict; a shared subject_key does; a normal supersede can't change the
+    key; an explicit release resolves the conflict."""
+    base = {"project": world["project"], "artifact_type": "architecture_decision", "tags": ["caching", "architecture"]}
+    async with Client(server=server) as client:
+        for artifact_id, content in (("use-redis", "Use Redis"), ("use-memcached", "Use Memcached")):
+            result = await client.call_tool(
+                "mak4i_create",
+                {**base, "artifact_id": artifact_id, "title": artifact_id, "content": content,
+                 "subject_key": " session-cache "},
+            )
+            assert not result.is_error
+            assert result.structured_content["subject_key"] == "session-cache"
+        await client.call_tool(
+            "mak4i_create", {**base, "artifact_id": "tag-twin", "title": "t", "content": "independent"}
+        )
+
+        package = (await client.call_tool("mak4i_get_current", {"project": world["project"]})).structured_content
+        assert [c["subject_key"] for c in package["conflicts"]] == ["session-cache"]
+        assert [a["artifact_id"] for a in package["artifacts"]] == ["tag-twin"]
+
+        change = await client.call_tool(
+            "mak4i_supersede",
+            {"project": world["project"], "old_id": "use-memcached", "content": "x",
+             "reason": "r", "subject_key": "database"},
+        )
+        assert change.is_error
+
+        released = await client.call_tool(
+            "mak4i_supersede",
+            {"project": world["project"], "old_id": "use-memcached",
+             "content": "Memcached rejected; Redis selected.", "reason": "resolved",
+             "release_subject_key": True},
+        )
+        assert not released.is_error
+        assert released.structured_content["subject_key"] is None
+        assert released.structured_content["released_subject_key"] == "session-cache"
+
+        package = (await client.call_tool("mak4i_get_current", {"project": world["project"]})).structured_content
+        assert package["conflicts"] == []
+        assert {a["artifact_id"] for a in package["artifacts"]} == {"use-redis", "tag-twin", released.structured_content["artifact_id"]}
