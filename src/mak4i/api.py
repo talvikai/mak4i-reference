@@ -8,7 +8,7 @@ from mak4i.context import ContextBuilder, ContextPackage
 from mak4i.discovery import Discovery
 from mak4i.identity import AuthorizedProject, ControlPlane, Principal
 from mak4i.identity.authz import Authorizer
-from mak4i.models import Artifact, bump_version, utc_now
+from mak4i.models import Artifact, bump_version, normalize_subject_key, utc_now
 from mak4i.resolution import IntegrityError, Resolver
 from mak4i.store.base import ArtifactNotFoundError, ArtifactStore
 
@@ -32,6 +32,36 @@ class ArtifactNotActiveError(Exception):
         )
         self.artifact_id = artifact_id
         self.status = status
+
+
+class SubjectKeyChangeError(Exception):
+    """Raised by supersede_artifact when a supersede would alter the
+    lineage's `subject_key` other than by an explicit release: supplying a
+    different key, acquiring a key for a lineage that has none (including
+    one that previously released its key), or an ambiguous/no-op release.
+
+    `subject_key` is stable within a lineage: a supersede may omit it
+    (carried forward) or restate it, and may give it up only via
+    `release_subject_key=True`. Nothing is written when this is raised.
+    """
+
+    def __init__(
+        self,
+        artifact_id: str,
+        current: str | None,
+        requested: str | None,
+        *,
+        detail: str | None = None,
+    ):
+        super().__init__(
+            f"cannot supersede {artifact_id!r}: "
+            + (detail or f"subject_key {current!r} cannot be changed to {requested!r}")
+            + " — subject_key is stable within a lineage; use "
+            "release_subject_key=true to give it up, or create a new lineage"
+        )
+        self.artifact_id = artifact_id
+        self.current = current
+        self.requested = requested
 
 
 class MAK4IEngine:
@@ -77,6 +107,7 @@ class MAK4IEngine:
         content: str,
         rationale: str | None = None,
         tags: list[str] | None = None,
+        subject_key: str | None = None,
         auth_method: str = CREDENTIAL,
     ) -> Artifact:
         """Create a brand-new lineage in `project`. The principal must hold
@@ -89,6 +120,7 @@ class MAK4IEngine:
             correlation_id=correlation_id, auth_method=auth_method,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
+        subject_key = normalize_subject_key(subject_key)  # ValueError if blank
 
         now = utc_now()
         artifact = Artifact(
@@ -108,6 +140,7 @@ class MAK4IEngine:
             supersedes=None,
             superseded_by=None,
             tags=tags or [],
+            subject_key=subject_key,
         )
         self._store.put_new(artifact)
         if self._audit is not None:
@@ -129,6 +162,8 @@ class MAK4IEngine:
         reason: str,
         title: str | None = None,
         tags: list[str] | None = None,
+        subject_key: str | None = None,
+        release_subject_key: bool = False,
         auth_method: str = CREDENTIAL,
     ) -> Artifact:
         """Corrected write sequence per MVP_ARCHITECTURE.md §5, now
@@ -160,6 +195,41 @@ class MAK4IEngine:
                 )
             raise ArtifactNotActiveError(old.artifact_id, old.status)
 
+        # subject_key is stable within a lineage (MVP_ARCHITECTURE.md §18):
+        #   omitted            → carried forward unchanged
+        #   restated, same     → carried forward unchanged
+        #   release requested  → new version gives up the key (explicit only)
+        #   anything else      → rejected, nothing written
+        requested_subject_key = normalize_subject_key(subject_key)
+        rejection: str | None = None
+        if release_subject_key:
+            if requested_subject_key is not None:
+                rejection = "release_subject_key cannot be combined with a subject_key"
+            elif old.subject_key is None:
+                rejection = "release_subject_key requested but this lineage has no subject_key"
+        elif requested_subject_key is not None and requested_subject_key != old.subject_key:
+            rejection = (
+                f"subject_key change {old.subject_key!r} -> {requested_subject_key!r} "
+                "is not allowed within a lineage"
+            )
+        if rejection is not None:
+            if self._audit is not None:
+                self._audit.log_supersede_rejected(
+                    correlation_id=correlation_id,
+                    actor=principal.principal_id,
+                    old_id=old_id,
+                    reason=rejection,
+                    context=context,
+                )
+            raise SubjectKeyChangeError(
+                old.artifact_id,
+                old.subject_key,
+                None if release_subject_key else requested_subject_key,
+                detail=rejection,
+            )
+        new_subject_key = None if release_subject_key else old.subject_key
+        released_subject_key = old.subject_key if release_subject_key else None
+
         new_id = self._next_available_id(organization_id, project, old_id)
         now = utc_now()
 
@@ -187,6 +257,8 @@ class MAK4IEngine:
             supersedes=old_id,
             superseded_by=None,
             tags=tags if tags is not None else old.tags,
+            subject_key=new_subject_key,
+            released_subject_key=released_subject_key,
         )
         # Step 5: on the (rare, racy) chance this id was claimed between
         # `_next_available_id`'s check and here, this raises

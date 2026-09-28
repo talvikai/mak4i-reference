@@ -194,6 +194,8 @@ class AuditLogger:
             lineage_id=new_artifact.lineage_id,
             version=new_artifact.version,
             reason=reason,
+            subject_key=new_artifact.subject_key,
+            released_subject_key=new_artifact.released_subject_key,
         )
 
     def log_supersede_rejected(
@@ -269,6 +271,7 @@ class AuditLogger:
             actor=actor,
             context=context,
             artifact_type=conflict.artifact_type,
+            subject_key=conflict.subject_key,
             lineage_ids=conflict.lineage_ids,
             candidates=[a.artifact_id for a in conflict.artifacts],
         )

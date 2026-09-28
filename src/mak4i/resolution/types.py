@@ -26,12 +26,14 @@ class IntegrityError(BaseModel):
 
 
 class Conflict(BaseModel):
-    """Two or more genuinely independent active artifacts, in distinct
-    lineages, that are both applicable to the same scope."""
+    """Two or more current artifacts, in distinct lineages, that claim the
+    same explicit identity: the same `artifact_type` and the same non-empty
+    `subject_key`. Shared tags alone never form a conflict."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     artifact_type: str
+    subject_key: str
     lineage_ids: list[str]
     artifacts: list[Artifact]
 

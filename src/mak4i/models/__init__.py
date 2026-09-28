@@ -1,3 +1,10 @@
-from mak4i.models.artifact import Artifact, ArtifactStatus, bump_version, utc_now
+from mak4i.models.artifact import (
+    Artifact,
+    ArtifactStatus,
+    bump_version,
+    dump_for_storage,
+    normalize_subject_key,
+    utc_now,
+)
 
-__all__ = ["Artifact", "ArtifactStatus", "bump_version", "utc_now"]
+__all__ = ["Artifact", "ArtifactStatus", "bump_version", "dump_for_storage", "normalize_subject_key", "utc_now"]

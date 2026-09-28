@@ -180,6 +180,7 @@ def test_get_current_logs_conflict_event_when_conflicting(audited_engine, world,
         title="Application caching technology",
         content="Use Redis for application caching.",
         tags=["caching", "redis", "architecture"],
+        subject_key="application-cache",
     )
     audited_engine.create_artifact(
         principal=world["principal"],
@@ -189,6 +190,7 @@ def test_get_current_logs_conflict_event_when_conflicting(audited_engine, world,
         title="Application caching technology",
         content="Use Memcached for application caching.",
         tags=["caching", "memcached", "architecture"],
+        subject_key="application-cache",
     )
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     caplog.clear()

@@ -25,26 +25,40 @@ Python 3.11+ (`requires-python = ">=3.11"` in `pyproject.toml`).
 
 # Section 1 — Recommended Quick Start
 
+macOS / Linux:
+
 ```bash
-git clone --branch v0.1.0-rc.2 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
-
 uv sync --extra dev --no-editable
-
-source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
-
+source .venv/bin/activate
 mak4i init
-
-Run one of the below commands based on the requirement. You can stop and start them as needed.
-Your organization, project, credentials, and stored context are preserved when switching modes
-
-mak4i serve → local stdio
-mak4i serve --transport http → local clients connecting by URL - http
-mak4i serve --transport http --host 0.0.0.0 + https tunnel → cloud-hosted AI connecting to Local MAK4I - e.g: claude.ai
 ```
+
+Windows PowerShell:
+
+```powershell
+git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/talvikai/mak4i-reference.git
+Set-Location mak4i-reference
+uv sync --extra dev --no-editable
+.\.venv\Scripts\Activate.ps1
+mak4i init
+```
+
+Then start the server in the mode you need. You can stop it (Ctrl+C) and
+switch modes at any time; every mode serves the same `.mak4i/` environment
+(same organization, project, credential, and stored context).
+
+| You're connecting | Run |
+|---|---|
+| a local MCP client that launches MAK4I itself (stdio) | `mak4i serve` |
+| local MCP clients that connect by URL | `mak4i serve --transport http` |
+| a cloud-hosted AI client (e.g. Claude.ai) through an HTTPS tunnel | `mak4i serve --transport http --host 0.0.0.0`, then see "Exposing a local server to a cloud client" |
 
 `mak4i init` finishes by offering two ways to serve the environment it
 created. See "After `mak4i init`: choose stdio or Streamable HTTP" below.
+To stop, reinstall, upgrade, reset or remove MAK4I, see
+[Section 4](#section-4--stop-reinstall-reset-and-uninstall).
 
 ### `uv sync --extra dev --no-editable`
 
@@ -435,8 +449,8 @@ Code session:
 | `mak4i_list_projects` | list the projects your credential can act on |
 | `mak4i_search` | raw candidate lookup by type/tags/status |
 | `mak4i_get_current` | resolved current applicable knowledge (conflict/integrity-checked) |
-| `mak4i_create` | write new durable knowledge |
-| `mak4i_supersede` | replace current knowledge, preserving lineage + history |
+| `mak4i_create` | write new durable knowledge (optional `subject_key` names the subject it decides) |
+| `mak4i_supersede` | replace current knowledge, preserving lineage + history (`release_subject_key=true` gives up the lineage's subject claim) |
 | `mak4i_history` | every version in a lineage, oldest first |
 
 ### Verify
@@ -564,3 +578,207 @@ commands from this section, pointed at its own database.
 SQLite / PostgreSQL / GCS are reference choices, not MAK4I protocol
 requirements — any `ControlPlaneStore` / `ArtifactStore` implementation
 works.
+
+---
+
+# Section 4 — Stop, reinstall, reset and uninstall
+
+These are separate operations; pick the one you need. Run them from the
+repository directory (`mak4i-reference`) unless a step says otherwise.
+Commands are given for macOS/Linux and for Windows PowerShell separately.
+Never paste the macOS/Linux commands into PowerShell.
+
+**Where your local data lives.** Everything `mak4i init` created is inside
+`.mak4i/` in the repository directory (or the directory named by
+`MAK4I_HOME`, if you set it):
+
+| Path | What it is |
+|---|---|
+| `.mak4i/control-plane.db` | the local control-plane database: organizations, principals, projects, grants, credential hashes |
+| `.mak4i/artifacts/` | every artifact, including superseded versions (lineage and history) |
+| `.mak4i/config.json`, `.mak4i/credentials.json` | local config and the raw local credential |
+
+If you ever used the granular commands in Section 3 *without* `mak4i init`,
+their data is in `mak4i-control-plane.db` and `artifacts/local/` in the
+directory you ran them from. Local MAK4I uses no `.env` file and no Docker
+volumes.
+
+**Windows: release file locks first.** Windows won't delete files that are
+in use. Before deleting `.venv`, `.mak4i` or the repository:
+
+1. Stop `mak4i serve` (Ctrl+C in its window).
+2. Quit every MCP client that launches MAK4I itself over stdio (e.g. Claude
+   Code started with `claude mcp add mak4i -- mak4i serve`), since it keeps
+   its own `mak4i serve` process running.
+3. Close other terminals that activated this `.venv` or are running `uv`.
+   To see which Python/uv processes are still running:
+   `Get-Process python, uv -ErrorAction SilentlyContinue`.
+4. Run `deactivate` in the current window if the environment is active.
+5. To delete the repository itself, move to its parent directory first
+   (step 5 below).
+
+### 1. Stop MAK4I (deletes nothing)
+
+Press **Ctrl+C** in the window running `mak4i serve`. For a stdio client,
+quitting the client stops its `mak4i serve`. All data in `.mak4i/` is kept;
+start again with `mak4i serve` at any time.
+
+### 2. Remove and recreate only `.venv`
+
+Deletes **only** the Python environment (`.venv/`). It does not touch
+`.mak4i/`: organizations, principals, projects, grants, credentials,
+artifacts and history are unaffected, and MCP client registrations keep
+working.
+
+macOS / Linux:
+
+```bash
+deactivate 2>/dev/null || true
+rm -rf .venv
+uv sync --extra dev --no-editable
+source .venv/bin/activate
+```
+
+Windows PowerShell (after releasing file locks, above):
+
+```powershell
+if (Get-Command deactivate -ErrorAction SilentlyContinue) { deactivate }
+Remove-Item -Recurse -Force .\.venv
+uv sync --extra dev --no-editable
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. Reinstall or upgrade while keeping your data
+
+`.mak4i/` is not part of the repository (it's gitignored), so switching the
+checkout to a newer release keeps all your data. For a clone made with
+`--branch <tag> --depth 1`, fetch the new release tag explicitly. Stop MAK4I
+first (step 1).
+
+macOS / Linux:
+
+```bash
+git fetch --depth 1 origin tag v0.1.0-rc.3
+git checkout v0.1.0-rc.3
+uv sync --extra dev --no-editable
+source .venv/bin/activate
+mak4i --version
+```
+
+Windows PowerShell:
+
+```powershell
+git fetch --depth 1 origin tag v0.1.0-rc.3
+git checkout v0.1.0-rc.3
+uv sync --extra dev --no-editable
+.\.venv\Scripts\Activate.ps1
+mak4i --version
+```
+
+If `uv sync` reports files in use on Windows, release the file locks and
+recreate `.venv` (step 2). Your `.mak4i/` data and MCP client registrations
+keep working after an upgrade.
+
+Downgrading is not always possible: an artifact written with a
+`subject_key` (new in v0.1.0-rc.3) can't be read by v0.1.0-rc.2. Artifacts
+without one remain readable by both.
+
+### 4. Remove the MCP registration from each client
+
+This only changes the client's own configuration; no MAK4I data is
+deleted. Use the name you registered (these examples use `mak4i`). The
+commands are the same in every shell.
+
+macOS / Linux:
+
+```bash
+claude mcp remove mak4i                               # Claude Code (add -s local|user|project to target one scope)
+codex mcp remove mak4i                                # Codex CLI
+grok mcp remove mak4i                                 # Grok CLI (add -s <scope> to target one scope)
+npx -y @google/gemini-cli mcp remove -s user mak4i    # Gemini CLI, if added with -s user as in docs/DEMO.md
+```
+
+Windows PowerShell:
+
+```powershell
+claude mcp remove mak4i
+codex mcp remove mak4i
+grok mcp remove mak4i
+npx -y @google/gemini-cli mcp remove -s user mak4i
+```
+
+Gemini CLI removes from the **project** scope unless you pass `-s user`, so
+use the same scope you added with. Claude.ai and Cowork have no removal
+command: remove the connector in **Customize → Connectors**.
+
+### 5. Remove the cloned repository
+
+**Destructive.** Deletes the whole `mak4i-reference` directory, including
+`.venv/` and, **by default, your local MAK4I data in `.mak4i/`**:
+organizations, principals, projects, grants, credentials, the control-plane
+database, and all artifacts with their lineage and history. If you want to
+keep the data, back up `.mak4i/` first (step 6). Remove the MCP
+registrations first (step 4): they point at a server that will no longer
+exist. On Windows, release file locks first.
+
+Run this from the directory that **contains** `mak4i-reference`, not from
+inside it.
+
+macOS / Linux:
+
+```bash
+cd ..
+rm -rf mak4i-reference
+```
+
+Windows PowerShell:
+
+```powershell
+Set-Location ..
+Remove-Item -Recurse -Force .\mak4i-reference
+```
+
+### 6. Reset local MAK4I data
+
+**Destructive.** Deletes `.mak4i/`: the organization, principals, projects,
+grants and credentials in the local control-plane database, and every
+artifact with its complete lineage and history. It does not touch `.venv/`
+or the repository. Afterwards, every MCP client registration still points at
+the old credential and fails to authenticate until you re-register it with
+the new one. Stop MAK4I and release file locks first.
+
+Back up first if there's any chance you'll need the data. Keep the copy
+**outside** the repository so it can't be committed or deleted with it:
+
+macOS / Linux:
+
+```bash
+cp -R .mak4i ../mak4i-local-backup
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item -Recurse .\.mak4i ..\mak4i-local-backup
+```
+
+Then delete the data and create a fresh environment:
+
+macOS / Linux:
+
+```bash
+rm -rf .mak4i
+mak4i init
+```
+
+Windows PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force .\.mak4i
+mak4i init
+```
+
+`mak4i init --force` is **not** a reset: it creates a second, new
+organization, project and credential alongside the old ones in the same
+database and repoints the local config at them. The old data stays in the
+database, just no longer in use.

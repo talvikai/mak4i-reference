@@ -132,13 +132,14 @@ def test_applicability_filters_by_type_and_tags(resolver):
 
 
 def test_cross_lineage_conflict_detected_and_excluded_from_resolved(resolver):
-    redis = _artifact()
+    redis = _artifact(subject_key="application-cache")
     memcached = _artifact(
         artifact_id="decision-cache-004",
         content="Use Memcached for application caching.",
         lineage_id="decision-cache-004",
         supersedes=None,
         superseded_by=None,
+        subject_key="application-cache",
     )
     result = resolver.resolve([redis, memcached])
 
@@ -147,6 +148,7 @@ def test_cross_lineage_conflict_detected_and_excluded_from_resolved(resolver):
     conflict = result.conflicts[0]
     assert set(conflict.lineage_ids) == {"decision-cache-001", "decision-cache-004"}
     assert conflict.artifact_type == "architecture_decision"
+    assert conflict.subject_key == "application-cache"
 
 
 def test_unrelated_active_artifacts_do_not_conflict(resolver):

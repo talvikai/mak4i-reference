@@ -34,8 +34,13 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from mak4i import localconfig
-from mak4i.api import OPERATOR_IMPERSONATION, ArtifactNotActiveError, MAK4IEngine
+from mak4i import __version__, localconfig
+from mak4i.api import (
+    OPERATOR_IMPERSONATION,
+    ArtifactNotActiveError,
+    MAK4IEngine,
+    SubjectKeyChangeError,
+)
 from mak4i.audit import AuditLogger
 from mak4i.config import build_control_plane_from_env, build_store_from_env
 from mak4i.identity import (
@@ -212,9 +217,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             content=args.content,
             rationale=args.rationale,
             tags=_split_tags(args.tags),
+            subject_key=args.subject_key,
             auth_method=OPERATOR_IMPERSONATION,
         )
-    except (ArtifactAlreadyExistsError, AccessDeniedError) as exc:
+    except (ArtifactAlreadyExistsError, AccessDeniedError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     _print_json(artifact)
@@ -234,11 +240,15 @@ def _cmd_supersede(args: argparse.Namespace) -> int:
             reason=args.reason,
             title=args.title,
             tags=_split_tags(args.tags),
+            subject_key=args.subject_key,
+            release_subject_key=args.release_subject_key,
             auth_method=OPERATOR_IMPERSONATION,
         )
     except (
         ArtifactNotFoundError,
         ArtifactNotActiveError,
+        SubjectKeyChangeError,
+        ValueError,
         ArtifactAlreadyExistsError,
         ConcurrentModificationError,
         AccessDeniedError,
@@ -971,6 +981,7 @@ def _write_access_file(path: str, *, endpoint: str, project_id: str, token: str)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mak4i", description="MAK4I operator CLI.")
+    parser.add_argument("--version", action="version", version=f"mak4i {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser(
@@ -1059,6 +1070,14 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--content", required=True)
     create.add_argument("--rationale")
     create.add_argument("--tags", help="comma-separated")
+    create.add_argument(
+        "--subject-key",
+        help=(
+            "optional stable machine-readable key for the logical subject this "
+            "artifact decides (e.g. session-cache); current artifacts of the same "
+            "type sharing it are reported as a conflict"
+        ),
+    )
     create.set_defaults(func=_cmd_create)
 
     supersede = subparsers.add_parser("supersede", help="Supersede an existing active artifact.")
@@ -1069,6 +1088,18 @@ def build_parser() -> argparse.ArgumentParser:
     supersede.add_argument("--reason", required=True)
     supersede.add_argument("--title")
     supersede.add_argument("--tags", help="comma-separated")
+    supersede.add_argument(
+        "--subject-key",
+        help="optional; if given it must equal the lineage's existing subject_key (it cannot be changed)",
+    )
+    supersede.add_argument(
+        "--release-subject-key",
+        action="store_true",
+        help=(
+            "explicitly give up this lineage's subject_key in the new version (e.g. to "
+            "resolve a conflict in favor of another lineage); the old version keeps it in history"
+        ),
+    )
     supersede.set_defaults(func=_cmd_supersede)
 
     search = subparsers.add_parser("search", help="Raw deterministic candidate lookup.")

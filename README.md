@@ -34,68 +34,27 @@ tool call and retrieved through another's — the second client gets the
 current decision *and* the trail of how it got there, and surfaces a
 disagreement with the local code instead of silently picking a side.
 
-## Prerequisites
+## Get started
 
-| Need | Why |
+**Current release: [`v0.1.0-rc.3`](https://github.com/talvikai/mak4i-reference/releases/tag/v0.1.0-rc.3)**
+(Developer Preview release candidate, not a stable or production release;
+see [Status](#status)). What changed in each release is in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+| I want to… | Go to |
 |---|---|
-| **Git** | to clone the repository |
-| **[uv](https://docs.astral.sh/uv/getting-started/installation/)** | dependency + environment manager (also fetches Python) |
-| **An MCP-capable AI client** | for the final integration test — e.g. Claude Code (`claude`) |
+| Run MAK4I on my own machine (macOS, Linux, Windows) | [`docs/LOCAL_SETUP.md` → Section 1 — Recommended Quick Start](docs/LOCAL_SETUP.md#section-1--recommended-quick-start) |
+| Run a shared server for a team on one Linux VM (Enterprise Self-Hosted) | [`docs/ENTERPRISE_SELF_HOSTED.md`](docs/ENTERPRISE_SELF_HOSTED.md) |
+| Deploy on my own platform (managed database, object storage, containers) | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
+| Connect an AI client | [`docs/LOCAL_SETUP.md` → Section 2](docs/LOCAL_SETUP.md#section-2--connect-an-mcp-client) and [`docs/DEMO.md`](docs/DEMO.md#connecting-a-client) |
+| Upgrade, reinstall, reset or uninstall (Local) | [`docs/LOCAL_SETUP.md` → Section 4](docs/LOCAL_SETUP.md#section-4--stop-reinstall-reset-and-uninstall) |
+| Upgrade, back up, stop or remove (Enterprise Self-Hosted) | [`docs/ENTERPRISE_SELF_HOSTED.md` → Operate](docs/ENTERPRISE_SELF_HOSTED.md#11-operate-backups-upgrades-logs) |
 
-Install uv with your OS package manager or its one-line installer — see
-its [installation docs](https://docs.astral.sh/uv/getting-started/installation/).
-
-You do **not** need to install Python yourself — this project pins Python
-3.13 (`.python-version`), and `uv sync` downloads it automatically if it
-isn't already present. MAK4I supports Python 3.11+ (`requires-python =
-">=3.11"`).
-
-## Quick Start
-
-```
-Clone  →  Install  →  Initialize  →  Start MAK4I  →  Connect AI client  →  Use MAK4I
-```
-
-```bash
-# 1. Clone
-git clone https://github.com/talvikai/mak4i-reference.git
-cd mak4i-reference
-
-# 2. Install (uv fetches Python 3.13 if needed)
-uv sync --extra dev --no-editable
-
-# 3. Activate the environment
-source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
-
-# 4. Initialize your local MAK4I environment (prompts for a few names)
-mak4i init
-
-# 5. Start the MCP server
-mak4i serve
-```
-
-`mak4i init` creates a self-contained local MAK4I instance for you — an
-organization, an owner principal, a project, a read/write grant, and a
-credential — and saves a local config so `serve` needs nothing further.
-It all lives in a gitignored `.mak4i/` directory in the repo. You never
-copy an org id, project id, or token between commands.
-
-It prompts interactively; to script it, pass the flags:
-
-```bash
-mak4i init \
-  --org-name "Acme" \
-  --display-name "Alex Dev" \
-  --project-name "Demo Project"
-```
-
-`mak4i serve` then starts the existing MCP server (stdio transport by
-default) against that instance, in the foreground — Ctrl-C to stop.
-
-> Activating the venv (`source .venv/bin/activate`) and calling `mak4i`
-> directly is the supported path. Bare `uv run mak4i …` can re-trigger an
-> editable install that CPython's `site.py` mishandles on macOS — see
-> `docs/LOCAL_SETUP.md`.
+You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+(it fetches Python for you) and an MCP-capable AI client. The Local setup
+guide has copy-paste commands for macOS/Linux and Windows PowerShell;
+`mak4i init` then creates a self-contained local environment in a
+gitignored `.mak4i/` directory.
 
 ## Connect Claude Code
 
@@ -336,7 +295,8 @@ invite-only. This repository defines neither the MAK4I protocol
 | **Artifact** | One durable piece of project knowledge: a typed record with a title, content, optional rationale, tags, and a version. Immutable once written. |
 | **Lineage & supersession** | A new decision *supersedes* an old one. The old version stops being "current" but is never deleted — `history` returns the whole chain, oldest first, with each supersession's reason. |
 | **Discovery → resolution** | A query first gathers candidate artifacts deterministically (`search`), then resolves them to the current applicable set (`get_current`) — applying lineage and checking for conflicts and integrity errors. |
-| **Conflicts vs. integrity errors** | Two independent live decisions of the same shape are a **conflict** — surfaced, never auto-resolved. A broken lineage (zero or multiple active versions, dangling pointer) is an **integrity error** — a distinct type, fail-closed. |
+| **Tags vs. subject** | Tags classify artifacts for search; any number of independent artifacts can share them. An optional `subject_key` (e.g. `session-cache`) names the one logical subject an artifact decides. |
+| **Conflicts vs. integrity errors** | Two independent current artifacts with the same type **and** the same `subject_key` are a **conflict** — surfaced, never auto-resolved; it's resolved by superseding the losing lineage with `release_subject_key=true`. Shared tags never cause a conflict. A broken lineage (zero or multiple active versions, dangling pointer) is an **integrity error** — a distinct type, fail-closed. |
 | **Audit trail** | Every authenticate, authorize, discover, resolve, inject, create, and supersede is logged as a structured event with the acting principal, org, project, and outcome. |
 
 ### Security model
@@ -393,6 +353,10 @@ for the deployment contract.
 
 ## Status
 
+**Release status:** `v0.1.0-rc.3` is a **Developer Preview release
+candidate**, for evaluation and feedback. It is not a stable release and is
+not intended for production use.
+
 The full engine (artifact model, `ArtifactStore` / `LocalJSONStore` /
 `GCSArtifactStore`, Discovery / Resolver / ContextBuilder, `MAK4IEngine`,
 Audit Logger), the CLI, the local stdio MCP server, and the Streamable
@@ -448,6 +412,7 @@ docs/
 
 | Document | What's in it |
 |---|---|
+| `CHANGELOG.md` | What changed in each release, compatibility notes and known limitations |
 | `docs/LOCAL_SETUP.md` | Running MAK4I locally on your own machine (`mak4i init` / `mak4i serve`) |
 | `docs/ENTERPRISE_SELF_HOSTED.md` | Enterprise Self-Hosted quick start: clean Linux VM → shared MCP server with Docker Compose |
 | `docs/DEPLOYMENT.md` | Deployment reference: runtime env vars, auth model, migrations, proxy/storage requirements, production options |

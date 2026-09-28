@@ -3,7 +3,7 @@ from __future__ import annotations
 from google.api_core.exceptions import PreconditionFailed
 from google.cloud import storage
 
-from mak4i.models import Artifact
+from mak4i.models import Artifact, dump_for_storage
 from mak4i.store._filtering import filter_artifacts
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
@@ -149,4 +149,4 @@ class GCSArtifactStore:
 
 
 def _serialize(artifact: Artifact) -> bytes:
-    return artifact.model_dump_json().encode("utf-8")
+    return dump_for_storage(artifact).encode("utf-8")

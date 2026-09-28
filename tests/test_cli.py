@@ -534,3 +534,50 @@ def test_admin_list_show_commands_deny_cross_organization_access(capsys):
     exit_code = cli.main(["project", "list", "--actor", owner_a, "--organization-id", organization_b])
     assert exit_code == 1
     assert "access denied" in capsys.readouterr().err
+
+
+def test_subject_key_create_conflict_and_release_via_cli(world, capsys):
+    """Issue #5 through the operator CLI: --subject-key on create, a clean
+    error for a key change, and --release-subject-key to resolve."""
+    _organization_id, owner_id, project_id = world
+
+    def create(artifact_id: str) -> None:
+        assert cli.main([
+            "create", "--principal", owner_id, "--project", project_id,
+            "--artifact-id", artifact_id, "--artifact-type", "architecture_decision",
+            "--title", artifact_id, "--content", artifact_id, "--tags", "caching,architecture",
+            "--subject-key", "session-cache",
+        ]) == 0
+        assert json.loads(capsys.readouterr().out)["subject_key"] == "session-cache"
+
+    create("use-redis")
+    create("use-memcached")
+    assert cli.main(["get-current", "--principal", owner_id, "--project", project_id]) == 0
+    assert len(json.loads(capsys.readouterr().out)["conflicts"]) == 1
+
+    assert cli.main([
+        "supersede", "--principal", owner_id, "--project", project_id, "--old-id", "use-memcached",
+        "--content", "x", "--reason", "r", "--subject-key", "database",
+    ]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "Traceback" not in err
+
+    assert cli.main([
+        "supersede", "--principal", owner_id, "--project", project_id, "--old-id", "use-memcached",
+        "--content", "Memcached rejected", "--reason", "resolved", "--release-subject-key",
+    ]) == 0
+    released = json.loads(capsys.readouterr().out)
+    assert released["subject_key"] is None and released["released_subject_key"] == "session-cache"
+
+    assert cli.main(["get-current", "--principal", owner_id, "--project", project_id]) == 0
+    assert json.loads(capsys.readouterr().out)["conflicts"] == []
+
+
+def test_version_flag_reports_the_installed_package_version(capsys):
+    from mak4i import __version__
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"mak4i {__version__}"
+    assert __version__ == "0.1.0rc3"

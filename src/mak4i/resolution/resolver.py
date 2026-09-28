@@ -64,7 +64,8 @@ class Resolver:
         for conflict in conflicts:
             trace.append(
                 f"conflict: lineages {conflict.lineage_ids} share "
-                f"artifact_type={conflict.artifact_type!r} with overlapping tags"
+                f"artifact_type={conflict.artifact_type!r} and "
+                f"subject_key={conflict.subject_key!r}"
             )
 
         resolved = list(resolved_by_lineage.values())
@@ -154,64 +155,48 @@ class Resolver:
     def _group_conflicts(
         applicable: dict[str, Artifact],
     ) -> tuple[list[Conflict], dict[str, Artifact]]:
-        """Cross-lineage conflict grouping.
+        """Cross-lineage conflict grouping, by explicit identity only.
 
-        [MVP CHOICE — flagged, MVP_ARCHITECTURE.md §7/§24]: same
-        artifact_type + tag overlap, no lineage link. The full MAK-0004
-        conflict-grouping text has never been provided; this is this
-        design's own reading, applied uniformly regardless of technology.
+        Two current, applicable artifacts from DIFFERENT lineages compete
+        only when they have the same `artifact_type` AND the same non-empty
+        `subject_key` (MVP_ARCHITECTURE.md §18). Everything here is already
+        scoped to one organization and project (the engine passes
+        `store.all(organization_id, project)`), each entry is its lineage's
+        single current artifact, and supersession never crosses lineages, so
+        "different lineages, neither supersedes the other" holds by
+        construction.
 
-        Overlap requires at least 2 shared tags, not just 1: every
-        `architecture_decision` in this MVP is expected to carry a broad,
-        shared category tag (e.g. "architecture"), so a 1-tag-overlap rule
-        would make every decision in a project conflict with every other
-        one — breaking the ordinary case of two unrelated current decisions
-        (a caching choice and a database choice) coexisting. Requiring 2+
-        shared tags still catches the intended case (two technologies
-        competing for the same narrow slot, e.g. Redis vs. Memcached, which
-        share both a category tag and a role tag) without that false
-        positive, and remains free of any technology-specific tag names.
+        Tags are classification and search metadata only: they never
+        establish identity or conflict membership (issue #5 — the previous
+        "same type + >= 2 shared tags" heuristic grouped independent
+        artifacts such as four separate requirements documents). An
+        artifact without a `subject_key` (including every pre-RC3 artifact)
+        never takes part in a cross-lineage conflict. No content-level
+        (semantic) incompatibility is inferred.
         """
-        items = list(applicable.items())
-        parent = list(range(len(items)))
-
-        def find(i: int) -> int:
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
-
-        def union(i: int, j: int) -> None:
-            ri, rj = find(i), find(j)
-            if ri != rj:
-                parent[ri] = rj
-
-        for i in range(len(items)):
-            for j in range(i + 1, len(items)):
-                _, a = items[i]
-                _, b = items[j]
-                shared_tags = set(a.tags) & set(b.tags)
-                if a.artifact_type == b.artifact_type and len(shared_tags) >= 2:
-                    union(i, j)
-
-        groups: dict[int, list[int]] = defaultdict(list)
-        for i in range(len(items)):
-            groups[find(i)].append(i)
+        by_identity: dict[tuple[str, str], list[tuple[str, Artifact]]] = defaultdict(list)
+        resolved: dict[str, Artifact] = {}
+        for lineage_id, artifact in applicable.items():
+            if artifact.subject_key is None:
+                resolved[lineage_id] = artifact
+            else:
+                by_identity[(artifact.artifact_type, artifact.subject_key)].append(
+                    (lineage_id, artifact)
+                )
 
         conflicts: list[Conflict] = []
-        resolved: dict[str, Artifact] = {}
-        for indices in groups.values():
-            if len(indices) > 1:
-                group = [items[i] for i in indices]
+        for (artifact_type, subject_key), group in by_identity.items():
+            if len(group) > 1:
                 conflicts.append(
                     Conflict(
-                        artifact_type=group[0][1].artifact_type,
+                        artifact_type=artifact_type,
+                        subject_key=subject_key,
                         lineage_ids=[lineage_id for lineage_id, _ in group],
                         artifacts=[artifact for _, artifact in group],
                     )
                 )
             else:
-                lineage_id, artifact = items[indices[0]]
+                lineage_id, artifact = group[0]
                 resolved[lineage_id] = artifact
 
         return conflicts, resolved

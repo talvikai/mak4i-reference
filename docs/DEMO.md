@@ -243,26 +243,53 @@ Claude Code as writers, Gemini CLI as an independent reader).
 
 ## Conflicts are surfaced, never resolved for you
 
-Record a *second, independent* decision of the same shape — not a
-supersede — e.g. a `decision` artifact saying the cache is Memcached while
-an active `decision` artifact says Redis, sharing enough tags for the
-resolver to treat the two lineages as competing:
+Two independent lineages conflict only when they claim the **same
+subject**: the same `artifact_type` and the same `subject_key`, a stable
+machine-readable key such as `session-cache`. Tags are for search only and
+never create a conflict, so any number of independent artifacts (for
+example separate requirements documents) can share tags and all stay
+current.
+
+Record a *second, independent* decision for the same subject — not a
+supersede:
 
 ```
+mak4i_create(project="prj_a1…", artifact_id="caching-decision",
+  artifact_type="decision", subject_key="session-cache",
+  title="Session cache", content="Use Redis.", tags=["caching"])
+mak4i_create(project="prj_a1…", artifact_id="caching-decision-memcached",
+  artifact_type="decision", subject_key="session-cache",
+  title="Session cache", content="Use Memcached.", tags=["caching"])
+
 mak4i_get_current(project="prj_a1…", tags=["caching"])
 → { "artifacts": [],
     "conflicts": [ { "artifact_type": "decision",
+                     "subject_key": "session-cache",
                      "lineage_ids": ["caching-decision", "caching-decision-memcached"],
                      "artifacts": [ …Redis…, …Memcached… ] } ],
     "integrity_errors": [] }
 ```
 
 `artifacts` is empty and `conflicts` holds both competing decisions —
-MAK4I never picks one. Resolving it is a normal `mak4i_supersede` (retract
-or reconcile one lineage), and that resolution is itself audited
-(`CONFLICT` on detection, `SUPERSEDE` on resolution). A broken lineage
-(zero or multiple active versions, a dangling pointer) surfaces the same
-way but as `integrity_errors`, a distinct category.
+MAK4I never picks one. To resolve it in favor of Redis, supersede the
+losing lineage and **explicitly release** its claim on the subject:
+
+```
+mak4i_supersede(project="prj_a1…", old_id="caching-decision-memcached",
+  content="Memcached option rejected; Redis selected for session-cache.",
+  reason="Resolved the session-cache conflict in favor of Redis.",
+  release_subject_key=true)
+→ { …, "subject_key": null, "released_subject_key": "session-cache", … }
+```
+
+The Memcached lineage stays readable (its history still shows it competed
+for `session-cache`) but no longer claims the subject; the Redis lineage
+is untouched and is now the only current claim. A normal supersede never
+changes a lineage's `subject_key`: attempting it is rejected. Both steps
+are audited (`CONFLICT` on detection; `SUPERSEDE` with
+`released_subject_key` on resolution). A broken lineage (zero or multiple
+active versions, a dangling pointer) surfaces the same way but as
+`integrity_errors`, a distinct category.
 
 Whether a retracted-but-still-readable artifact should influence a
 generated document is left to the calling client reading the content —
