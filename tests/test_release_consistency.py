@@ -76,6 +76,14 @@ def test_historical_prose_is_reported_not_rejected(tmp_path):
     assert sum("v0.1.0-rc.3" in str(o) for o in others) == 2
 
 
+def test_a_marked_rollback_command_is_allowed(tmp_path):
+    root = _fixture_repo(tmp_path)
+    guide = root / "docs" / "ENTERPRISE_SELF_HOSTED.md"
+    guide.write_text(guide.read_text() + "git checkout v0.1.0-rc.3   # rollback to the previous release\n")
+    errors, _ = crc.check(root)
+    assert errors == []
+
+
 def test_an_old_checkout_command_is_rejected(tmp_path):
     root = _fixture_repo(tmp_path)
     guide = root / "docs" / "LOCAL_SETUP.md"

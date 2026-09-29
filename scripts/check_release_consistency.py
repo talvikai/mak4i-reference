@@ -149,8 +149,10 @@ def check(root: Path = ROOT) -> tuple[list[Finding], list[Finding]]:
 
 
 def _is_upgrade_source(line: str, command_tag: str) -> bool:
-    """`--from-version v0.1.0-rc.3`-style upgrade sources are legitimate."""
-    return f"--from-version {command_tag}" in line
+    """Earlier releases are legitimate as an upgrade source
+    (`--from-version v0.1.0-rc.3`) or in a command explicitly marked as a
+    rollback (`... # rollback to the previous release`)."""
+    return f"--from-version {command_tag}" in line or "# rollback" in line
 
 
 def main(argv: list[str] | None = None) -> int:

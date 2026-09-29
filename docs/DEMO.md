@@ -197,8 +197,17 @@ the current decision is what it is, not just what it is.
 
 ```
 mak4i_get_current(project="prj_someone_elses…", tags=["database"])
-→ Tool error: "access denied"
+→ Tool error: "access denied: this principal has no read permission on the
+  requested project on MAK4I connection 'MAK4I Enterprise' (environment:
+  enterprise). This denial is final for this connection. Do not retry this
+  operation on another MAK4I connection, organization or project unless the
+  user explicitly selects and confirms that exact destination."
 ```
+
+The denial names the connection that refused but never echoes the
+requested project. If the client has several MAK4I connections,
+`mak4i_whoami` on each shows which installation, organization and principal
+it is.
 
 *Audit:* a single `ACCESS_DENIED` event (`permission=read`, the target
 `project_id`) — and **nothing else**: no `DISCOVER`, `RESOLVE`, or

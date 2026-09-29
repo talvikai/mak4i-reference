@@ -1,545 +1,792 @@
-# Enterprise Self-Hosted: Developer Preview Quick Start
+# Enterprise Self-Hosted
 
-This guide takes you from a clean Linux VM to a running MAK4I Enterprise
-Self-Hosted MCP server that several remote AI clients share. Follow it top
-to bottom; every command is meant to be copied as written.
+The one guide for installing and operating MAK4I Enterprise Self-Hosted:
+a shared MAK4I MCP server, on one Linux VM, that several people and remote
+AI clients connect to over HTTPS.
 
-> **What this is:** a single-VM reference deployment for evaluating MAK4I
-> as a Developer Preview. It uses Docker Compose with PostgreSQL (the
-> control plane), `LocalJSONStore` on a Docker volume (the artifacts), and
-> optional automatic HTTPS through Caddy.
+**Audience:** cloud administrators, platform engineers, DevOps and SRE.
+
+> **Developer Preview.** This is a release candidate (`v0.1.0-rc.4`) for
+> evaluation and feedback, not a production-supported release. It is a
+> single-VM reference deployment: Docker Compose with PostgreSQL (the
+> control plane), artifacts on a Docker volume, and Caddy for HTTPS.
+> Architecture and production options: [`DEPLOYMENT.md`](DEPLOYMENT.md).
 >
-> **What this isn't:** the production architecture. For managed
-> PostgreSQL, object storage, a container platform, and a secret manager,
-> see [`DEPLOYMENT.md` → Production deployment options](DEPLOYMENT.md#production-deployment-options).
-> `DEPLOYMENT.md` is also the reference for every environment variable,
-> endpoint, and security property this guide relies on.
-
-> **Do not use `mak4i init` here.** `mak4i init` / `mak4i serve` are for
-> [Local setup](LOCAL_SETUP.md) only: `init` always creates its own local
-> SQLite environment and ignores the PostgreSQL database this stack runs.
-> Enterprise Self-Hosted is bootstrapped with the explicit commands in
-> [step 7](#7-bootstrap-your-organization).
+> Running MAK4I only on your own machine? Use
+> [`LOCAL_SETUP.md`](LOCAL_SETUP.md) instead. Don't use `mak4i init` or
+> `mak4i serve` for Enterprise Self-Hosted.
 
 ## Contents
 
-1. [What you'll end up with](#1-what-youll-end-up-with)
-2. [Prerequisites](#2-prerequisites)
-3. [Get the code](#3-get-the-code)
-4. [Configure](#4-configure)
-5. [Start the stack](#5-start-the-stack)
-6. [Verify](#6-verify)
-7. [Bootstrap your organization](#7-bootstrap-your-organization)
-8. [Connect two AI clients](#8-connect-two-ai-clients)
-9. [Verify shared project context](#9-verify-shared-project-context)
-10. [Add people and projects](#10-add-people-and-projects)
-11. [Operate: backups, upgrades, logs](#11-operate-backups-upgrades-logs)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Moving beyond the quick start](#13-moving-beyond-the-quick-start)
+1. [What you get](#1-what-you-get)
+2. [Who provides what](#2-who-provides-what)
+3. [Requirements](#3-requirements)
+4. [Get the release](#4-get-the-release)
+5. [Install with the bootstrap](#5-install-with-the-bootstrap)
+6. [Create your organization and access](#6-create-your-organization-and-access)
+7. [Connect AI clients](#7-connect-ai-clients)
+8. [Operate](#8-operate)
+9. [Upgrade from v0.1.0-rc.3](#9-upgrade-from-v010-rc3)
+10. [Uninstall](#10-uninstall)
+11. [Manual Compose procedure](#11-manual-compose-procedure)
+12. [Configuration reference](#12-configuration-reference)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Bootstrap reference](#14-bootstrap-reference)
+15. [Beyond this release](#15-beyond-this-release)
 
 ---
 
-## 1. What you'll end up with
+## 1. What you get
 
 ```
- AI client A ─┐                        ┌─────────────── one Linux VM (Docker Compose) ───────────────┐
- AI client B ─┼─ HTTPS :443 ──────────▶│ caddy ──▶ mak4i (MCP server, uid 10001) ──▶ postgres:16      │
-  (Bearer     │  (--profile tls)       │             │                               (volume pgdata) │
-  credential) │                        │             └──▶ /data/artifacts (volume artifacts)          │
-              └─ or SSH tunnel ───────▶│ 127.0.0.1:8080 (plain HTTP, host-local only)                  │
-                                       └──────────────────────────────────────────────────────────────┘
+ AI client A ─┐                        ┌──────────────── one Linux VM (Docker Compose) ────────────────┐
+ AI client B ─┼─ HTTPS :443 ──────────▶│ caddy ──▶ mak4i (MCP server, uid 10001) ──▶ postgres (private)  │
+  (Bearer     │  (tls profile)         │   :80/:443    │ 127.0.0.1:8080 only              volume pgdata  │
+  credential) │                        │               └──▶ /data/artifacts (volume artifacts)          │
+              └─ private-http profile ▶│ MAK4I HTTP on a private address (your TLS load balancer)       │
+                                       └────────────────────────────────────────────────────────────────┘
 ```
 
-Four services, all defined in [`deploy/compose/compose.yaml`](../deploy/compose/compose.yaml):
+| Service | What it does | Exposure |
+|---|---|---|
+| `postgres` | Control-plane database: organizations, principals, projects, grants, credential hashes. | **Never published.** Only reachable inside Compose. |
+| `migrate` | Applies database migrations (`alembic upgrade head`) on every start, then exits `0`. | None. |
+| `mak4i` | The MCP server (Streamable HTTP) and the `mak4i` operator CLI. Non-root (uid 10001), all Linux capabilities dropped, one replica. | `127.0.0.1:8080` (tls profile), or the private address you choose (private-http). |
+| `caddy` | tls profile only: obtains and renews the certificate and proxies HTTPS to `mak4i`. | `0.0.0.0:80` and `:443`. |
 
-| Service | What it does |
+Data lives in the Docker volumes `mak4i_pgdata` and `mak4i_artifacts`
+(plus `mak4i_caddy_data` and `mak4i_caddy_config` with TLS). Volumes
+survive restarts, upgrades and a data-preserving uninstall.
+
+## 2. Who provides what
+
+MAK4I's bootstrap never creates or changes cloud resources, DNS records,
+firewall rules or IAM. It checks for them and tells you what's missing.
+
+| You (the cloud or platform administrator) provide | The bootstrap provides |
 |---|---|
-| `postgres` | Control-plane database (organizations, principals, projects, grants, credential hashes). **Never published on the host.** |
-| `migrate` | One-shot `alembic upgrade head`. Runs on every `up`, then exits `0`. `mak4i` doesn't start until it succeeds. |
-| `mak4i` | The MCP server (Streamable HTTP) and the `mak4i` operator CLI. Runs as a non-root user. One replica only. |
-| `caddy` | Optional (`--profile tls`). Gets and renews a TLS certificate for your domain and proxies to `mak4i`. |
+| The Linux VM | Preflight validation of the host, network and configuration |
+| A static IP (or a load balancer) | A secure local configuration (`.env`, mode 600, random database password) |
+| DNS: an `A` record for your MAK4I domain | Docker Compose orchestration with pinned images |
+| Firewall / network policy: inbound TCP 80 and 443 | Database migrations |
+| Docker Engine and the Docker Compose plugin | Health, readiness and HTTPS verification |
+| Integration with your secrets management, where required | Lifecycle commands: status, restart, backup, restore, upgrade, uninstall |
 
-Data lives in two named Docker volumes, `mak4i_pgdata` and
-`mak4i_artifacts`, which survive `docker compose down`, restarts, and
-upgrades.
+## 3. Requirements
 
-## 2. Prerequisites
+### 3.1 Host
 
-- A Linux VM (any distribution Docker supports). A small VM, for example
-  2 vCPU and 2 GB RAM, is plenty for an evaluation.
-- **Docker Engine with the Compose v2 plugin.** Check with:
-  ```bash
-  docker compose version     # must print v2.x or later
-  ```
-  The commands below assume your user can run `docker` (member of the
-  `docker` group); otherwise prefix them with `sudo`.
-- `git`, `curl`, and `openssl` (preinstalled on most distributions).
-- **For remote SaaS clients such as Claude.ai:** a DNS name pointing at
-  the VM (an `A`/`AAAA` record), with inbound TCP **80** and **443** open.
-  Nothing else needs to be open. Without a domain you can still run the
-  stack and reach it through an SSH tunnel (see [step 5](#5-start-the-stack)).
-
-## 3. Get the code
-
-```bash
-git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/talvikai/mak4i-reference.git
-cd mak4i-reference/deploy/compose
-```
-
-The `docker compose` commands in this guide are the same in Windows
-PowerShell (for example, when evaluating with Docker Desktop). Where a step
-also needs file commands, the guide gives a separate PowerShell block.
-
-**Run every remaining command in this guide from `deploy/compose/`.**
-
-## 4. Configure
-
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-Edit `.env` and set these values (the file explains each one):
-
-| Variable | Set it to |
+| | Requirement |
 |---|---|
-| `POSTGRES_PASSWORD` | Output of `openssl rand -hex 32`. Use letters and digits only, because the value is embedded in a database URL. |
-| `MAK4I_DOMAIN` | Your DNS name, e.g. `mak4i.example.com` (TLS profile only). |
-| `MAK4I_PUBLIC_ENDPOINT` | The full URL clients will use, **including `/mcp`**: `https://mak4i.example.com/mcp` with TLS, or `http://127.0.0.1:8080/mcp` without. |
+| Operating system | Linux, x86-64. **Tested:** Ubuntu 22.04 / 24.04, Debian 12 / 13. Other distributions that run Docker Engine are expected to work; preflight warns. arm64 isn't tested in this release. Windows and macOS hosts aren't supported for Enterprise Self-Hosted. |
+| CPU | 2 vCPU or more |
+| Memory | 4 GiB or more recommended; 2 GiB minimum (preflight fails below that) |
+| Disk | 20 GiB free for Docker recommended; 10 GiB minimum |
+| Software | Docker Engine with the Docker Compose v2 plugin, `git`, `curl`. `dig` (optional) improves DNS diagnostics. |
+| User | A non-root user that can run `docker` (member of the `docker` group). |
 
-Leave `MAK4I_HTTP_BIND=127.0.0.1` unless you have a specific reason.
-Anything else serves bearer credentials over unencrypted HTTP to your
-network.
-
-> **Secrets: Developer Preview vs. production.** Keeping the database
-> password in a `chmod 600` `.env` file on a single VM is acceptable for
-> this Developer Preview. A production deployment keeps the control-plane
-> database URL in a secret manager, never in a plaintext file. See
-> [`DEPLOYMENT.md` → Security considerations](DEPLOYMENT.md#security-considerations).
-
-Everything else (transport, bind address, storage backend, artifact
-path) is fixed in `compose.yaml`. The full list of variables is in
-[`DEPLOYMENT.md` → Runtime configuration](DEPLOYMENT.md#runtime-configuration).
-
-## 5. Start the stack
-
-**With HTTPS (recommended; required for Claude.ai and other SaaS clients):**
+Install Docker Engine from your distribution or Docker's own packages
+(<https://docs.docker.com/engine/install/>), then:
 
 ```bash
-docker compose --profile tls up -d --build --wait
+sudo usermod -aG docker "$USER"   # then log out and back in
+docker compose version            # must print v2.x or later
 ```
 
-**Without a domain (evaluation over an SSH tunnel):**
+### 3.2 Network
+
+| | Requirement |
+|---|---|
+| Public address | An external IP for the VM. A **static** IP is recommended, because your DNS record points directly at it. |
+| DNS | An `A` record: your MAK4I domain → the VM's external IP. If a CDN proxies the name (for example Cloudflare's orange cloud), set it to **DNS only** until the first certificate has been issued. |
+| Inbound | TCP **80** and **443** from the internet (tls profile). Nothing else. |
+| Outbound | HTTPS to Docker Hub (images), `ghcr.io` (build tooling) and, with the tls profile, Let's Encrypt (`acme-v02.api.letsencrypt.org`). |
+| Never public | **PostgreSQL** (not published at all) and **MAK4I's port 8080** (bound to `127.0.0.1` in the tls profile). Anyone who can reach the database can act as any principal. |
+
+### 3.3 Cloud notes
+
+**Verified on Google Cloud** (RC3 deployment, `mak4i-enterprise.<domain>`):
+
+- A fresh Debian VM with 2 vCPU and about 8 GB RAM was used; Docker Engine
+  and the Docker Compose plugin were required.
+- The VM needed an external IP; a static IP was used because DNS points
+  directly to it. The DNS zone was on Cloudflare, with an `A` record for
+  the MAK4I domain, kept **DNS only** during the first certificate request.
+- **GCP blocked inbound 80 and 443 by default.** Caddy was listening, but
+  external connections timed out until HTTP and HTTPS traffic was allowed
+  to the VM (the VM's "Allow HTTP/HTTPS traffic" firewall setting, or an
+  equivalent VPC firewall rule for `tcp:80,443`).
+- Certificate issuance first failed with **NXDOMAIN** while the new DNS
+  record hadn't propagated, then with **connection timeouts** while
+  80/443 were blocked. Once DNS resolved and the firewall allowed 80/443,
+  Caddy obtained the Let's Encrypt certificate automatically.
+- The VM kept a **cached negative DNS answer** for a while after the
+  authoritative DNS already resolved. `curl --resolve` confirmed the
+  service in the meantime (see [Troubleshooting](#13-troubleshooting)).
+- MAK4I's port 8080 stayed on `127.0.0.1` and PostgreSQL stayed
+  unpublished. `/health` and `/ready` answered over public HTTPS, and a
+  restart preserved the deployment, projects, principals and permission
+  enforcement.
+
+**AWS and Azure (general guidance, not yet verified with this release):**
+
+- AWS: an EC2 instance with an Elastic IP; a security group allowing
+  inbound TCP 80 and 443; your DNS `A` record → the Elastic IP.
+- Azure: a VM with a static public IP; a network security group allowing
+  inbound TCP 80 and 443; your DNS `A` record → the public IP.
+- On both, the bootstrap reads the public IP from instance metadata
+  (read-only) to compare it with DNS. Pass `--public-ip` if that isn't
+  available.
+
+## 4. Get the release
 
 ```bash
-docker compose up -d --build --wait
+git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/talvikai/mak4i-reference.git
+cd mak4i-reference
 ```
 
-In this mode MAK4I listens only on the VM's `127.0.0.1:8080`. To reach it
-from your workstation, open a tunnel and keep it running:
+Run every command in this guide from this `mak4i-reference` directory
+unless it says otherwise.
+
+## 5. Install with the bootstrap
+
+The bootstrap, `deploy/bootstrap/mak4i-enterprise`, is the recommended
+way to install and operate this release. (The
+[manual Compose procedure](#11-manual-compose-procedure) is kept for
+troubleshooting, air-gapped or custom environments, and administrators who
+want full control.)
+
+### 5.1 Choose a profile
+
+| Profile | Use it when | What's exposed |
+|---|---|---|
+| `tls` | Remote SaaS clients (Claude.ai and others) or anyone on the internet will connect. | Caddy on 80/443 with an automatic certificate. MAK4I on `127.0.0.1:8080` only. |
+| `private-http` | Clients reach MAK4I over a trusted private network, or you terminate TLS on your own load balancer or reverse proxy. | MAK4I's plain HTTP on `127.0.0.1` (default) or the private address you pass with `--bind`. |
+
+> **`private-http` is plain HTTP.** Bearer credentials cross that network
+> unencrypted. Bind it to loopback (use an SSH tunnel) or a private address
+> behind your TLS load balancer. The bootstrap warns for a private address
+> and refuses a public one unless you pass `--allow-public-bind`, which you
+> should only use behind a firewall that admits nothing but your load
+> balancer. Binding to all interfaces (`0.0.0.0`) is never safe on its own.
+
+### 5.2 Preflight
+
+Preflight only reads; it changes nothing:
 
 ```bash
-ssh -N -L 8080:127.0.0.1:8080 <you>@<vm-address>
+./deploy/bootstrap/mak4i-enterprise preflight --profile tls --domain mak4i.example.com
 ```
 
-Clients on that workstation then use `http://127.0.0.1:8080/mcp`. SaaS
-clients such as Claude.ai can't reach a tunnel; they need the TLS profile.
+Expected: one line per check, then a summary. Every `[FAIL]` must be fixed
+before `install` will run; `[WARN]` lines are advisory.
 
-The first build takes a minute or two. `--wait` returns once every
-service is healthy (or has exited successfully, in `migrate`'s case).
+```
+  [PASS] Linux distribution                 Debian GNU/Linux 12 (bookworm)
+  [PASS] Docker Engine                      running (server 29.1.3), usable by admin
+  [PASS] DNS A record                       mak4i.example.com -> 203.0.113.10 (this VM, from gcp)
+  [PASS] Local port 80                      free
+  [PASS] Port 8080 exposure                 127.0.0.1 only; PostgreSQL is never published
+  [INFO] Inbound 80/443 from the internet   not tested (add --check-inbound). ...
+  ...
+Preflight: 16 passed, 0 warning(s), 0 failed.
+```
 
-> If you started with `--profile tls`, pass `--profile tls` to every later
-> `docker compose up`/`down`/`ps` as well, so the `caddy` service is
-> included.
+`--check-inbound` also tests that port 80 is reachable from the internet by
+briefly running a throwaway responder container on port 80. The VM can't
+always reach its own public IP, so if it reports a warning, test from
+another machine: `curl -v http://mak4i.example.com/`.
 
-## 6. Verify
+### 5.3 Install
+
+**tls profile:**
 
 ```bash
-docker compose ps -a
+./deploy/bootstrap/mak4i-enterprise install --profile tls --domain mak4i.example.com
 ```
 
-Expected: `postgres` **healthy**, `migrate` **Exited (0)**, `mak4i`
-**healthy**, and, with TLS, `caddy` **Up**.
+**private-http profile** (loopback; use an SSH tunnel or a local proxy):
 
 ```bash
-curl -fsS http://127.0.0.1:8080/health; echo      # -> ok      (process is up)
-curl -fsS http://127.0.0.1:8080/ready;  echo      # -> ready   (database reachable)
-curl -fsS https://<MAK4I_DOMAIN>/ready; echo      # -> ready   (TLS profile: end to end)
+./deploy/bootstrap/mak4i-enterprise install --profile private-http
 ```
 
-Confirm the schema migration was applied:
+Behind your own TLS load balancer, bind to the VM's private address and
+give the URL clients will use:
 
 ```bash
-docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"'
+./deploy/bootstrap/mak4i-enterprise install --profile private-http \
+  --bind 10.0.0.12 --endpoint https://mak4i.internal.example.com/mcp
 ```
 
-An unauthenticated request to the MCP endpoint must be refused:
+Optional: `--instance-name "Acme MAK4I" --environment production` sets how
+this installation names itself to AI clients (see
+[Connect AI clients](#7-connect-ai-clients)).
+
+`install`:
+
+1. runs preflight (and stops on any FAIL, changing nothing);
+2. writes `deploy/compose/.env` with mode 600 and a random database
+   password (never printed, never passed on a command line);
+3. validates the Compose configuration and pulls the pinned images;
+4. builds the MAK4I image and starts the stack, running migrations first;
+5. verifies `/health`, `/ready` and that the schema is at the latest
+   migration;
+6. with `tls`, waits (up to 5 minutes, `--cert-timeout`) for a valid
+   certificate, verified over HTTPS on this host;
+7. prints the endpoint and the next steps.
+
+Expected ending:
+
+```
+MAK4I Enterprise v0.1.0-rc.4 is installed and healthy.
+  Profile:   tls
+  Endpoint:  https://mak4i.example.com/mcp
+  ...
+```
+
+**If the certificate isn't ready in time**, `install` exits with code 5
+after printing Caddy's recent certificate messages. MAK4I itself is
+running; only HTTPS isn't ready yet, and Caddy keeps retrying on its own.
+The first certificate request often fails until **public DNS has
+propagated and ports 80 and 443 are reachable**. Fix what the messages
+point to (see [Troubleshooting](#13-troubleshooting)), then check with
+`./deploy/bootstrap/mak4i-enterprise status`.
+
+**If install fails part-way**, it says so and leaves the installation in a
+documented `pending` state. Its configuration and any data are kept. Fix
+the cause (the message and the log say what failed), then run the **same
+install command again** to resume.
+
+**Install is idempotent.** Running it again on a healthy installation
+changes nothing: it never regenerates the database password, creates
+organizations or replaces credentials. It refuses to overwrite a different
+installation: a different profile or domain, existing data volumes without
+their `.env`, or a manual installation (adopt that with
+[`upgrade`](#9-upgrade-from-v010-rc3)).
+
+### 5.4 Verify
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/mcp   # -> 401
+./deploy/bootstrap/mak4i-enterprise status
 ```
 
-If anything here fails, see [Troubleshooting](#12-troubleshooting).
+Expected: every container running and healthy, `/health: ok`,
+`/ready: ready`, the schema at the latest migration, the data counts, and
+with `tls`, `HTTPS: https://<domain>/ready -> ready (certificate
+verified)`, ending with `Healthy.`. From any other machine:
 
-## 7. Bootstrap your organization
+```bash
+curl -fsS https://mak4i.example.com/ready; echo    # -> ready
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://mak4i.example.com/mcp   # -> 401 (credential required)
+```
 
-A fresh deployment has no organizations, principals, or credentials. You
-create them with the `mak4i` CLI, which runs **inside the `mak4i`
-container** via `docker compose exec`. It uses the same database as the
-server, and the database is never exposed.
+## 6. Create your organization and access
 
-Why every command below passes `--actor`: until step 7.4, no credential
-exists to identify you, so you name the acting owner explicitly. That's
-also why the control-plane database must never be reachable from outside.
-Anyone who can connect to it can act as any principal.
+A fresh installation has no organizations, principals or credentials. You
+create them with the `mak4i` operator CLI **inside the `mak4i` container**
+(which talks to the private database directly), from
+`deploy/compose/`:
 
-**7.1 — Create the organization and its owner principal**
+```bash
+cd deploy/compose
+```
+
+With the tls profile, add `--profile tls` after `docker compose` in the
+commands below, or leave it out: `exec` works either way.
+
+Every command below passes `--actor` (the acting owner's principal ID)
+because no credential exists yet. That's also why the database must never
+be reachable from outside: anyone who can connect to it can act as any
+principal.
+
+**6.1 Organization and owner**
 
 ```bash
 docker compose exec mak4i mak4i org create --name "Acme Corp" --owner-display-name "Platform Admin"
 ```
 
-Output (abridged):
+Output (abridged); keep both IDs:
 
 ```json
-{
-  "organization": { "organization_id": "org_…", "name": "Acme Corp", … },
-  "owner":        { "principal_id": "prn_…", "role": "owner", … }
-}
+{ "organization": { "organization_id": "org_…", "name": "Acme Corp" },
+  "owner":        { "principal_id": "prn_…", "role": "owner" } }
 ```
-
-Save both IDs in shell variables for the next commands:
 
 ```bash
 ORG=org_…      # organization.organization_id
 OWNER=prn_…    # owner.principal_id
 ```
 
-**7.2 — Create a project** (the boundary that knowledge and access are scoped to)
+**6.2 Project**
 
 ```bash
 docker compose exec mak4i mak4i project create --actor "$OWNER" --organization-id "$ORG" --name "Platform"
-```
-
-```bash
 PROJECT=prj_…  # project_id from the output
 ```
 
-**7.3 — Grant the owner read/write on the project**
+**6.3 Grants: read/write and read-only**
 
 ```bash
+# The owner: read and write.
 docker compose exec mak4i mak4i grant create --actor "$OWNER" \
   --principal-id "$OWNER" --project-id "$PROJECT" --permissions read,write
+
+# A reviewer who may only read.
+docker compose exec mak4i mak4i principal create --actor "$OWNER" \
+  --organization-id "$ORG" --type human --display-name "Reviewer"
+REVIEWER=prn_…
+docker compose exec mak4i mak4i grant create --actor "$OWNER" \
+  --principal-id "$REVIEWER" --project-id "$PROJECT" --permissions read
 ```
 
-**7.4 — Issue a credential for your first AI client**
+A read-only principal can use `mak4i_list_projects`, `mak4i_get_current`,
+`mak4i_search` and `mak4i_history`; `mak4i_create` and `mak4i_supersede`
+are denied.
+
+**6.4 Credentials**
 
 ```bash
 docker compose exec mak4i mak4i credential issue --actor "$OWNER" \
   --principal-id "$OWNER" --display-name "Owner - Claude Code"
 ```
 
-The output shows the raw token **once**, followed by a ready-to-paste
-connect command built from `MAK4I_PUBLIC_ENDPOINT`:
+The raw token is shown **once**, followed by a ready-to-paste connect
+command for your endpoint:
 
 ```
-Credential created.
-
 credential_id: cred_…
 Authorization: Bearer mak4i_…
-
 Save this token now. It will not be shown again.
-
-Connect an AI client:
-
-MCP endpoint: https://mak4i.example.com/mcp
-
-  claude mcp add mak4i --transport http https://mak4i.example.com/mcp \
-    --header "Authorization: Bearer mak4i_…"
 ```
 
-Store the token somewhere safe. MAK4I keeps only its hash, so a lost
-token can't be recovered: revoke it and issue a new one
-([step 10](#10-add-people-and-projects)).
+MAK4I stores only a hash of the token, so a lost token can't be recovered:
+revoke it and issue a new one.
 
-**7.5 — Add a second principal for the second client**
-
-Two clients could share the owner's identity (issue a second credential
-for `$OWNER`). A more realistic check is a second person with their own
-principal and access to the same project:
-
-```bash
-docker compose exec mak4i mak4i principal create --actor "$OWNER" \
-  --organization-id "$ORG" --type human --display-name "Teammate"
-```
-
-```bash
-TEAMMATE=prn_…  # principal_id from the output
-```
-
-```bash
-docker compose exec mak4i mak4i grant create --actor "$OWNER" \
-  --principal-id "$TEAMMATE" --project-id "$PROJECT" --permissions read,write
-
-docker compose exec mak4i mak4i credential issue --actor "$OWNER" \
-  --principal-id "$TEAMMATE" --display-name "Teammate - Claude.ai"
-```
-
-Save the second token too.
-
-> **Optional:** once you hold the owner's token, you can stop passing
-> `--actor`. The CLI derives the actor by authenticating the credential:
-> `docker compose exec -e MAK4I_TOKEN=<owner token> mak4i mak4i principal list --organization-id "$ORG"`.
-
-## 8. Connect two AI clients
-
-Every MCP client connects the same way: the endpoint URL (ending in
-`/mcp`) plus a static `Authorization: Bearer <token>` header.
-
-**Client A: Claude Code, on your workstation, with the owner's token:**
-
-```bash
-claude mcp add mak4i --transport http https://mak4i.example.com/mcp \
-  --header "Authorization: Bearer <owner token>"
-claude mcp get mak4i        # should report the server as connected
-```
-
-**Client B: Claude.ai (or Cowork), with the teammate's token.** Go to
-**Customize → Connectors → Add custom connector** and set:
-
-- URL: `https://mak4i.example.com/mcp`
-- Authentication: None
-- Request header: name `authorization`, value `Bearer <teammate token>`
-
-Any other MCP client that supports a static header works the same way,
-including a second Claude Code on another machine and Gemini CLI. See
-[`DEMO.md` → Connecting a client](DEMO.md#connecting-a-client) for each
-client's exact steps and known limitations.
-
-## 9. Verify shared project context
-
-Knowledge written through one client must be usable from the other.
-
-1. In **client A**, ask: *"List my MAK4I projects."* You should see
-   `Platform` with read and write permissions.
-2. Still in **client A**: *"Record in MAK4I, project Platform, that our
-   caching decision is an in-process LRU cache with no external cache
-   service."* The client calls `mak4i_create`.
-3. In **client B** (a different principal, a different product):
-   *"Check MAK4I: what is our current caching decision for the Platform
-   project?"* It calls `mak4i_get_current` and answers with the decision
-   recorded in client A.
-
-You can also confirm on the server, as the teammate:
-
-```bash
-docker compose exec mak4i mak4i get-current --principal "$TEAMMATE" --project "$PROJECT"
-```
-
-Your Enterprise Self-Hosted deployment is working. For a longer tour
-(supersede, history, conflicts, denial of an unauthorized project), see
-[`DEMO.md`](DEMO.md#a-full-walkthrough).
-
-## 10. Add people and projects
-
-All of these run as `docker compose exec mak4i mak4i …` and are
-owner-scoped (an owner can never see or change another organization's
-entities):
-
-| Task | Command |
+| Task | `docker compose exec mak4i mak4i …` |
 |---|---|
-| Add a person, service, or agent | `principal create --actor "$OWNER" --organization-id "$ORG" --type human\|service\|agent --display-name "…"` |
+| Add a person, service or agent | `principal create --actor "$OWNER" --organization-id "$ORG" --type human\|service\|agent --display-name "…"` |
 | Add a project | `project create --actor "$OWNER" --organization-id "$ORG" --name "…"` |
 | Give access | `grant create --actor "$OWNER" --principal-id … --project-id … --permissions read` (or `read,write`) |
 | Remove access (immediate) | `grant revoke --actor "$OWNER" --principal-id … --project-id …` |
-| Issue a client credential | `credential issue --actor "$OWNER" --principal-id … --display-name "…"` (optional `--expires-at`) |
+| Issue a credential | `credential issue --actor "$OWNER" --principal-id … --display-name "…"` (optional `--expires-at`) |
 | Revoke a credential (immediate) | `credential revoke --actor "$OWNER" --credential-id cred_…` |
-| Inspect | `org show`, `project list`, `principal list`, `grant list`, `credential list` (never prints tokens) |
-| Onboard an external collaborator in one step | `access provision` (new org + member principal + project + grant + credential; uses `MAK4I_PUBLIC_ENDPOINT`) |
+| Inspect (never prints tokens) | `org show`, `project list`, `principal list`, `grant list`, `credential list` |
+| Onboard an external collaborator in one step | `access provision` (new org, member principal, project, grant and credential) |
 
-Full command reference: [`LOCAL_SETUP.md` → Section 3](LOCAL_SETUP.md#section-3--manual--advanced-setup).
-The commands behave the same against this PostgreSQL control plane.
+Once you hold the owner's token you can stop passing `--actor`: pass the
+token in the environment (`docker compose exec -e MAK4I_TOKEN mak4i …`,
+with `MAK4I_TOKEN` exported in your shell) and the CLI authenticates it.
 
-## 11. Operate: backups, upgrades, logs
+## 7. Connect AI clients
 
-Run these from `deploy/compose/`. If you started with `--profile tls`, add
-`--profile tls` to the `down`, `stop` and `up` commands so `caddy` is
-included. The `docker compose` commands are identical in macOS/Linux shells
-and Windows PowerShell; only file commands and date formatting differ.
-
-### Backups
-
-Back up both stores, on the same schedule. They're independent, and a
-complete recovery needs both. See [`DEPLOYMENT.md` → Backups](DEPLOYMENT.md#backups).
-Also keep a copy of `.env` somewhere safe: without the same
-`POSTGRES_PASSWORD`, the existing `pgdata` volume can't be opened.
-
-The backup is written inside the container and then copied out with
-`docker compose cp`. This avoids shell redirection (`>`), which in Windows
-PowerShell re-encodes output and corrupts binary backups.
+Every MCP client connects with the endpoint URL (ending in `/mcp`) and a
+static `Authorization: Bearer <token>` header. For example, Claude Code:
 
 ```bash
-# 1. Control plane: dump inside the postgres container, verify it, copy it out.
-docker compose exec -T postgres sh -c 'pg_dump -U $POSTGRES_USER -d $POSTGRES_DB -Fc -f /tmp/mak4i-control-plane.dump'
-docker compose exec -T postgres sh -c 'pg_restore --list /tmp/mak4i-control-plane.dump > /dev/null && echo dump-ok'
-docker compose cp postgres:/tmp/mak4i-control-plane.dump ./mak4i-control-plane.dump
-docker compose exec -T postgres rm /tmp/mak4i-control-plane.dump
-
-# 2. Artifacts (the LocalJSONStore volume), copied out as a directory.
-docker compose cp mak4i:/data/artifacts ./mak4i-artifacts-backup
+claude mcp add mak4i-acme --transport http https://mak4i.example.com/mcp \
+  --header "Authorization: Bearer <token>"
 ```
 
-The commands above work unchanged in Windows PowerShell. Move both backups
-(`mak4i-control-plane.dump` and the `mak4i-artifacts-backup` directory)
-and a copy of `.env` somewhere outside this directory, e.g. into a folder
-named with today's date.
+For Claude.ai, Cowork, Gemini CLI and other clients, see
+[`DEMO.md` → Connecting a client](DEMO.md#connecting-a-client).
 
-A backup is **verified** when `dump-ok` was printed and
-`mak4i-artifacts-backup` contains your organization directories (one
-`org_…` directory per organization, holding one `.json` file per artifact
-version).
+**Several MAK4I connections in one client.** Give each installation a
+distinct name (`--instance-name` at install, or `MAK4I_INSTANCE_NAME` in
+`.env`) and register it under a distinct client name. MAK4I identifies
+itself in `mak4i_whoami`, `mak4i_list_projects` and every access denial,
+and tells the client never to retry a denied write on another connection
+without the user's confirmation. The server can't enforce what a client
+does on *other* connections, so review writes your client proposes when
+several MAK4I connections are configured
+([#8](https://github.com/talvikai/mak4i-reference/issues/8),
+[#9](https://github.com/talvikai/mak4i-reference/issues/9)).
 
-**Restore** into a freshly started stack (after `up`, before bootstrapping
-anything), with the backups in `deploy/compose/`:
+## 8. Operate
+
+### 8.1 Status, stop, start and restart
 
 ```bash
-docker compose cp ./mak4i-control-plane.dump postgres:/tmp/mak4i-control-plane.dump
-docker compose exec -T postgres sh -c 'pg_restore -U $POSTGRES_USER -d $POSTGRES_DB --clean --if-exists --no-owner /tmp/mak4i-control-plane.dump && rm /tmp/mak4i-control-plane.dump'
-docker compose cp ./mak4i-artifacts-backup/. mak4i:/data/artifacts/
-docker compose run --rm --no-deps -u root --cap-add CHOWN --entrypoint chown mak4i -R mak4i:mak4i /data/artifacts
-docker compose restart mak4i
+./deploy/bootstrap/mak4i-enterprise status     # health, readiness, schema, data, HTTPS
+./deploy/bootstrap/mak4i-enterprise restart    # restarts and verifies health and data
 ```
 
-These restore commands also work unchanged in Windows PowerShell. The
-`chown` step is required: files copied in with `docker compose cp` are
-owned by root, and the MAK4I server (which runs as an unprivileged user
-with all capabilities dropped) can't write to them until they're re-owned.
+`restart` records the control-plane counts (organizations, principals,
+projects, grants, credentials) before restarting and fails if they differ
+afterwards. Services use `restart: unless-stopped`, so the stack comes
+back after a VM reboot as long as Docker starts at boot
+(`sudo systemctl enable docker`).
 
-### Upgrades
+To stop without removing anything, use the [manual procedure](#113-stop-start-and-logs).
 
-Back up first. Then switch the checkout to the new release tag and rebuild;
-`migrate` applies any new migration automatically before `mak4i`
-restarts. The general procedure is in
-[`DEPLOYMENT.md` → Upgrading](DEPLOYMENT.md#upgrading).
+### 8.2 Persistence check
+
+After a restart or reboot, `status` should show the same counts as
+before, and existing credentials keep working: a credential lives in the
+database until it's revoked or expires, independent of restarts.
+
+### 8.3 Backup
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.3
-git checkout v0.1.0-rc.3
-docker compose up -d --build --wait     # add --profile tls if you use it
+./deploy/bootstrap/mak4i-enterprise backup --backup-dir /srv/mak4i-backups
 ```
 
-The same commands work in Windows PowerShell.
+(Default: `~/mak4i-backups`.) Each backup is a timestamped directory,
+mode 700, containing:
 
-### Logs and audit
-
-```bash
-docker compose logs -f mak4i      # structured JSON audit events, one per line
-docker compose logs migrate       # migration run (empty output + exit 0 = success)
-```
-
-### Stop, remove and purge
-
-Four different operations, from least to most destructive.
-
-**Stop the containers, keeping everything.** Nothing is deleted:
-
-```bash
-docker compose stop        # containers stop; start again with: docker compose start
-docker compose down        # containers and network are removed; volumes (all data) are kept
-docker compose up -d --wait
-```
-
-Both keep the named volumes `mak4i_pgdata` (the control-plane database:
-organizations, principals, projects, grants, credential hashes) and
-`mak4i_artifacts` (every artifact, with lineage and history), plus Caddy's
-certificates. Services use `restart: unless-stopped`, so a running stack
-comes back after a VM reboot as long as Docker starts at boot.
-
-**Remove the application but keep the data.** Removes the containers and,
-optionally, this repository clone. The data volumes stay on the Docker host,
-and they're named by the Compose project (`mak4i`), not by this directory.
-Copy `.env` somewhere safe **first**: it holds `POSTGRES_PASSWORD`, which you
-need to open `mak4i_pgdata` again.
-
-```bash
-cp .env ../../../mak4i-compose.env.backup    # outside the repository
-docker compose down
-cd ../../..
-rm -rf mak4i-reference
-```
-
-```powershell
-Copy-Item .\.env ..\..\..\mak4i-compose.env.backup
-docker compose down
-Set-Location ..\..\..
-Remove-Item -Recurse -Force .\mak4i-reference
-```
-
-To bring it back: clone the release again (§3), copy the saved file to
-`deploy/compose/.env`, and run `docker compose up -d --build --wait`.
-
-**Completely purge all Enterprise Self-Hosted data.** **Destructive and
-irreversible.** Take a backup (above) and confirm it's **verified** first.
-`down -v` deletes the named volumes:
-- `mak4i_pgdata`: organizations, principals, projects, grants, credentials (every issued token stops working), and the control-plane database itself;
-- `mak4i_artifacts`: every artifact, with its complete lineage and history;
-- `mak4i_caddy_data` / `mak4i_caddy_config`: TLS certificates and the ACME account, if you used the `tls` profile.
-
-It doesn't touch `.env`, built images, or MCP client configurations on other
-machines. Remove those registrations from each client
-([`LOCAL_SETUP.md` → Section 4, step 4](LOCAL_SETUP.md#4-remove-the-mcp-registration-from-each-client));
-they'd otherwise point at a server that no longer exists.
-
-```bash
-docker compose --profile tls down -v
-rm .env        # optional: deletes the database password (keep a copy if you'll restore)
-```
-
-```powershell
-docker compose --profile tls down -v
-Remove-Item .\.env        # optional: deletes the database password (keep a copy if you'll restore)
-```
-
-**Remove built images (only when you explicitly want to).** Images aren't
-data; removing them only means the next `up` rebuilds or re-pulls them.
-Remove the MAK4I image this stack built:
-
-```bash
-docker image rm mak4i-reference:local
-```
-
-The same command works in PowerShell. `postgres:16` and `caddy:2` are shared
-public images; remove them (`docker image rm postgres:16 caddy:2`) only if no
-other project on this host uses them. Avoid `docker system prune` or
-`docker volume prune` here: they affect every project on the host, not just
-MAK4I.
-
-## 12. Troubleshooting
-
-| Symptom | Likely cause and fix |
+| File | Contents |
 |---|---|
-| `required variable POSTGRES_PASSWORD is missing a value` | `.env` not created or the password is empty. Run the step 4 commands again. |
-| `migrate` exits non-zero | `docker compose logs migrate`. Usually the password contains URL-unsafe characters: use `openssl rand -hex 32`. If you change the password after the first start, the existing `pgdata` volume still has the old one. |
-| `/ready` returns `503` / `mak4i` unhealthy | Control-plane database unreachable. Check `docker compose ps` (is `postgres` healthy?) and `docker compose logs mak4i`. |
-| `/health` works on the VM but clients can't connect | Without TLS the port is bound to `127.0.0.1` on purpose. Use the SSH tunnel or the TLS profile. |
-| `caddy` restarting / no certificate | `docker compose --profile tls logs caddy`. Check that `MAK4I_DOMAIN` is set, DNS points at this VM, and ports 80 and 443 are reachable from the internet. |
-| Client gets `401` | Missing, wrong, revoked, or expired token, or the header lacks the literal `Bearer ` prefix. The server deliberately doesn't say which. |
-| Client gets `404` | The URL doesn't end in `/mcp`. |
-| Client gets `421 Misdirected Request` | MAK4I is bound to loopback behind a proxy. In this stack `compose.yaml` sets `MAK4I_HOST=0.0.0.0`. Don't override it. That bind is inside the container only: the host publishes the port on `MAK4I_HTTP_BIND` (`127.0.0.1` by default), and only Caddy (80/443) is public. **Don't set `MAK4I_HTTP_BIND=0.0.0.0`**: that would expose plain HTTP on all host interfaces, and binding to `0.0.0.0` provides no security by itself. See [`DEPLOYMENT.md` → Reverse proxy / TLS requirements](DEPLOYMENT.md#reverse-proxy--tls-requirements). |
-| Sessions drop or responses stall behind your own proxy | Your proxy is buffering or timing out streamed responses. Same `DEPLOYMENT.md` section. |
-| `access denied` from a CLI command | `--actor` isn't an owner in that organization, or the entity belongs to another organization. |
-| Permission errors writing artifacts after switching to a bind mount | The container runs as uid `10001`. `chown -R 10001 <dir>` on the host, or keep the named volume. |
+| `control-plane.dump` | PostgreSQL dump (`pg_dump -Fc`), validated with `pg_restore --list` |
+| `artifacts/` | the artifacts volume |
+| `artifacts.sha256` | a checksum per artifact file |
+| `env` | a copy of `.env`, **including the database password**. Keep backups private. |
+| `manifest.env` | release, time, profile, data counts, checksums |
 
-## 13. Moving beyond the quick start
+MAK4I is stopped for a few seconds during the copy so the database and
+artifacts match; `--online` skips that (less consistent). The bootstrap
+refuses to write backups inside the repository (the Docker build context)
+or into system directories. Copy backups off the VM on your own schedule.
 
-This stack is intentionally one VM, one MAK4I replica, and a `.env` file.
-Before production use, see
-[`DEPLOYMENT.md` → Production deployment options](DEPLOYMENT.md#production-deployment-options)
-for:
+### 8.4 Restore
 
-- a managed PostgreSQL service with backups and point-in-time recovery,
-- an object-storage `ArtifactStore` (required for more than one MAK4I
-  replica; `LocalJSONStore` is single-writer),
-- a container platform with health-checked rollouts,
-- control-plane credentials held in a secret manager,
-- TLS termination at your load balancer or ingress.
+```bash
+./deploy/bootstrap/mak4i-enterprise restore --from /srv/mak4i-backups/mak4i-backup-20261001T120000Z
+```
+
+Restore **replaces all current data** of this installation: the database
+contents and the artifacts volume. Credentials issued after the backup stop
+working. It verifies every checksum and the backup's release first, asks
+you to type `restore` (or pass `--yes` for automation), runs migrations,
+and checks that the restored counts match the manifest. Expect MAK4I to be
+unavailable for under a minute on small installations. It restores
+`v0.1.0-rc.4` backups; the installation's current `.env` is kept.
+
+**On a new VM:** install first (section 5), then restore. Restoring
+brings back all organizations, principals, grants and credentials.
+
+### 8.5 Logs
+
+```bash
+cd deploy/compose
+docker compose logs -f mak4i      # structured JSON audit events, one per line
+docker compose logs caddy         # certificates (tls profile)
+```
+
+Every bootstrap run is also logged, mode 600, under
+`~/.local/state/mak4i-enterprise/logs/`. No secret is ever printed, so none
+is logged.
+
+## 9. Upgrade from v0.1.0-rc.3
+
+The supported path is `v0.1.0-rc.3` → `v0.1.0-rc.4`, preserving all data.
+It works for installations made with the RC3 manual guide (the bootstrap
+adopts them) and for bootstrap installations.
+
+```bash
+git fetch --depth 1 origin tag v0.1.0-rc.4
+git checkout v0.1.0-rc.4
+./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
+```
+
+`upgrade`:
+
+1. detects the installed version (from the bootstrap state or the running
+   container; `--from-version v0.1.0-rc.3` if the stack is stopped) and
+   refuses any other path;
+2. **takes a verified backup first** (or verifies one you give with
+   `--use-backup DIR`);
+3. pulls and builds the pinned `v0.1.0-rc.4` images;
+4. recreates the containers; migrations run before MAK4I starts;
+5. verifies the version, health, readiness, schema, unchanged data counts
+   and HTTPS;
+6. prints the rollback steps.
+
+Database, artifacts, certificates, `.env` and every credential are kept.
+RC4 adds no database migration, so rolling back to RC3 keeps working data:
+
+```bash
+git fetch --depth 1 origin tag v0.1.0-rc.3 && git checkout v0.1.0-rc.3   # rollback to the previous release
+cd deploy/compose && docker compose --profile tls up -d --build --wait   # leave out --profile tls for private-http
+```
+
+If PostgreSQL reports a **collation version change** after the upgrade
+(`upgrade` warns and prints the command), rebuild the indexes once. This
+happens when an older installation's PostgreSQL image was built on an
+earlier Debian release than the one RC4 pins.
+
+## 10. Uninstall
+
+### 10.1 Remove the application, keep the data (default)
+
+```bash
+./deploy/bootstrap/mak4i-enterprise uninstall
+```
+
+Removes the containers and their network. **Keeps** the data volumes
+(database, artifacts, certificates), `deploy/compose/.env` (it holds the
+database password needed to open the database again) and your backups.
+Reinstall with the same data and credentials:
+
+```bash
+./deploy/bootstrap/mak4i-enterprise install
+```
+
+### 10.2 Remove everything
+
+> **Destructive and irreversible.** Take a backup first if there's any
+> chance you'll need the data.
+
+```bash
+./deploy/bootstrap/mak4i-enterprise uninstall --destroy-data
+```
+
+It lists exactly what it will delete:
+
+- `mak4i_pgdata`: organizations, principals, projects, grants, credentials
+  (every issued token stops working);
+- `mak4i_artifacts`: every artifact with its lineage and history;
+- `mak4i_caddy_data` / `mak4i_caddy_config`: certificates and the ACME
+  account (tls profile);
+- `deploy/compose/.env`.
+
+You must type `destroy mak4i data` to continue. For automation,
+`--destroy-data --yes-destroy-data --non-interactive` confirms without a
+prompt. Afterwards it verifies that the volumes are gone. It never deletes
+backups, the repository, or the shared `postgres`/`caddy` images;
+`--remove-images` also removes the locally built `mak4i-reference:local`
+image.
+
+Finally, remove the MCP registration from each AI client (for example
+`claude mcp remove mak4i-acme`), or it keeps pointing at a server that no
+longer exists, and delete the repository directory if you no longer need
+it.
+
+## 11. Manual Compose procedure
+
+For troubleshooting, air-gapped or custom environments, and administrators
+who want full control. The bootstrap does all of this for you; don't mix
+the two on one installation unless a step says so. Run these from
+`deploy/compose/`. The `docker compose` commands are the same in Windows
+PowerShell, but Enterprise Self-Hosted is supported on Linux only.
+
+### 11.1 Configure
+
+```bash
+cd deploy/compose
+cp .env.example .env
+chmod 600 .env
+```
+
+Edit `.env` (every variable is described in
+[Configuration reference](#12-configuration-reference)). At least:
+
+- `POSTGRES_PASSWORD`: the output of `openssl rand -hex 32` (letters and
+  digits only; it's embedded in a database URL);
+- `MAK4I_DOMAIN` and `MAK4I_PUBLIC_ENDPOINT=https://<domain>/mcp` for TLS,
+  or `MAK4I_PUBLIC_ENDPOINT=http://127.0.0.1:8080/mcp` without;
+- keep `MAK4I_HTTP_BIND=127.0.0.1` with TLS.
+
+### 11.2 Start and verify
+
+Compose profiles: with `--profile tls`, Caddy is included; without it,
+only PostgreSQL, the migration and MAK4I run. Pass the same profile to
+every later `up`, `down` and `ps`.
+
+```bash
+docker compose --profile tls up -d --build --wait    # or: docker compose up -d --build --wait
+docker compose --profile tls ps -a
+```
+
+Expected: `postgres` healthy, `migrate` exited (0), `mak4i` healthy,
+`caddy` up. Migrations: the `migrate` service runs `alembic upgrade head`
+before `mak4i` starts, on every `up`, and is a no-op when the schema is
+current. Check the applied revision with:
+
+```bash
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"'
+curl -fsS http://127.0.0.1:8080/health; echo    # -> ok
+curl -fsS http://127.0.0.1:8080/ready;  echo    # -> ready
+```
+
+Then [create your organization](#6-create-your-organization-and-access).
+
+### 11.3 Stop, start and logs
+
+```bash
+docker compose --profile tls stop     # stop containers; nothing is deleted
+docker compose --profile tls start
+docker compose --profile tls down     # remove containers and network; volumes (all data) are kept
+docker compose --profile tls up -d --wait
+docker compose logs migrate           # migration run (exit 0 = success)
+```
+
+### 11.4 Backup and restore
+
+The dump is written inside the container and copied out with
+`docker compose cp`, which avoids shell redirection (which corrupts binary
+files in Windows PowerShell).
+
+```bash
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/mak4i-control-plane.dump'
+docker compose exec -T postgres sh -c 'pg_restore --list /tmp/mak4i-control-plane.dump > /dev/null && echo dump-ok'
+docker compose cp postgres:/tmp/mak4i-control-plane.dump /srv/mak4i-backups/mak4i-control-plane.dump
+docker compose exec -T postgres rm /tmp/mak4i-control-plane.dump
+docker compose cp mak4i:/data/artifacts /srv/mak4i-backups/mak4i-artifacts-backup
+cp .env /srv/mak4i-backups/mak4i-compose.env && chmod 600 /srv/mak4i-backups/mak4i-compose.env
+```
+
+Keep backups **outside the repository**. A backup is verified when
+`dump-ok` was printed and the artifacts copy contains one `org_…`
+directory per organization.
+
+Restore into a running stack (after `up`, before creating anything):
+
+```bash
+docker compose stop mak4i
+docker compose cp /srv/mak4i-backups/mak4i-control-plane.dump postgres:/tmp/mak4i-control-plane.dump
+docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner /tmp/mak4i-control-plane.dump && rm /tmp/mak4i-control-plane.dump'
+docker compose run --rm --no-deps --entrypoint find mak4i /data/artifacts -mindepth 1 -delete
+docker compose cp /srv/mak4i-backups/mak4i-artifacts-backup/. mak4i:/data/artifacts/
+docker compose run --rm --no-deps -u root --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown mak4i -R mak4i:mak4i /data/artifacts
+docker compose --profile tls up -d --wait
+```
+
+The `chown` step is required: copied files keep the backup's owner and
+mode, and MAK4I runs unprivileged with all capabilities dropped.
+(`DAC_READ_SEARCH` lets that one-off `chown` descend into backup
+directories you've made private.)
+
+### 11.5 Upgrade
+
+Back up first, then:
+
+```bash
+git fetch --depth 1 origin tag v0.1.0-rc.4
+git checkout v0.1.0-rc.4
+docker compose --profile tls up -d --build --wait
+```
+
+### 11.6 Remove
+
+Keep the data (copy `.env` somewhere safe first; you need its password to
+open the database again):
+
+```bash
+docker compose --profile tls down
+```
+
+**Destroy all data (irreversible; back up first):** `down -v` deletes the
+volumes listed in [Remove everything](#102-remove-everything).
+
+```bash
+docker compose --profile tls down -v
+rm .env
+```
+
+Avoid `docker system prune` or `docker volume prune`: they affect every
+project on the host, not only MAK4I.
+
+## 12. Configuration reference
+
+The one table of Enterprise Self-Hosted settings. The bootstrap writes
+`deploy/compose/.env`; `compose.yaml` fixes the rest.
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `POSTGRES_PASSWORD` | `.env` (required) | Database password. Generated by the bootstrap. Letters and digits only. |
+| `POSTGRES_USER`, `POSTGRES_DB` | `.env` | Database user and name (default `mak4i`). |
+| `MAK4I_PUBLIC_ENDPOINT` | `.env` | The client-facing MCP URL, including `/mcp`. Used by `credential issue` to print connect commands, and shown by `mak4i_whoami`. |
+| `MAK4I_DOMAIN` | `.env` (tls) | The DNS name Caddy gets a certificate for. |
+| `MAK4I_TLS_ISSUER` | `.env` (tls) | `acme` (default; Let's Encrypt) or `internal` (Caddy's own CA, for private networks; clients must trust `/data/caddy/pki/authorities/local/root.crt` from the `caddy` container). |
+| `MAK4I_HTTP_BIND` | `.env` | Host address MAK4I's HTTP port is published on. `127.0.0.1` with TLS; a private address for private-http. **Never** a public address or `0.0.0.0` without a firewall in front. |
+| `MAK4I_HTTP_PORT` | `.env` | Host port for MAK4I's HTTP listener (default `8080`). |
+| `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | `.env` | How this installation names itself to AI clients (`mak4i_whoami`, project listings, denials). Default `MAK4I Enterprise` / `enterprise`. |
+| `MAK4I_BOOTSTRAP_PROFILE`, `MAK4I_INSTALL_STATE`, `MAK4I_INSTALLED_RELEASE` | `.env` | Bootstrap bookkeeping. Don't edit. |
+| `MAK4I_TRANSPORT=http`, `MAK4I_HOST=0.0.0.0`, `MAK4I_PORT=8080`, `MAK4I_STORE=local`, `MAK4I_LOCAL_STORE_DIR=/data/artifacts`, `MAK4I_CONTROL_PLANE_DB` | `compose.yaml` (fixed) | The container runtime settings. `MAK4I_HOST=0.0.0.0` applies **inside** the container only; host exposure is `MAK4I_HTTP_BIND`. |
+
+The full runtime contract for running the container on another platform is
+in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
+
+> **Secrets.** A mode-600 `.env` on a single VM is acceptable for this
+> Developer Preview. Production deployments keep the database URL in a
+> secret manager ([`DEPLOYMENT.md` → Security](DEPLOYMENT.md#security)).
+
+## 13. Troubleshooting
+
+### 13.1 DNS, firewall and certificates
+
+| Symptom | Cause and fix |
+|---|---|
+| Caddy log: `NXDOMAIN` | The `A` record doesn't exist or hasn't propagated. Check `dig +short <domain>` (and `dig +short <domain> @1.1.1.1`). Caddy retries on its own once it resolves. |
+| Caddy log: `timeout` / `connection refused` during the challenge; external `curl` times out while Caddy is listening | Inbound TCP 80/443 is blocked. Allow them in the cloud firewall (on GCP: allow HTTP and HTTPS traffic to the VM, or a VPC rule for `tcp:80,443`; AWS: the security group; Azure: the network security group) and any host firewall. |
+| Public DNS resolves, but the VM (and preflight) still can't | The VM's resolver cached the earlier NXDOMAIN answer. It expires on its own. Meanwhile, test directly: `curl --resolve <domain>:443:<vm-ip> https://<domain>/ready`. |
+| Certificate issued for the wrong IP / a CDN certificate appears | A CDN proxy is in front of the name. Set the record to DNS only until the first certificate is issued. |
+| `install` exited with code 5 after "no valid certificate" | MAK4I is running; HTTPS isn't ready. Fix the cause above, then `status`. |
+| `caddy` restarting | `docker compose --profile tls logs caddy`. Check `MAK4I_DOMAIN` is set. |
+
+### 13.2 Stack
+
+| Symptom | Cause and fix |
+|---|---|
+| Preflight: `this user can't use Docker` | `sudo usermod -aG docker "$USER"`, then log out and back in. |
+| `required variable POSTGRES_PASSWORD is missing a value` | `.env` missing or the password empty. Use the bootstrap, or see [Configure](#111-configure). |
+| `migrate` exits non-zero | `docker compose logs migrate`. Often a password with URL-unsafe characters. Changing the password after the first start doesn't change it inside the existing database. |
+| `/ready` returns `503` | The database is unreachable: is `postgres` healthy (`status`)? |
+| `install` refuses: data volumes exist without `.env` | Restore the saved `.env` (a bootstrap backup has it as `env`), or delete the old data with `uninstall --destroy-data`. |
+| `install` refuses: manual installation | Adopt it with `upgrade` (section 9). |
+| Permission errors writing artifacts after a manual restore | Run the `chown` step in [Backup and restore](#114-backup-and-restore). |
+
+### 13.3 Clients
+
+| Symptom | Cause and fix |
+|---|---|
+| `401` | Missing, wrong, revoked or expired token, or no literal `Bearer ` prefix. The server deliberately doesn't say which. |
+| `404` | The URL doesn't end in `/mcp`. |
+| `421 Misdirected Request` | Your own proxy reaches MAK4I on a loopback bind. Keep `MAK4I_HOST=0.0.0.0` inside the container (as `compose.yaml` sets); control exposure with `MAK4I_HTTP_BIND`. |
+| Sessions drop or responses stall behind your own proxy | It buffers or times out streamed responses; see [`DEPLOYMENT.md` → Reverse proxy requirements](DEPLOYMENT.md#reverse-proxy-requirements). |
+| `access denied … on MAK4I connection '…'` | The principal has no grant (or only `read`) on that project on this installation. It's final for this connection; grant access here rather than writing elsewhere. |
+
+## 14. Bootstrap reference
+
+```
+./deploy/bootstrap/mak4i-enterprise <command> [options]      # --help for all options
+```
+
+| Command | Purpose | Changes state |
+|---|---|---|
+| `preflight` | Check host, Docker, network, configuration | No (`--check-inbound` briefly runs a probe container) |
+| `install` | Configure, start, verify | Yes (`--dry-run` shows the plan) |
+| `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
+| `restart` | Restart and verify health and data | Yes |
+| `upgrade` | Back up, then `v0.1.0-rc.3` → `v0.1.0-rc.4` | Yes |
+| `backup` | Timestamped, verified backup | Writes the backup only |
+| `restore` | Replace all data with a backup | Yes (confirmation required) |
+| `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
+
+Options that never take secrets; `--non-interactive` never prompts (a
+command that needs confirmation then fails unless its confirmation flag is
+given); `--dry-run` shows what a state-changing command would do.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | A step failed (see the message and the log) |
+| 2 | Invalid command line |
+| 3 | Preflight found a FAIL |
+| 4 | Refused: conflicting, orphaned or manual existing installation |
+| 5 | Not healthy, not ready, or the certificate wasn't issued in time |
+| 6 | Confirmation not given |
+| 7 | Unsupported upgrade path or environment |
+| 8 | Backup or restore validation failed |
+
+## 15. Beyond this release
+
+- **Not provided yet:** Terraform (or other infrastructure-as-code)
+  modules for provisioning the VM, IP, DNS and firewall, and Kubernetes or
+  Helm packaging. Both are candidates for future releases; this release
+  supports the single-VM Compose stack and its bootstrap only.
+- **Windows:** the bootstrap is Linux-only; Enterprise Self-Hosted isn't
+  supported on Windows hosts in this release.
+- **Production:** managed PostgreSQL, object storage for artifacts, a
+  secret manager and TLS at your load balancer: see
+  [`DEPLOYMENT.md` → Production options](DEPLOYMENT.md#production-options).
