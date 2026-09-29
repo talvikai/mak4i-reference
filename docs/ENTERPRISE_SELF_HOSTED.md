@@ -189,7 +189,7 @@ before `install` will run; `[WARN]` lines are advisory.
   [PASS] Port 8080 exposure                 127.0.0.1 only; PostgreSQL is never published
   [INFO] Inbound 80/443 from the internet   not tested (add --check-inbound). ...
   ...
-Preflight: 16 passed, 0 warning(s), 0 failed.
+Preflight: 18 passed, 0 warning(s), 0 failed.
 ```
 
 `--check-inbound` also tests that port 80 is reachable from the internet by
