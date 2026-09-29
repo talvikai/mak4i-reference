@@ -436,11 +436,18 @@ production deployment architecture:
   `mak4i init` (without `--force`) to print your owner principal ID, then
   issue one for that principal:
   `mak4i credential issue --actor <owner_principal_id> --principal-id <owner_principal_id>`.
-  Update your MCP client with the printed token. **Don't** use
-  `mak4i init --force` for this. It creates a new, separate organization
-  and project and repoints `.mak4i/` at them, so your existing project
-  context disappears from view (see the `mak4i init --force` note
-  above).
+  Update your MCP client with the printed token. If `mak4i serve` itself
+  should use it, for example for stdio clients, also save it to
+  `.mak4i/credentials.json` as `{"token": "<the printed token>"}`. **Don't**
+  use `mak4i init --force` for this. It creates a new, separate
+  organization and project and repoints `.mak4i/` at them, so your
+  existing project context disappears from view (see the
+  `mak4i init --force` note above).
+- *"Local credential file missing"* from `mak4i serve` — your environment
+  is intact, only `.mak4i/credentials.json` is gone. The message prints
+  your owner principal and the exact `mak4i credential issue` command to
+  run. Save the printed token to `.mak4i/credentials.json` as
+  `{"token": "<the printed token>"}`, then run `mak4i serve` again.
 - *`421 Misdirected Request`* while tunneling* — see "Exposing a local
   server to a cloud client" above: you're bound to `127.0.0.1` while a
   tunnel is forwarding a non-loopback `Host` header. Restart with
