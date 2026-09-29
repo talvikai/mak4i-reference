@@ -32,7 +32,10 @@ x-control-plane-db: &control-plane-db
 
 services:
   postgres:
-    image: postgres:16
+    # Pinned to a reviewed version and digest (issue #10; see the
+    # Dockerfile header for the update procedure). Stay on major 16: a
+    # new PostgreSQL major version needs a dump/restore, not a restart.
+    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mak4i}
@@ -109,7 +112,8 @@ services:
       start_period: 10s
 
   caddy:
-    image: caddy:2
+    # Pinned to a reviewed version and digest (issue #10).
+    image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
     profiles: ["tls"]
     restart: unless-stopped
     environment:

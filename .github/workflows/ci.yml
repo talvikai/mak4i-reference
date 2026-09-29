@@ -1,0 +1,36 @@
+# Tests, release consistency and bootstrap static analysis on every push
+# and pull request. Third-party actions are pinned to full commit SHAs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.32"
+      - name: Install
+        run: uv sync --frozen --extra dev --no-editable
+      - name: Test suite
+        run: uv run --no-sync pytest -q
+      - name: Release consistency
+        run: uv run --no-sync python scripts/check_release_consistency.py --report
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck (pinned image)
+        run: >
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          --severity=style deploy/bootstrap/mak4i-enterprise deploy/bootstrap/lib/*.sh

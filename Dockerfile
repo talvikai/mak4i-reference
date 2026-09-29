@@ -9,9 +9,25 @@
 #
 # The same image also runs the control-plane migrations
 # (`alembic upgrade head`, from WORKDIR) and the operator CLI (`mak4i`).
-FROM python:3.13-slim
+#
+# Base images are pinned to a reviewed version *and* digest (issue #10).
+# To update: pick the new version, resolve its digest with
+# `docker buildx imagetools inspect <image>:<version>`, rebuild, run the
+# test suite and the image scan (.github/workflows/security.yml), and
+# follow the remediation thresholds in SECURITY.md.
+FROM ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c AS uv
 
-RUN pip install --no-cache-dir uv
+FROM python:3.13.15-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+
+# Kept in step with pyproject.toml by scripts/check_release_consistency.py.
+LABEL org.opencontainers.image.title="MAK4I Reference MCP server" \
+      org.opencontainers.image.version="0.1.0-rc.4" \
+      org.opencontainers.image.source="https://github.com/talvikai/mak4i-reference" \
+      org.opencontainers.image.licenses="MIT"
+
+# A pinned uv binary copied from its official image, instead of an
+# unpinned `pip install uv`.
+COPY --from=uv /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -22,6 +38,11 @@ RUN uv sync --frozen --no-dev --no-editable
 
 COPY alembic.ini ./
 COPY migrations/ migrations/
+
+# The base image's system pip (and the packages it vendors) is never used
+# at runtime — MAK4I runs from the uv-built /app/.venv — so remove it
+# rather than ship and scan it.
+RUN python -m pip uninstall --yes pip
 
 # Unprivileged runtime user. /data is the one writable location: mount a
 # persistent volume at /data/artifacts for LocalJSONStore.
