@@ -483,6 +483,10 @@ def test_restore_with_yes_restores_and_verifies_counts(host):
     r = host.run("restore", "--from", str(dest), "--yes")
     assert r.returncode == 0, r.output
     assert "Restore complete and verified" in r.output
+    # Private backups (mode 700 directories) need DAC_READ_SEARCH for the
+    # one-off root chown to descend into them (found on a real host).
+    chowns = [c for c in host.compose_calls("run") if "chown" in c]
+    assert chowns and "DAC_READ_SEARCH" in chowns[0]
 
 
 # -- upgrade -------------------------------------------------------------------------

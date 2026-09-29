@@ -470,7 +470,9 @@ EOF
   run compose run --rm --no-deps --entrypoint find mak4i /data/artifacts -mindepth 1 -delete ||
     die "$EX_BACKUP" "could not clear the artifacts volume"
   run compose cp "$src/artifacts/." mak4i:/data/artifacts/ || die "$EX_BACKUP" "could not copy the artifacts in"
-  run compose run --rm --no-deps -u root --cap-add CHOWN --entrypoint chown mak4i -R mak4i:mak4i /data/artifacts ||
+  # Backups are private (mode 700 directories owned by the host user), so
+  # the one-off root chown also needs DAC_READ_SEARCH to descend into them.
+  run compose run --rm --no-deps -u root --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown mak4i -R mak4i:mak4i /data/artifacts ||
     die "$EX_BACKUP" "could not re-own the restored artifacts"
   run compose run --rm migrate || die "$EX_FAILURE" "database migration after restore failed"
   wait_up "$TIMEOUT" || die "$EX_UNHEALTHY" "the stack did not become healthy after the restore"
