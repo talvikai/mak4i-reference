@@ -280,6 +280,7 @@ def test_tools_list_over_http_returns_the_registered_mak4i_tools(client, raw_tok
     names = {tool["name"] for tool in result["result"]["tools"]}
     assert names == {
         "mak4i_list_projects",
+        "mak4i_whoami",
         "mak4i_search",
         "mak4i_get_current",
         "mak4i_create",
@@ -311,7 +312,7 @@ def two_org_world(control_plane):
         actor=wd_owner, organization_id=wd_org.organization_id, name="SheetCraft"
     )
     mak4i_project = control_plane.create_project(
-        actor=talvik_owner, organization_id=talvik_org.organization_id, name="MAK4I"
+        actor=talvik_owner, organization_id=talvik_org.organization_id, name="ProtocolSpec"
     )
 
     principal_wd = control_plane.create_principal(
@@ -446,5 +447,5 @@ def test_cross_organization_access_is_denied_over_http(client, two_org_world):
     assert "access denied" in message
     # No cross-organization enumeration leakage through the denial text.
     assert "Talvik" not in message
-    assert "MAK4I" not in message
+    assert "ProtocolSpec" not in message
     assert two_org_world["mak4i_project"] not in message

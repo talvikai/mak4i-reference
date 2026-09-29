@@ -9,12 +9,14 @@ from contextvars import ContextVar
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
+from mak4i import __version__
 from mak4i.api import ArtifactNotActiveError, MAK4IEngine, SubjectKeyChangeError
 from mak4i.audit import AuditLogger
 from mak4i.config import build_control_plane_from_env, build_store_from_env
@@ -38,6 +40,103 @@ _DURABLE_VS_CONVERSATION_GUIDANCE = (
 # this gate is enforced by prompting the calling model via the tool
 # description, not by code. This is the exact wording that section
 # specifies for mak4i_create/mak4i_supersede.
+
+_NO_CROSS_CONNECTION_FALLBACK = (
+    "This tool writes only to the MAK4I connection it belongs to. If the "
+    "call is denied or fails, do NOT retry it, or call a write tool, on "
+    "any other MAK4I connection, environment, organization or project "
+    "instead: a project with the same name on another connection is a "
+    "different project in a different trust boundary. Report the failure "
+    "to the user. You may show alternatives only with their full identity "
+    "(connection, environment, organization and project IDs, principal, "
+    "permission — see mak4i_whoami and mak4i_list_projects) and write to "
+    "one only after the user explicitly selects and confirms that exact "
+    "destination."
+)
+# Issues #8/#9: a client with several MAK4I connections retried a denied
+# write on a different connection. The server can't see or stop what a
+# client does on *other* connections, so this is enforced the only way
+# available to it — by telling the calling model, in the tool descriptions,
+# the server instructions and every denial/failure message.
+
+_SERVER_INSTRUCTIONS = (
+    "MAK4I stores durable project knowledge. Each MAK4I connection is a "
+    "separate trust boundary with its own organizations, projects, "
+    "principals and permissions; identify it with mak4i_whoami. Identify "
+    "a project by connection + organization ID + project ID, never by name "
+    "alone. Never retry a denied or failed write on a different MAK4I "
+    "connection without the user's explicit confirmation of that exact "
+    "destination."
+)
+
+
+class ConnectionIdentity(BaseModel):
+    """How this server identifies itself to a client — the part of a
+    write target's identity that no project or principal record carries.
+    Operator-configured, never derived from a request."""
+
+    instance_name: str
+    environment: str
+    public_endpoint: str | None = None
+    server_version: str
+
+
+class OrganizationRef(BaseModel):
+    organization_id: str
+    name: str | None = None
+
+
+class PrincipalRef(BaseModel):
+    principal_id: str
+    display_name: str
+    type: str
+    role: str
+
+
+class WhoAmI(BaseModel):
+    """`mak4i_whoami`'s result: which installation, which organization,
+    which principal — everything a user needs to confirm a destination."""
+
+    connection: ConnectionIdentity
+    organization: OrganizationRef
+    principal: PrincipalRef
+
+
+def resolve_connection_identity() -> ConnectionIdentity:
+    """`MAK4I_INSTANCE_NAME` / `MAK4I_ENVIRONMENT` (operator labels, e.g.
+    "Acme MAK4I" / "production"), `MAK4I_PUBLIC_ENDPOINT`, and the
+    installed package version."""
+    return ConnectionIdentity(
+        instance_name=os.environ.get("MAK4I_INSTANCE_NAME") or "MAK4I",
+        environment=os.environ.get("MAK4I_ENVIRONMENT") or "unspecified",
+        public_endpoint=os.environ.get("MAK4I_PUBLIC_ENDPOINT") or None,
+        server_version=__version__,
+    )
+
+
+def _denied(exc: AccessDeniedError, *, connection: ConnectionIdentity) -> ToolError:
+    """An access denial that names the connection that denied it and says,
+    in the error itself, that it must not be retried elsewhere. It never
+    echoes the requested project, and is identical whether or not that
+    project exists (no existence or enumeration leak)."""
+    return ToolError(
+        f"access denied: this principal has no {exc.permission} permission on "
+        f"the requested project on MAK4I connection {connection.instance_name!r} "
+        f"(environment: {connection.environment}). This denial is final for "
+        "this connection. Do not retry this operation on another MAK4I "
+        "connection, organization or project unless the user explicitly "
+        "selects and confirms that exact destination."
+    )
+
+
+def _write_failed(exc: Exception, *, connection: ConnectionIdentity) -> ToolError:
+    return ToolError(
+        f"{exc} (MAK4I connection {connection.instance_name!r}, environment: "
+        f"{connection.environment}; nothing was written). Do not retry this "
+        "write on another MAK4I connection without the user's explicit "
+        "confirmation of that exact destination."
+    )
+
 
 current_principal: ContextVar[Principal | None] = ContextVar(
     "current_principal", default=None
@@ -115,7 +214,12 @@ def resolve_port() -> int:
     return 8080
 
 
-def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
+def build_server(
+    engine: MAK4IEngine,
+    *,
+    name: str = "mak4i",
+    connection: ConnectionIdentity | None = None,
+) -> MCPServer:
     """Expose the MAK4I tool contract over MCP. This is a thin adapter —
     every tool function below is a couple of lines translating arguments
     to/from an MAK4IEngine call; no protocol logic lives here (requirements
@@ -133,8 +237,13 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
     function serves both the local stdio dev path and the Cloud Run
     deployment — only the store/control-plane backing `engine` and the
     transport passed to `.run()` differ between them.
+
+    `connection` (default: `resolve_connection_identity()`) is how this
+    server names itself in `mak4i_whoami`, `mak4i_list_projects` and every
+    denial — see issues #8/#9 and `_NO_CROSS_CONNECTION_FALLBACK`.
     """
-    server = MCPServer(name)
+    connection = connection or resolve_connection_identity()
+    server = MCPServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> PlainTextResponse:
@@ -145,21 +254,58 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
 
     @server.tool(
         description=(
+            "Identify this MAK4I connection and who you are on it: the "
+            "operator-configured connection name and environment, the "
+            "server version and endpoint, your organization (ID and name) "
+            "and your principal. Read-only. Call it to show the user exactly "
+            "which MAK4I installation a request goes to — especially when "
+            "more than one MAK4I connection is available."
+        )
+    )
+    def mak4i_whoami() -> WhoAmI:
+        principal = _require_principal()
+        organization = engine.organization_of(principal=principal)
+        return WhoAmI(
+            connection=connection,
+            organization=OrganizationRef(
+                organization_id=principal.organization_id,
+                name=organization.name if organization else None,
+            ),
+            principal=PrincipalRef(
+                principal_id=principal.principal_id,
+                display_name=principal.display_name,
+                type=principal.type,
+                role=principal.role,
+            ),
+        )
+
+    @server.tool(
+        description=(
             "List every project the authenticated principal may act on, "
-            "with the permissions granted on each (read and/or write). "
+            "with the permissions granted on each (read and/or write) and "
+            "the connection, environment and organization it belongs to. "
             "Projects the principal has no grant on never appear — call "
-            "this to discover valid `project` values for the other tools."
+            "this to discover valid `project` values for the other tools. "
+            "A project is identified by connection + organization ID + "
+            "project ID, not by name: projects with the same name on "
+            "different MAK4I connections are unrelated."
         )
     )
     def mak4i_list_projects() -> list[dict]:
         principal = _require_principal()
         authorized = engine.list_projects(principal=principal)
+        organization = engine.organization_of(principal=principal)
         return [
             {
                 "project_id": ap.project.project_id,
                 "name": ap.project.name,
                 "organization_id": ap.project.organization_id,
+                "organization_name": organization.name
+                if organization and organization.organization_id == ap.project.organization_id
+                else None,
                 "permissions": list(ap.permissions),
+                "connection": connection.instance_name,
+                "environment": connection.environment,
             }
             for ap in authorized
         ]
@@ -189,7 +335,7 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 status=status,
             )
         except AccessDeniedError as exc:
-            raise ToolError(str(exc)) from exc
+            raise _denied(exc, connection=connection) from exc
 
     @server.tool(
         description=(
@@ -214,7 +360,7 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 principal=principal, project=project, artifact_type=artifact_type, tags=tags
             )
         except AccessDeniedError as exc:
-            raise ToolError(str(exc)) from exc
+            raise _denied(exc, connection=connection) from exc
 
     @server.tool(
         description=(
@@ -224,7 +370,8 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
             "\"session-cache\". Current artifacts of the same type that share a "
             "subject_key are reported as a conflict; omit it for artifacts that "
             "are independent by nature (e.g. separate requirement documents). "
-            "Tags are for classification and search only and never create conflicts."
+            "Tags are for classification and search only and never create conflicts. "
+            + _NO_CROSS_CONNECTION_FALLBACK
         )
     )
     def mak4i_create(
@@ -250,8 +397,10 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 tags=tags,
                 subject_key=subject_key,
             )
-        except (ArtifactAlreadyExistsError, AccessDeniedError, ValueError) as exc:
-            raise ToolError(str(exc)) from exc
+        except AccessDeniedError as exc:
+            raise _denied(exc, connection=connection) from exc
+        except (ArtifactAlreadyExistsError, ValueError) as exc:
+            raise _write_failed(exc, connection=connection) from exc
 
     @server.tool(
         description=(
@@ -265,7 +414,7 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
             "subject_key, supersede the losing lineage with "
             "`release_subject_key=true`: its new version stops claiming that "
             "subject (its history keeps the old key); the winning lineage is "
-            "left unchanged."
+            "left unchanged. " + _NO_CROSS_CONNECTION_FALLBACK
         )
     )
     def mak4i_supersede(
@@ -291,6 +440,8 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
                 subject_key=subject_key,
                 release_subject_key=release_subject_key,
             )
+        except AccessDeniedError as exc:
+            raise _denied(exc, connection=connection) from exc
         except (
             ArtifactNotFoundError,
             ArtifactNotActiveError,
@@ -298,9 +449,8 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
             ValueError,
             ArtifactAlreadyExistsError,
             ConcurrentModificationError,
-            AccessDeniedError,
         ) as exc:
-            raise ToolError(str(exc)) from exc
+            raise _write_failed(exc, connection=connection) from exc
 
     @server.tool(
         description=(
@@ -318,7 +468,7 @@ def build_server(engine: MAK4IEngine, *, name: str = "mak4i") -> MCPServer:
         try:
             return engine.get_history(principal=principal, project=project, lineage_id=lineage_id)
         except AccessDeniedError as exc:
-            raise ToolError(str(exc)) from exc
+            raise _denied(exc, connection=connection) from exc
 
     return server
 

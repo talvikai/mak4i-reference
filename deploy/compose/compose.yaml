@@ -84,6 +84,11 @@ services:
       # The client-facing MCP URL; used by `mak4i credential issue` and
       # `mak4i access provision` to print exact connect instructions.
       MAK4I_PUBLIC_ENDPOINT: ${MAK4I_PUBLIC_ENDPOINT:-http://127.0.0.1:8080/mcp}
+      # How this installation names itself to AI clients (mak4i_whoami,
+      # mak4i_list_projects, access-denied messages) so a client with
+      # several MAK4I connections can tell them apart.
+      MAK4I_INSTANCE_NAME: ${MAK4I_INSTANCE_NAME:-MAK4I Enterprise}
+      MAK4I_ENVIRONMENT: ${MAK4I_ENVIRONMENT:-enterprise}
     volumes:
       - artifacts:/data/artifacts
     ports:

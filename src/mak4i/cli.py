@@ -794,6 +794,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     # preserved unchanged.
     overridden = localconfig.overridden_local_env_keys(config, token)
     localconfig.apply_to_env(config, token)
+    # Issues #8/#9: a local server identifies itself as the local
+    # installation (mak4i_whoami, list_projects, denials) unless the
+    # developer has named it explicitly.
+    os.environ.setdefault("MAK4I_ENVIRONMENT", "local")
+    os.environ.setdefault("MAK4I_INSTANCE_NAME", f"MAK4I local ({config.organization_name})")
     if overridden:
         print(
             f"note: using the local `mak4i init` environment; ignoring "

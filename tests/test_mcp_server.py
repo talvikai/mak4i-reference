@@ -58,7 +58,7 @@ def _authenticated(world):
     current_principal.reset(token)
 
 
-async def test_lists_exactly_the_six_required_tools(server):
+async def test_lists_exactly_the_seven_required_tools(server):
     async with Client(server=server) as client:
         result = await client.list_tools()
         names = {t.name for t in result.tools}
@@ -69,6 +69,7 @@ async def test_lists_exactly_the_six_required_tools(server):
             "mak4i_supersede",
             "mak4i_history",
             "mak4i_list_projects",
+            "mak4i_whoami",
         }
 
 
