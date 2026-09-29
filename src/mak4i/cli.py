@@ -632,8 +632,12 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # Enterprise Self-Hosted work) — that would silently provision a new
     # local organization into a database this command has no business
     # touching. `mak4i init --force` on an *existing* local environment
-    # doesn't reach this branch at all — see the `localconfig.exists()`
-    # check above.
+    # DOES reach this point (the `localconfig.exists()` early return above
+    # is skipped when `--force` is given): it provisions a new
+    # organization/principal/project/grant/credential into the same
+    # default local database, alongside the existing rows (nothing is
+    # deleted), and overwrites `.mak4i/config.json`/`credentials.json` to
+    # point at the new ones.
     stray = [
         key
         for key in ("MAK4I_CONTROL_PLANE_DB", "MAK4I_STORE", "MAK4I_LOCAL_STORE_DIR")
@@ -758,9 +762,25 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     token = localconfig.load_token()
     if token is None:
+        # Deliberately does NOT suggest `mak4i init --force`: it would
+        # provision a new organization/principal/project/grant/credential
+        # and repoint `.mak4i/` at them, hiding this environment's project
+        # context. The environment itself is intact (config.json loaded
+        # above), so the safe recovery is a replacement credential for its
+        # existing owner.
+        owner = config.owner_principal_id
         print(
             f"Local credential file missing ({localconfig.credentials_path()}).\n\n"
-            "Run `mak4i init --force` to provision a fresh local credential.",
+            "Your local environment is still intact:\n"
+            f"  Organization: {config.organization_name} ({config.organization_id})\n"
+            f"  Project:      {config.project_name} ({config.project_id})\n"
+            f"  Principal:    {owner}\n\n"
+            "Issue a replacement credential for that owner principal:\n"
+            f"  mak4i credential issue --actor {owner} --principal-id {owner}\n\n"
+            f"Save the printed token to {localconfig.credentials_path()} as\n"
+            '  {"token": "<the printed token>"}\n'
+            "(readable only by you), then run `mak4i serve` again.\n"
+            "`mak4i init` displays these environment details at any time.",
             file=sys.stderr,
         )
         return 1

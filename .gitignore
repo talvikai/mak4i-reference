@@ -5,9 +5,21 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.env
-*.key.json
 .DS_Store
+
+# Environment files hold secrets (e.g. POSTGRES_PASSWORD). Only sanitized
+# templates are committed.
+.env
+.env.*
+!.env.example
+
+# Credentials, keys and certificates.
+*.key.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
 
 # Local/self-hosted developer environment created by `mak4i init` /
 # `mak4i serve` — control-plane DB, artifact store, and the local config
@@ -16,3 +28,22 @@ build/
 /mak4i-control-plane.db
 /artifacts/local/
 
+# Local databases.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Backups (docs/ENTERPRISE_SELF_HOSTED.md §11 writes these into
+# deploy/compose/). They contain every organization, credential hash and
+# artifact.
+*.dump
+*.bak
+*.backup
+mak4i-artifacts-backup/
+mak4i-*backup*/
+
+# Logs.
+*.log

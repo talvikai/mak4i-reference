@@ -540,6 +540,43 @@ def test_init_force_reprovisions_without_deleting_existing_data(capsys):
     assert control_plane._store.get_organization(first.organization_id) is not None
 
 
+def test_init_force_provisions_a_new_identity_and_repoints_local_config(capsys):
+    """`init --force` is not a credential repair: it creates a new
+    organization, owner principal, project, grant and credential in the
+    same local database and repoints `.mak4i/` at them. The previous
+    environment is left in place, still valid, just no longer in use."""
+    assert _init() == 0
+    first = localconfig.load()
+    first_token = localconfig.load_token()
+    capsys.readouterr()
+
+    assert _init(extra=("--force",)) == 0
+    second = localconfig.load()
+    second_token = localconfig.load_token()
+
+    # Every identity in the local config is new.
+    assert second.organization_id != first.organization_id
+    assert second.owner_principal_id != first.owner_principal_id
+    assert second.project_id != first.project_id
+    assert second.credential_id != first.credential_id
+    assert second_token != first_token
+    # ...provisioned into the same local database.
+    assert second.control_plane_db == first.control_plane_db
+
+    control_plane = build_control_plane_from_env()
+    # Nothing from the first environment was deleted or revoked.
+    assert control_plane._store.get_organization(first.organization_id) is not None
+    assert control_plane._store.get_principal(first.owner_principal_id) is not None
+    assert control_plane._store.get_project(first.project_id) is not None
+    assert control_plane.authenticate(first_token).principal_id == first.owner_principal_id
+    # The new owner belongs to a different organization, so the first
+    # environment's project isn't part of it.
+    assert control_plane.authenticate(second_token).principal_id == second.owner_principal_id
+    new_org_projects = {p.project_id for p in control_plane._store.list_projects(second.organization_id)}
+    assert first.project_id not in new_org_projects
+    assert new_org_projects == {second.project_id}
+
+
 def test_init_non_interactive_missing_value_fails_clearly(capsys):
     exit_code = _run("init")  # no flags, stdin not a tty
     assert exit_code == 1
@@ -570,6 +607,68 @@ def test_serve_before_init_fails_clearly(capsys, monkeypatch):
     assert "has not been initialized" in err
     assert "mak4i init" in err
     assert called == []  # never silently initializes
+
+
+def test_serve_with_missing_credential_file_gives_safe_recovery_guidance(capsys, monkeypatch):
+    """A missing `.mak4i/credentials.json` must point at a replacement
+    credential for the *existing* owner — never at `init --force`, which
+    would provision a new, disconnected organization/project."""
+    assert _init() == 0
+    config = localconfig.load()
+    localconfig.credentials_path().unlink()
+    capsys.readouterr()
+
+    called = []
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: called.append(True))
+    assert _run("serve") == 1
+    assert called == []
+
+    err = capsys.readouterr().err
+    owner = config.owner_principal_id
+    assert "Local credential file missing" in err
+    assert config.organization_id in err
+    assert config.project_id in err
+    assert f"mak4i credential issue --actor {owner} --principal-id {owner}" in err
+    assert str(localconfig.credentials_path()) in err
+    assert "mak4i init" in err  # displays the environment details
+    assert "--force" not in err
+    # Following the guidance must not have changed anything.
+    assert localconfig.load() == config
+
+
+def test_serve_missing_credential_recovery_guidance_works_end_to_end(capsys, monkeypatch):
+    """Follow the printed guidance literally: issue a credential for the
+    existing owner, save it where the message says, and `serve` starts
+    against the *same* organization and project."""
+    assert _init() == 0
+    config = localconfig.load()
+    localconfig.credentials_path().unlink()
+    capsys.readouterr()
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: None)
+    assert _run("serve") == 1
+    capsys.readouterr()
+
+    owner = config.owner_principal_id
+    assert _run(
+        "credential", "issue", "--actor", owner, "--principal-id", owner, "--no-connection-help"
+    ) == 0
+    _credential_id, token = _parse_issued_credential(capsys.readouterr().out)
+    localconfig.credentials_path().write_text(json.dumps({"token": token}) + "\n")
+
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
+    assert _run("serve") == 0
+    assert seen_env["MAK4I_TOKEN"] == token
+    assert seen_env["MAK4I_CONTROL_PLANE_DB"] == config.control_plane_db
+
+    # Same environment: the replacement authenticates as the original owner,
+    # and no new organization or project was provisioned.
+    assert localconfig.load() == config
+    control_plane = build_control_plane_from_env()
+    assert control_plane.authenticate(token).principal_id == owner
+    assert {p.project_id for p in control_plane._store.list_projects(config.organization_id)} == {
+        config.project_id
+    }
 
 
 def test_serve_reads_local_config_and_starts_the_existing_server(capsys, monkeypatch):
