@@ -106,7 +106,7 @@ All configuration is environment variables (`src/mak4i/config.py`):
 | Variable | Required | Meaning |
 |---|---|---|
 | `MAK4I_TRANSPORT` | for HTTP serving | `http` or `streamable-http` (equivalent — the latter is kept for compatibility with configuration already in the field) for a hosted server; `stdio` (default) for local single-user use |
-| `MAK4I_HOST` | no | bind address for the HTTP transport. Defaults to `127.0.0.1` (safe for local protocol testing). **A container/hosted deployment must set this to `0.0.0.0`** to accept connections from outside the container — the default no longer does this implicitly. |
+| `MAK4I_HOST` | no | bind address for the HTTP transport. Defaults to `127.0.0.1` (safe for local protocol testing). **A container/hosted deployment must set this to `0.0.0.0`** to accept connections from outside the container — the default no longer does this implicitly. **Security:** `0.0.0.0` exposes the plain-HTTP listener on all interfaces and provides no security by itself; keep it behind a firewall, private network or authenticated TLS reverse proxy (see "Reverse proxy / TLS requirements"). |
 | `MAK4I_PORT` | no | bind port for the HTTP transport. Takes precedence over `PORT` when both are set. |
 | `PORT` | no | the existing container-platform convention for the bind port (e.g. Cloud Run sets this automatically) — still fully supported; used when `MAK4I_PORT` isn't set. Default `8080` if neither is set. |
 | `MAK4I_CONTROL_PLANE_DB` | yes | SQLAlchemy URL for the control plane. Defaults to `sqlite:///./mak4i-control-plane.db`. Hosted: a `postgresql+psycopg://…` URL. **Keep this in a secret store, never a plaintext env literal or the repo** — it contains the database password. |
@@ -282,7 +282,17 @@ it with the environment above — `MAK4I_TRANSPORT=http` (or
 `streamable-http`), **`MAK4I_HOST=0.0.0.0`** (required — the default is
 loopback-only, safe for local testing but unreachable from outside the
 container), an artifact-store selection, and `MAK4I_CONTROL_PLANE_DB`
-supplied from a secret rather than a literal. Give it a generous request
+supplied from a secret rather than a literal.
+
+> **Security warning:** `MAK4I_HOST=0.0.0.0` exposes MAK4I's
+> **plain-HTTP** listener on every interface of the container or host.
+> Binding to `0.0.0.0` provides no security by itself. Never publish that
+> port directly to the internet. Keep it on a private network or behind a
+> firewall, and put an authenticated TLS reverse proxy (or a platform's
+> managed HTTPS ingress) in front of it. Bearer credentials travel in
+> every request.
+
+Give it a generous request
 timeout — Streamable HTTP sessions are long-lived (an idle session should
 survive a 30s idle gap; the reference deployment uses the platform
 maximum).

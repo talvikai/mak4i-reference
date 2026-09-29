@@ -55,6 +55,12 @@ switch modes at any time; every mode serves the same `.mak4i/` environment
 | local MCP clients that connect by URL | `mak4i serve --transport http` |
 | a cloud-hosted AI client (e.g. Claude.ai) through an HTTPS tunnel | `mak4i serve --transport http --host 0.0.0.0`, then see "Exposing a local server to a cloud client" |
 
+> **Security warning:** `--host 0.0.0.0` exposes the server on **all
+> network interfaces** over plain HTTP, and bearer credentials travel in
+> every request. Use it only behind a firewall, on a trusted network, or
+> behind an authenticated TLS reverse proxy or tunnel. Binding to
+> `0.0.0.0` provides no security by itself.
+
 `mak4i init` finishes by offering two ways to serve the environment it
 created. See "After `mak4i init`: choose stdio or Streamable HTTP" below.
 To stop, reinstall, upgrade, reset or remove MAK4I, see
@@ -112,9 +118,19 @@ no connection to the hosted Developer Preview.
 in Section 3 — it adds no new behavior, just skips the copy-paste.
 
 Run it again and it does **not** overwrite — it prints the existing
-environment and exits. `mak4i init --force` provisions a fresh
-organization/project/credential and repoints the local config; the
-previous rows stay in the database (nothing is deleted).
+environment and exits.
+
+`mak4i init --force` does **not** reuse, repair or reset your existing
+organization. It runs a full first-time setup again. It creates a **new**
+organization, owner principal, project, grant and credential in the same
+local database, and rewrites `.mak4i/config.json` and
+`.mak4i/credentials.json` to point at them. Nothing is deleted: the
+previous organization, its projects, artifacts and credentials stay in
+the database. However, the new identity has no access to them, so your
+existing project context is no longer visible through `mak4i serve`.
+Don't use `--force` to recover a lost or rejected credential. Issue a new
+credential for your existing owner principal instead (see
+"Troubleshooting" under "Exposing a local server to a cloud client").
 
 ### After `mak4i init`: choose stdio or Streamable HTTP
 
@@ -343,6 +359,23 @@ mak4i serve --transport http --host 0.0.0.0
 cloudflared tunnel --url http://127.0.0.1:9090   # your Local HTTP port
 ```
 
+> **Security warning:** `--host 0.0.0.0` makes MAK4I listen on **every
+> network interface** of your machine, not only on the tunnel. Anyone who
+> can reach your machine on the Local HTTP port can talk to it over
+> **plain, unencrypted HTTP**, including your bearer credential in each
+> request. Binding to `0.0.0.0` provides no security by itself.
+> Credential authentication still applies, but the traffic isn't
+> protected.
+> - Use it only on a trusted network, or with a host firewall that blocks
+>   inbound connections to that port from other machines.
+> - Give remote clients only the tunnel's HTTPS URL, never
+>   `http://<your-ip>:<port>`.
+> - Stop the server (or restart it without `--host`) as soon as you're
+>   done testing.
+> - For anything beyond a short test, use an authenticated TLS reverse
+>   proxy such as Enterprise Self-Hosted
+>   ([`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md)).
+
 Two details matter here, both confirmed by direct testing, not just in
 theory:
 
@@ -399,11 +432,19 @@ production deployment architecture:
   or revoked credential. `.mak4i/credentials.json` has the current one —
   but if you have more than one local `.mak4i/` instance (see below),
   check you're reading the one the *running* server actually uses.
-  `mak4i init --force` mints a fresh credential if needed.
+  If you need a new credential for your **existing** environment, run
+  `mak4i init` (without `--force`) to print your owner principal ID, then
+  issue one for that principal:
+  `mak4i credential issue --actor <owner_principal_id> --principal-id <owner_principal_id>`.
+  Update your MCP client with the printed token. **Don't** use
+  `mak4i init --force` for this. It creates a new, separate organization
+  and project and repoints `.mak4i/` at them, so your existing project
+  context disappears from view (see the `mak4i init --force` note
+  above).
 - *`421 Misdirected Request`* while tunneling* — see "Exposing a local
   server to a cloud client" above: you're bound to `127.0.0.1` while a
   tunnel is forwarding a non-loopback `Host` header. Restart with
-  `--host 0.0.0.0`.
+  `--host 0.0.0.0`, and read the security warning in that section first.
 - *A cloud AI client can't determine how the server "signs in"* — some
   clients probe for OAuth support before falling back to a manual
   bearer-token configuration step. MAK4I doesn't implement OAuth by
@@ -422,8 +463,9 @@ production deployment architecture:
   directory if a credential you're sure is correct keeps failing.
 - *A cloud AI client says it can't reach your endpoint at all* — see the
   loopback note above; you need `--host 0.0.0.0` plus a tunnel (for
-  temporary testing) or a real ingress (for an Enterprise Self-Hosted
-  deployment), not a loopback bind.
+  temporary testing, see the security warning above) or a real TLS
+  ingress (for an Enterprise Self-Hosted deployment), not a loopback
+  bind.
 
 ---
 

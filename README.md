@@ -136,6 +136,16 @@ Enterprise Self-Hosted deployment passes `--host 0.0.0.0` (or
 `MAK4I_HOST=0.0.0.0`) explicitly to accept real network connections —
 `docs/ENTERPRISE_SELF_HOSTED.md` walks the full lifecycle, from a clean
 VM through to connected remote clients (reference: `docs/DEPLOYMENT.md`).
+There, `0.0.0.0` applies only *inside* the container. The host publishes
+the port on `127.0.0.1` and only the TLS reverse proxy (Caddy) is
+public.
+
+> **Security warning:** `--host 0.0.0.0` / `MAK4I_HOST=0.0.0.0` exposes
+> MAK4I's **plain-HTTP** listener on **all network interfaces**. Binding
+> to `0.0.0.0` provides no security by itself. Use it only behind a
+> firewall, on a trusted network, or behind an authenticated TLS reverse
+> proxy. Never expose the plain-HTTP port directly to the internet:
+> bearer credentials travel in every request.
 
 **Only Claude Code (stdio) has been directly verified against this
 repository's own testing.** Other CLI-based clients that support
@@ -177,6 +187,13 @@ your own machine.
 mak4i serve --transport http --host 0.0.0.0
 cloudflared tunnel --url http://127.0.0.1:9090
 ```
+
+> **Security warning:** while this runs, MAK4I listens on **every
+> network interface** of your machine over plain HTTP, not only on the
+> tunnel. Use it only on a trusted network or with a host firewall that
+> blocks the port from other machines. Give clients only the tunnel's
+> HTTPS URL, and stop the server when you're done testing. See
+> `docs/LOCAL_SETUP.md`, "Exposing a local server to a cloud client".
 
 `--host 0.0.0.0` matters here: MAK4I's default loopback-only bind
 enables DNS-rebinding protection, which will reject requests carrying the

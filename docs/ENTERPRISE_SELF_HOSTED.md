@@ -525,7 +525,7 @@ MAK4I.
 | `caddy` restarting / no certificate | `docker compose --profile tls logs caddy`. Check that `MAK4I_DOMAIN` is set, DNS points at this VM, and ports 80 and 443 are reachable from the internet. |
 | Client gets `401` | Missing, wrong, revoked, or expired token, or the header lacks the literal `Bearer ` prefix. The server deliberately doesn't say which. |
 | Client gets `404` | The URL doesn't end in `/mcp`. |
-| Client gets `421 Misdirected Request` | MAK4I is bound to loopback behind a proxy. In this stack `compose.yaml` sets `MAK4I_HOST=0.0.0.0`. Don't override it. See [`DEPLOYMENT.md` → Reverse proxy / TLS requirements](DEPLOYMENT.md#reverse-proxy--tls-requirements). |
+| Client gets `421 Misdirected Request` | MAK4I is bound to loopback behind a proxy. In this stack `compose.yaml` sets `MAK4I_HOST=0.0.0.0`. Don't override it. That bind is inside the container only: the host publishes the port on `MAK4I_HTTP_BIND` (`127.0.0.1` by default), and only Caddy (80/443) is public. **Don't set `MAK4I_HTTP_BIND=0.0.0.0`**: that would expose plain HTTP on all host interfaces, and binding to `0.0.0.0` provides no security by itself. See [`DEPLOYMENT.md` → Reverse proxy / TLS requirements](DEPLOYMENT.md#reverse-proxy--tls-requirements). |
 | Sessions drop or responses stall behind your own proxy | Your proxy is buffering or timing out streamed responses. Same `DEPLOYMENT.md` section. |
 | `access denied` from a CLI command | `--actor` isn't an owner in that organization, or the entity belongs to another organization. |
 | Permission errors writing artifacts after switching to a bind mount | The container runs as uid `10001`. `chown -R 10001 <dir>` on the host, or keep the named volume. |

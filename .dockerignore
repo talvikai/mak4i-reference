@@ -1,10 +1,42 @@
 .venv/
 .git/
-.pytest_cache/
-__pycache__/
-*.pyc
-artifacts/schedovia/*.json
-artifacts/schedovia/*.lock
+**/.pytest_cache/
+**/__pycache__/
+**/*.pyc
+artifacts/
 docs/
 tests/
-.env
+
+# Deployment config (deploy/compose/.env holds POSTGRES_PASSWORD) — never
+# part of the image.
+deploy/
+
+# Environment files at any depth; the image gets its config at run time.
+**/.env
+**/.env.*
+
+# Local MAK4I environments (raw credential tokens) and databases.
+**/.mak4i/
+**/.mak4i_backup/
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+**/*.sqlite3
+
+# Credentials, keys and certificates.
+**/*.key.json
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+
+# Backups and logs.
+**/*.dump
+**/*.bak
+**/*.backup
+**/mak4i-artifacts-backup/
+**/mak4i-*backup*/
+**/*.log
