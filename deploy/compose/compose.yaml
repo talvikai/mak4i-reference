@@ -120,6 +120,8 @@ services:
       # Required for this profile. (Not `:?`-enforced: Compose interpolates
       # every service, so that would also break the default no-TLS stack.)
       MAK4I_DOMAIN: ${MAK4I_DOMAIN:-}
+      # acme (Let's Encrypt, the default) or internal (Caddy's own CA).
+      MAK4I_TLS_ISSUER: ${MAK4I_TLS_ISSUER:-acme}
     ports:
       - "80:80"
       - "443:443"
