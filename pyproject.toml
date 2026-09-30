@@ -1,6 +1,6 @@
 [project]
 name = "mak4i"
-version = "0.1.0rc3"
+version = "0.1.0rc4"
 description = "MAK4I reference implementation — durable project knowledge shared across real AI clients via MCP."
 requires-python = ">=3.11"
 license = "MIT"

@@ -201,6 +201,7 @@ def test_real_streamable_http_process_end_to_end(e2e_server):
     tool_names = {tool["name"] for tool in _rpc_message(body)["result"]["tools"]}
     assert tool_names == {
         "mak4i_list_projects",
+        "mak4i_whoami",
         "mak4i_search",
         "mak4i_get_current",
         "mak4i_create",

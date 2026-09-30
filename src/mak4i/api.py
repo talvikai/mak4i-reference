@@ -6,7 +6,7 @@ import uuid
 from mak4i.audit import AuditContext, AuditLogger
 from mak4i.context import ContextBuilder, ContextPackage
 from mak4i.discovery import Discovery
-from mak4i.identity import AuthorizedProject, ControlPlane, Principal
+from mak4i.identity import AuthorizedProject, ControlPlane, Organization, Principal
 from mak4i.identity.authz import Authorizer
 from mak4i.models import Artifact, bump_version, normalize_subject_key, utc_now
 from mak4i.resolution import IntegrityError, Resolver
@@ -471,6 +471,12 @@ class MAK4IEngine:
         permissions each grant confers. Projects outside the principal's
         grants are simply absent (spec §3, test 6)."""
         return self._control_plane.list_authorized_projects(principal)
+
+    def organization_of(self, *, principal: Principal) -> Organization | None:
+        """The organization the authenticated principal belongs to — part of
+        the identity a client shows a user before acting on a connection
+        (issues #8/#9). Only the caller's own organization is ever returned."""
+        return self._control_plane.get_organization(principal.organization_id)
 
     def check_integrity(
         self, *, organization_id: str, project: str

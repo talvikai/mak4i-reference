@@ -32,7 +32,10 @@ x-control-plane-db: &control-plane-db
 
 services:
   postgres:
-    image: postgres:16
+    # Pinned to a reviewed version and digest (issue #10; see the
+    # Dockerfile header for the update procedure). Stay on major 16: a
+    # new PostgreSQL major version needs a dump/restore, not a restart.
+    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mak4i}
@@ -84,6 +87,11 @@ services:
       # The client-facing MCP URL; used by `mak4i credential issue` and
       # `mak4i access provision` to print exact connect instructions.
       MAK4I_PUBLIC_ENDPOINT: ${MAK4I_PUBLIC_ENDPOINT:-http://127.0.0.1:8080/mcp}
+      # How this installation names itself to AI clients (mak4i_whoami,
+      # mak4i_list_projects, access-denied messages) so a client with
+      # several MAK4I connections can tell them apart.
+      MAK4I_INSTANCE_NAME: ${MAK4I_INSTANCE_NAME:-MAK4I Enterprise}
+      MAK4I_ENVIRONMENT: ${MAK4I_ENVIRONMENT:-enterprise}
     volumes:
       - artifacts:/data/artifacts
     ports:
@@ -104,13 +112,16 @@ services:
       start_period: 10s
 
   caddy:
-    image: caddy:2
+    # Pinned to a reviewed version and digest (issue #10).
+    image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
     profiles: ["tls"]
     restart: unless-stopped
     environment:
       # Required for this profile. (Not `:?`-enforced: Compose interpolates
       # every service, so that would also break the default no-TLS stack.)
       MAK4I_DOMAIN: ${MAK4I_DOMAIN:-}
+      # acme (Let's Encrypt, the default) or internal (Caddy's own CA).
+      MAK4I_TLS_ISSUER: ${MAK4I_TLS_ISSUER:-acme}
     ports:
       - "80:80"
       - "443:443"

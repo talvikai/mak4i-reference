@@ -580,4 +580,9 @@ def test_version_flag_reports_the_installed_package_version(capsys):
         cli.main(["--version"])
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == f"mak4i {__version__}"
-    assert __version__ == "0.1.0rc3"
+    # pyproject.toml is the one authoritative version source.
+    import tomllib
+    from pathlib import Path
+
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]

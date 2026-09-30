@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""A stand-in for the `docker` CLI used by tests/test_bootstrap.py.
+
+Every call is appended to $STUB_DIR/calls.jsonl. Behaviour comes from
+$STUB_DIR/state.json, which the tests set up and which this stub updates
+(running services, volumes) so multi-step flows behave like a real host.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+STUB_DIR = Path(os.environ["STUB_DIR"])
+STATE = STUB_DIR / "state.json"
+
+
+def load():
+    return json.loads(STATE.read_text())
+
+
+def save(state):
+    STATE.write_text(json.dumps(state))
+
+
+def main(argv):
+    with (STUB_DIR / "calls.jsonl").open("a") as log:
+        log.write(json.dumps(argv) + "\n")
+    state = load()
+
+    if argv[:1] == ["info"]:
+        if state.get("docker_error"):
+            print(state["docker_error"], file=sys.stderr)
+            return 1
+        fmt = argv[2] if len(argv) > 2 else ""
+        print("/var/lib/docker" if "DockerRootDir" in fmt else "29.1.0")
+        return 0
+    if argv[:2] == ["volume", "inspect"]:
+        return 0 if argv[2] in state.get("volumes", []) else 1
+    if argv[:2] == ["image", "inspect"]:
+        return 0 if state.get("images_present") else 1
+    if argv[:2] == ["image", "rm"] or argv[:1] in (["run"], ["rm"]):
+        return 0
+    if argv[:1] != ["compose"]:
+        print(f"docker stub: unhandled {argv}", file=sys.stderr)
+        return 1
+    return compose(state, argv[1:])
+
+
+def compose(state, args):
+    tls = False
+    rest = []
+    it = iter(args)
+    for a in it:
+        if a in ("--project-directory", "--file", "--env-file"):
+            next(it)
+        elif a == "--profile":
+            tls = next(it) == "tls"
+        else:
+            rest.append(a)
+    if not rest:
+        return 1
+    cmd, opts = rest[0], rest[1:]
+    running = state.setdefault("running", [])
+    volumes = state.setdefault("volumes", [])
+
+    if cmd == "version":
+        print(state.get("compose_version", "2.39.1"))
+        return 0
+    if cmd == "config":
+        return state.get("config_rc", 0)
+    if cmd in ("pull", "build"):
+        return 0
+    if cmd == "up":
+        if state.get("up_fails"):
+            return 1
+        for svc in ["postgres", "mak4i"] + (["caddy"] if tls else []):
+            if svc not in running:
+                running.append(svc)
+        for v in ["mak4i_pgdata", "mak4i_artifacts"] + (["mak4i_caddy_data", "mak4i_caddy_config"] if tls else []):
+            if v not in volumes:
+                volumes.append(v)
+        save(state)
+        return 0
+    if cmd in ("restart", "start"):
+        for svc in opts or ["mak4i"]:
+            if svc in ("postgres", "mak4i", "caddy") and svc not in running:
+                running.append(svc)
+        save(state)
+        return 0
+    if cmd == "stop":
+        state["running"] = [s for s in running if s not in opts]
+        save(state)
+        return 0
+    if cmd == "down":
+        state["running"] = []
+        if "--volumes" in opts or "-v" in opts:
+            state["volumes"] = []
+        save(state)
+        return 0
+    if cmd == "ps":
+        if "--services" in opts:
+            print("\n".join(state["running"]))
+        else:
+            print("SERVICE  STATE")
+        return 0
+    if cmd == "logs":
+        print("caddy  | error obtaining certificate: NXDOMAIN looking up A for example")
+        return 0
+    if cmd == "run":
+        return 0
+    if cmd == "cp":
+        src, dst = opts[-2], opts[-1]
+        if src.startswith("postgres:"):
+            Path(dst).write_bytes(b"PGDMP-fake-dump")
+        elif src.startswith("mak4i:"):
+            d = Path(dst)
+            (d / "org_x" / "prj_y").mkdir(parents=True)
+            for i in range(state.get("artifacts", 5)):
+                (d / "org_x" / "prj_y" / f"a{i}.json").write_text(json.dumps({"i": i}))
+        return 0
+    if cmd == "exec":
+        return exec_(state, opts)
+    print(f"docker stub: unhandled compose {rest}", file=sys.stderr)
+    return 1
+
+
+def exec_(state, opts):
+    opts = [o for o in opts if o != "-T"]
+    service, command = opts[0], opts[1:]
+    if service not in state.get("running", []):
+        print(f"service {service} is not running", file=sys.stderr)
+        return 1
+    joined = " ".join(command)
+    if service == "mak4i":
+        if command[:1] == ["python"]:
+            if "/health" in joined:
+                print("ok" if state.get("healthy", True) else "", end="")
+            elif "/ready" in joined:
+                print("ready" if state.get("healthy", True) else "not ready", end="")
+            return 0 if state.get("healthy", True) else 1
+        if command[:2] == ["alembic", "current"]:
+            print("0001_initial_control_plane (head)")
+            return 0
+        if command[:2] == ["mak4i", "--version"]:
+            print(f"mak4i {state.get('version', '0.1.0rc4')}")
+            return 0
+        if "find /data/artifacts" in joined:
+            print(state.get("artifacts", 5))
+            return 0
+    if service == "postgres":
+        if "count(*)" in joined:
+            print(state.get("counts", "1|2|1|2|3"))
+            return 0
+        if "pg_database_collation_actual_version" in joined:
+            return 0
+        return 0
+    if service == "caddy":
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

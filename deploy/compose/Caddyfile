@@ -1,15 +1,29 @@
 # HTTPS in front of the MAK4I MCP server (compose profile "tls").
 #
-# Caddy obtains and renews a certificate for MAK4I_DOMAIN automatically;
-# the domain's DNS A/AAAA record must point at this VM and ports 80 and
-# 443 must be reachable from the internet for the ACME challenge.
+# MAK4I_TLS_ISSUER selects where the certificate comes from:
+#   acme      (default) Caddy obtains and renews a publicly trusted
+#             certificate for MAK4I_DOMAIN automatically. The domain's DNS
+#             A/AAAA record must point at this VM and ports 80 and 443 must
+#             be reachable from the internet for the ACME challenge.
+#   internal  Caddy issues the certificate from its own local CA (private
+#             networks, air-gapped hosts, testing). Clients must trust that
+#             CA: /data/caddy/pki/authorities/local/root.crt in the caddy
+#             container.
 #
 # Streamable HTTP requirements (see docs/DEPLOYMENT.md, "Reverse proxy /
 # TLS requirements"): responses are streamed, so buffering is disabled
 # (flush_interval -1), and Caddy applies no upstream read timeout by
 # default, so long-lived MCP sessions are not cut off. The Host header is
 # passed through unchanged.
+(tls-acme) {
+}
+
+(tls-internal) {
+	tls internal
+}
+
 {$MAK4I_DOMAIN} {
+	import tls-{$MAK4I_TLS_ISSUER:acme}
 	reverse_proxy mak4i:8080 {
 		flush_interval -1
 	}

@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
+# MAK4I Enterprise Self-Hosted bootstrap (Linux, Docker Engine + Compose).
+#
+# Cloud-agnostic lifecycle tooling for the deploy/compose stack: preflight,
+# install, status, restart, upgrade, backup, restore, uninstall. It never
+# creates or changes cloud resources, DNS records, firewall rules or IAM;
+# it checks for them and reports what's missing.
+#
+# Run it from a checkout of the release it belongs to:
+#   ./deploy/bootstrap/mak4i-enterprise --help
+set -Eeuo pipefail
+# Keep errexit inside $(...) where bash supports it (4.4+); every
+# substitution that can fail is also checked explicitly.
+shopt -s inherit_errexit 2>/dev/null || true
+
+readonly MAK4I_RELEASE="v0.1.0-rc.4"
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
+readonly SCRIPT_DIR REPO_ROOT
+COMPOSE_DIR="$REPO_ROOT/deploy/compose"
+ENV_FILE="$COMPOSE_DIR/.env"
+
+# shellcheck source=lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/envfile.sh
+. "$SCRIPT_DIR/lib/envfile.sh"
+# shellcheck source=lib/cloud-metadata.sh
+. "$SCRIPT_DIR/lib/cloud-metadata.sh"
+# shellcheck source=lib/compose.sh
+. "$SCRIPT_DIR/lib/compose.sh"
+# shellcheck source=lib/preflight.sh
+. "$SCRIPT_DIR/lib/preflight.sh"
+# shellcheck source=lib/commands.sh
+. "$SCRIPT_DIR/lib/commands.sh"
+
+usage() {
+  cat <<EOF
+MAK4I Enterprise Self-Hosted bootstrap ($MAK4I_RELEASE)
+
+Usage: $0 <command> [options]
+
+Commands:
+  preflight   Check host, Docker, network and configuration (read-only)
+  install     Create the configuration, start the stack, verify it
+  status      Show containers, health, readiness, schema, data and HTTPS
+  restart     Restart the stack and verify health and data
+  upgrade     Back up, then upgrade $UPGRADE_FROM -> $MAK4I_RELEASE
+  backup      Timestamped backup of the database, artifacts and .env
+  restore     Replace all data with a backup (asks for confirmation)
+  uninstall   Remove the containers; keeps data unless --destroy-data
+
+Install / preflight options:
+  --profile tls|private-http  tls: Caddy HTTPS on 80/443 (MAK4I stays on 127.0.0.1)
+                              private-http: plain HTTP for a trusted network or
+                              your own TLS load balancer
+  --domain NAME               DNS name for the tls profile
+  --public-ip IP              this VM's public IP (compared with DNS); detected
+                              from cloud instance metadata when omitted
+  --tls-issuer acme|internal  acme (default): Let's Encrypt via Caddy;
+                              internal: Caddy's own CA (private networks)
+  --bind IP                   private-http bind address (default 127.0.0.1)
+  --allow-public-bind         allow a non-private --bind (behind a firewall only)
+  --http-port PORT            host port for MAK4I's HTTP listener (default 8080)
+  --endpoint URL              client-facing MCP URL (default derived)
+  --instance-name NAME        how this installation names itself to AI clients
+  --environment NAME          environment label shown to AI clients
+  --check-inbound             preflight: briefly run a probe on port 80 to test
+                              inbound reachability (starts a temporary container)
+  --cert-timeout SECONDS      how long install waits for the certificate (300)
+
+Other options:
+  --backup-dir DIR            backup location, outside the repository
+                              (default \$HOME/mak4i-backups)
+  --online                    backup without stopping MAK4I (less consistent)
+  --from DIR                  restore: the backup directory
+  --use-backup DIR            upgrade: use this verified backup instead of taking one
+  --from-version TAG          upgrade: assert the installed version
+  --preserve-data             uninstall: keep volumes and .env (the default)
+  --destroy-data              uninstall: delete all data (asks for confirmation)
+  --yes-destroy-data          uninstall: confirm --destroy-data without a prompt (CI)
+  --remove-images             uninstall --destroy-data: also remove the built image
+  --yes                       restore: confirm without a prompt (CI)
+  --timeout SECONDS           wait for healthy services (default 300)
+  --dry-run                   show what would change; change nothing
+  --non-interactive           never prompt; fail if a confirmation is needed
+  -h, --help                  this help
+  --version                   bootstrap version
+
+Exit codes:
+  0 success   1 failure   2 usage   3 preflight failed
+  4 conflicting/unmanaged existing installation   5 not healthy or HTTPS not ready
+  6 not confirmed   7 unsupported upgrade/environment   8 backup/restore validation
+
+Secrets are never accepted on the command line and never printed. Logs are
+written to \${MAK4I_STATE_DIR:-~/.local/state/mak4i-enterprise}/logs.
+Guide: docs/ENTERPRISE_SELF_HOSTED.md
+EOF
+}
+
+usage_error() {
+  err "$*"
+  printf 'Run: %s --help\n' "$0" >&2
+  exit "$EX_USAGE"
+}
+
+# Options each command accepts (besides the global ones).
+_allowed_options() {
+  case "$1" in
+    preflight) echo "profile domain public-ip tls-issuer bind allow-public-bind http-port check-inbound" ;;
+    install) echo "profile domain public-ip tls-issuer bind allow-public-bind http-port check-inbound endpoint instance-name environment cert-timeout timeout" ;;
+    status) echo "" ;;
+    restart) echo "timeout" ;;
+    upgrade) echo "profile backup-dir online use-backup from-version timeout" ;;
+    backup) echo "backup-dir online timeout" ;;
+    restore) echo "from yes timeout" ;;
+    uninstall) echo "preserve-data destroy-data yes-destroy-data remove-images" ;;
+  esac
+}
+
+_is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+parse_options() {
+  local allowed name value takes_value
+  allowed=" $(_allowed_options "$COMMAND") "
+  while (($# > 0)); do
+    case "$1" in
+      -h | --help) usage; exit "$EX_OK" ;;
+      --dry-run) DRY_RUN=1; shift; continue ;;
+      --non-interactive) NON_INTERACTIVE=1; shift; continue ;;
+      --*) ;;
+      *) usage_error "unexpected argument: $1" ;;
+    esac
+    name=${1#--}
+    value=""
+    if [[ "$name" == *=* ]]; then
+      value=${name#*=}
+      name=${name%%=*}
+      takes_value=inline
+    else
+      takes_value=""
+    fi
+    [[ "$allowed" == *" $name "* ]] || usage_error "--$name is not an option of '$COMMAND'"
+    case "$name" in
+      allow-public-bind | check-inbound | online | preserve-data | destroy-data | yes-destroy-data | remove-images | yes)
+        [[ -z "$takes_value" ]] || usage_error "--$name takes no value"
+        shift ;;
+      *)
+        if [[ -z "$takes_value" ]]; then
+          (($# >= 2)) || usage_error "--$name needs a value"
+          value=$2
+          shift 2
+        else
+          shift
+        fi
+        [[ -n "$value" ]] || usage_error "--$name needs a non-empty value" ;;
+    esac
+    case "$name" in
+      profile) [[ "$value" == tls || "$value" == private-http ]] || usage_error "--profile must be tls or private-http"; PROFILE=$value ;;
+      domain) value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]'); valid_domain "$value" || usage_error "--domain '$value' is not a valid DNS name"; DOMAIN=$value ;;
+      public-ip) _is_ipv4 "$value" || usage_error "--public-ip must be an IPv4 address"; PUBLIC_IP=$value ;;
+      tls-issuer) [[ "$value" == acme || "$value" == internal ]] || usage_error "--tls-issuer must be acme or internal"; TLS_ISSUER=$value ;;
+      bind) _is_ipv4 "$value" || usage_error "--bind must be an IPv4 address"; BIND=$value ;;
+      allow-public-bind) ALLOW_PUBLIC_BIND=1 ;;
+      http-port)
+        if ! _is_uint "$value" || ((10#$value < 1 || 10#$value > 65535)); then usage_error "--http-port must be 1-65535"; fi
+        HTTP_PORT=$((10#$value)) ;;
+      check-inbound) CHECK_INBOUND=1 ;;
+      endpoint) [[ "$value" =~ ^https?://[^[:space:]]+/mcp$ ]] || usage_error "--endpoint must be an http(s) URL ending in /mcp"; env_value_ok "$value" || usage_error "--endpoint contains an unsupported character"; ENDPOINT=$value ;;
+      instance-name)
+        if ((${#value} > 80)) || ! env_value_ok "$value"; then usage_error "--instance-name: at most 80 characters, no quotes, \$, # or backslash"; fi
+        INSTANCE_NAME=$value ;;
+      environment) [[ "$value" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || usage_error "--environment: letters, digits, . _ - only"; ENVIRONMENT_LABEL=$value ;;
+      cert-timeout) _is_uint "$value" || usage_error "--cert-timeout must be a number of seconds"; CERT_TIMEOUT=$((10#$value)) ;;
+      timeout) _is_uint "$value" || usage_error "--timeout must be a number of seconds"; TIMEOUT=$((10#$value)) ;;
+      backup-dir) BACKUP_DIR=$value ;;
+      online) ONLINE=1 ;;
+      from) RESTORE_FROM=$value ;;
+      use-backup) USE_BACKUP=$value ;;
+      from-version) [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || usage_error "--from-version must look like $UPGRADE_FROM"; FROM_VERSION=$value ;;
+      preserve-data) PRESERVE_DATA=1 ;;
+      destroy-data) DESTROY_DATA=1 ;;
+      yes-destroy-data) YES_DESTROY=1 ;;
+      remove-images) REMOVE_IMAGES=1 ;;
+      yes) YES=1 ;;
+    esac
+  done
+  if [[ "$PRESERVE_DATA" == 1 && "$DESTROY_DATA" == 1 ]]; then
+    usage_error "--preserve-data and --destroy-data are mutually exclusive"
+  fi
+  if [[ "$YES_DESTROY" == 1 && "$DESTROY_DATA" != 1 ]]; then
+    usage_error "--yes-destroy-data only confirms --destroy-data; pass both"
+  fi
+  if [[ "$REMOVE_IMAGES" == 1 && "$DESTROY_DATA" != 1 ]]; then
+    usage_error "--remove-images is only used with --destroy-data"
+  fi
+  if [[ "$PROFILE" == tls && "$BIND" != 127.0.0.1 ]]; then
+    usage_error "--bind applies to --profile private-http only; with tls, MAK4I is always bound to 127.0.0.1"
+  fi
+}
+
+main() {
+  PROFILE="" DOMAIN="" PUBLIC_IP="" TLS_ISSUER=acme BIND=127.0.0.1 ALLOW_PUBLIC_BIND=0
+  HTTP_PORT=8080 CHECK_INBOUND=0 ENDPOINT="" INSTANCE_NAME="MAK4I Enterprise"
+  ENVIRONMENT_LABEL=enterprise CERT_TIMEOUT=300 TIMEOUT=300 BACKUP_DIR="" ONLINE=0
+  RESTORE_FROM="" USE_BACKUP="" FROM_VERSION="" PRESERVE_DATA=0 DESTROY_DATA=0
+  YES_DESTROY=0 REMOVE_IMAGES=0 YES=0
+
+  (($# > 0)) || { usage; exit "$EX_USAGE"; }
+  case "$1" in
+    -h | --help | help) usage; exit "$EX_OK" ;;
+    --version) printf 'mak4i-enterprise %s\n' "$MAK4I_RELEASE"; exit "$EX_OK" ;;
+    preflight | install | status | restart | upgrade | backup | restore | uninstall) COMMAND=$1 ;;
+    *) usage_error "unknown command: $1" ;;
+  esac
+  shift
+  parse_options "$@"
+  umask 077
+  log_init "$COMMAND"
+  "cmd_$COMMAND"
+}
+
+main "$@"

@@ -3,6 +3,101 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
+## v0.1.0-rc.4 — Developer Preview (unreleased)
+
+Hardening release candidate. Developer Preview: for evaluation and
+feedback, not for production use.
+
+### Added
+
+- **Enterprise bootstrap** (`deploy/bootstrap/mak4i-enterprise`), now the
+  recommended way to install and operate Enterprise Self-Hosted on a Linux
+  VM. Commands: `preflight`, `install`, `status`, `restart`, `upgrade`,
+  `backup`, `restore` and `uninstall`.
+  - **Preflight** checks the host, Docker, DNS against the VM's public IP,
+    ports, outbound HTTPS and existing data, and reports PASS, WARN or FAIL.
+  - **Install** is idempotent, with a generated mode-600 `.env` whose
+    secrets are never printed. It verifies health, readiness, the schema
+    and the HTTPS certificate.
+  - **Upgrade** takes a verified backup first.
+  - **Uninstall** preserves data by default; destroying data needs a
+    confirmation.
+  - Stable exit codes, `--dry-run` and `--non-interactive`.
+  - It never changes cloud resources, DNS, firewalls or IAM.
+- **`mak4i_whoami`**: identifies the MAK4I connection (name, environment,
+  endpoint, version), the organization and the principal
+  ([#8](https://github.com/talvikai/mak4i-reference/issues/8)).
+- `MAK4I_INSTANCE_NAME` and `MAK4I_ENVIRONMENT` name an installation for
+  AI clients. The defaults are `MAK4I local (<organization>)` / `local`
+  for `mak4i serve`, and `MAK4I Enterprise` / `enterprise` for Compose.
+- `MAK4I_TLS_ISSUER=internal`: Caddy's own CA, for private or air-gapped
+  networks. The default is `acme` (Let's Encrypt).
+- Scheduled dependency and container-image scanning, CI, and Dependabot
+  ([#10](https://github.com/talvikai/mak4i-reference/issues/10)).
+- `scripts/check_release_consistency.py` and `scripts/check_docs_links.py`,
+  both run by the test suite.
+
+### Changed
+
+- **Cross-connection write safety**
+  ([#9](https://github.com/talvikai/mak4i-reference/issues/9)):
+  - Access denials name the connection and environment, and say the
+    denial is final for this connection and must not be retried on another
+    one without the user's explicit confirmation.
+  - Other write failures say which connection failed and that nothing was
+    written.
+  - `mak4i_create` / `mak4i_supersede` descriptions and the MCP server
+    instructions carry the same rule.
+  - `mak4i_list_projects` adds `organization_name`, `connection` and
+    `environment`.
+  - Denials still never echo the requested project.
+- **Container images are pinned** to reviewed versions and digests:
+  Python 3.13.15-slim, PostgreSQL 16.15, Caddy 2.11.4, and uv 0.11.32
+  copied from its official image. The unused system `pip` is removed from
+  the MAK4I image, which now has no fixable HIGH or CRITICAL finding.
+  Remediation thresholds are in `SECURITY.md`.
+- **Documentation consolidated:**
+  - `docs/LOCAL_SETUP.md` and `docs/ENTERPRISE_SELF_HOSTED.md` are the only
+    installation and operation guides.
+  - README is an overview with no commands.
+  - `docs/DEPLOYMENT.md` covers architecture and the runtime contract only.
+  - Enterprise requirements now include DNS, firewall and certificate
+    guidance from a verified Google Cloud deployment.
+- `mak4i serve` with a missing `.mak4i/credentials.json` explains how to
+  issue a replacement credential for the existing owner (it no longer
+  suggests `mak4i init --force`).
+
+### Fixed
+
+- The Local and Enterprise uninstall documentation distinguishes
+  preserving data from permanently deleting it. The macOS/Linux and
+  PowerShell commands are listed separately.
+
+### Compatibility
+
+- **No data migration.** RC4 reads and writes the same database schema
+  and artifact format as RC3.
+- The supported upgrade path is `v0.1.0-rc.3` → `v0.1.0-rc.4` (bootstrap
+  `upgrade`, or the manual procedure). Rolling back to RC3 keeps working
+  data.
+- Tool results are unchanged apart from the added `mak4i_list_projects`
+  fields and the wording of error messages. Clients that match on the old
+  `access denied` text still find it at the start of the message.
+
+### Known limitations
+
+- A server can't control what an AI client does on *other* MCP
+  connections. RC4 identifies each connection and states the no-fallback
+  rule everywhere a model reads it, but can't enforce it.
+- Real Let's Encrypt issuance with the bootstrap and a clean VM on a
+  public cloud are part of the release acceptance run, not the automated
+  tests. See the release notes for what was verified.
+- The Windows PowerShell commands (Local only) have been syntax-checked
+  but not yet run on Windows. The Enterprise bootstrap is Linux-only.
+- Terraform (or other infrastructure-as-code) modules and Kubernetes/Helm
+  packaging aren't provided.
+- ChatGPT's connector UI can't send a bearer-token header.
+
 ## v0.1.0-rc.3 — Developer Preview (2026-09-28)
 
 Release candidate. Developer Preview: for evaluation and feedback, not for

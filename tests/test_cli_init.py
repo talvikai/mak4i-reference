@@ -27,6 +27,8 @@ _ENV_KEYS = (
     "PORT",
     "MAK4I_CONTROL_PLANE_CREATE_TABLES",
     "MAK4I_PUBLIC_ENDPOINT",
+    "MAK4I_ENVIRONMENT",
+    "MAK4I_INSTANCE_NAME",
 )
 
 
@@ -690,6 +692,29 @@ def test_serve_reads_local_config_and_starts_the_existing_server(capsys, monkeyp
     assert "MAK4I local server starting" in err
     assert config.project_name in err
     assert token not in err  # banner must not leak the credential
+
+
+def test_serve_identifies_itself_as_the_local_installation(capsys, monkeypatch):
+    """Issues #8/#9: `mak4i_whoami`/denials name this connection."""
+    assert _init() == 0
+    config = localconfig.load()
+    capsys.readouterr()
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
+    assert _run("serve") == 0
+    assert seen_env["MAK4I_ENVIRONMENT"] == "local"
+    assert seen_env["MAK4I_INSTANCE_NAME"] == f"MAK4I local ({config.organization_name})"
+
+
+def test_serve_keeps_an_explicitly_named_instance(capsys, monkeypatch):
+    assert _init() == 0
+    capsys.readouterr()
+    monkeypatch.setenv("MAK4I_INSTANCE_NAME", "Dev laptop")
+    monkeypatch.setenv("MAK4I_ENVIRONMENT", "dev")
+    seen_env = {}
+    monkeypatch.setattr("mak4i.mcp_server.main", lambda **_: seen_env.update(os.environ))
+    assert _run("serve") == 0
+    assert (seen_env["MAK4I_INSTANCE_NAME"], seen_env["MAK4I_ENVIRONMENT"]) == ("Dev laptop", "dev")
 
 
 def test_serve_respects_an_explicit_transport_override(capsys, monkeypatch):

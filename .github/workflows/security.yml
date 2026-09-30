@@ -1,0 +1,92 @@
+# Dependency and container-image vulnerability scanning (issue #10).
+#
+# Runs weekly (so newly published CVEs in unchanged pins are caught), on
+# every pull request that touches the image, the Compose stack or the
+# lockfile, and on demand. Thresholds are defined in SECURITY.md,
+# "Dependency and container-image vulnerabilities":
+#
+# - The MAK4I image built from this repository FAILS on any CRITICAL
+#   vulnerability that has a fix available.
+# - Python dependencies (uv.lock) FAIL on any known vulnerability.
+# - Third-party runtime images (PostgreSQL, Caddy) are REPORTED, not
+#   failed: their fixes come from upstream, and the response is a
+#   reviewed digest bump within the SECURITY.md deadlines.
+name: Security scan
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Dockerfile
+      - uv.lock
+      - pyproject.toml
+      - deploy/compose/**
+      - .github/workflows/security.yml
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_VERSION: v0.74.0
+
+jobs:
+  python-dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.32"
+      - name: pip-audit (all pinned packages, all extras)
+        run: |
+          uv export --frozen --all-extras --no-emit-project --no-hashes -o "$RUNNER_TEMP/requirements.txt"
+          uvx --from 'pip-audit==2.10.1' pip-audit --strict --no-deps -r "$RUNNER_TEMP/requirements.txt"
+
+  mak4i-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: docker build -t mak4i-reference:scan .
+      - name: Report HIGH and CRITICAL
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: mak4i-reference:scan
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+      - name: Fail on fixable CRITICAL
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: mak4i-reference:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  runtime-images:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [postgres, caddy]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the pinned image from compose.yaml
+        id: image
+        run: |
+          image=$(awk -v svc="  ${{ matrix.service }}:" '
+            $0 == svc { found = 1; next }
+            found && $1 == "image:" { print $2; exit }' deploy/compose/compose.yaml)
+          test -n "$image"
+          echo "ref=$image" >> "$GITHUB_OUTPUT"
+      - name: Report HIGH and CRITICAL (upstream image; not a failure)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ steps.image.outputs.ref }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
