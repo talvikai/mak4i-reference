@@ -331,7 +331,10 @@ do_backup() {
   local root dest counts acount host_count dump_sha list_sha
   root=$(safe_backup_root "${BACKUP_DIR:-$HOME/mak4i-backups}") || exit $?
   dest="$root/mak4i-backup-$(utc_stamp)"
-  [[ ! -e "$dest" ]] || die "$EX_BACKUP" "$dest already exists"
+  # Two backups in the same second (e.g. an upgrade retried immediately)
+  # must not collide; suffix the name rather than refuse.
+  local base=$dest n=1
+  while [[ -e "$dest" ]]; do dest="$base-$n"; n=$((n + 1)); done
   service_running postgres || die "$EX_BACKUP" "PostgreSQL isn't running; start the stack first ($0 restart)"
   service_running mak4i || die "$EX_BACKUP" "MAK4I isn't running; start the stack first ($0 restart)"
   counts=$(db_counts)
