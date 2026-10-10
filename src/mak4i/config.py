@@ -47,7 +47,10 @@ def build_control_plane_from_env() -> ControlPlane:
 
     from mak4i.identity.admin_events import SqlAdminEventSink
 
-    url = os.environ.get("MAK4I_CONTROL_PLANE_DB", DEFAULT_CONTROL_PLANE_DB)
+    from mak4i.settings import resolve_secret
+
+    # MAK4I_CONTROL_PLANE_DB or MAK4I_CONTROL_PLANE_DB_FILE (a secret file).
+    url = resolve_secret("MAK4I_CONTROL_PLANE_DB", default=DEFAULT_CONTROL_PLANE_DB)
     create_tables = os.environ.get("MAK4I_CONTROL_PLANE_CREATE_TABLES") == "1"
     store = SqlControlPlaneStore(url, create_tables=create_tables)
     return ControlPlane(store, events=SqlAdminEventSink(store.engine))

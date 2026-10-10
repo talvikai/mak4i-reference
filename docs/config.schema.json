@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/talvikai/mak4i-reference/blob/main/docs/config.schema.json",
+  "title": "MAK4I Reference effective configuration",
+  "description": "Produced by `mak4i config check` from MAK4I_* environment variables. Schema version 1; conforms to MAK-0008 \u00a712.",
+  "$defs": {
+    "AuthSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "principal_credentials": {
+          "const": true,
+          "default": true,
+          "description": "Bearer credentials are always accepted (MAK-0008 \u00a72).",
+          "title": "Principal Credentials",
+          "type": "boolean"
+        },
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OAuthPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Present when MAK4I_OAUTH_ENABLED=1."
+        },
+        "stdio_token": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "required": [
+        "stdio_token"
+      ],
+      "title": "AuthSettings",
+      "type": "object"
+    },
+    "ControlPlaneSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "create_tables": {
+          "default": false,
+          "description": "Throwaway databases only.",
+          "title": "Create Tables",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "database"
+      ],
+      "title": "ControlPlaneSettings",
+      "type": "object"
+    },
+    "LoggingSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "default": "INFO",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR"
+          ],
+          "title": "Level",
+          "type": "string"
+        }
+      },
+      "title": "LoggingSettings",
+      "type": "object"
+    },
+    "OAuthPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "issuer": {
+          "title": "Issuer",
+          "type": "string"
+        },
+        "client_id_metadata_documents": {
+          "title": "Client Id Metadata Documents",
+          "type": "boolean"
+        },
+        "dynamic_client_registration": {
+          "title": "Dynamic Client Registration",
+          "type": "boolean"
+        },
+        "cimd_allowed_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cimd Allowed Hosts",
+          "type": "array"
+        },
+        "authorization_code_ttl_seconds": {
+          "title": "Authorization Code Ttl Seconds",
+          "type": "integer"
+        },
+        "access_token_ttl_seconds": {
+          "title": "Access Token Ttl Seconds",
+          "type": "integer"
+        },
+        "refresh_idle_ttl_seconds": {
+          "title": "Refresh Idle Ttl Seconds",
+          "type": "integer"
+        },
+        "refresh_absolute_ttl_seconds": {
+          "title": "Refresh Absolute Ttl Seconds",
+          "type": "integer"
+        },
+        "sign_in_code_ttl_seconds": {
+          "title": "Sign In Code Ttl Seconds",
+          "type": "integer"
+        },
+        "rate_limit_per_minute": {
+          "title": "Rate Limit Per Minute",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "issuer",
+        "client_id_metadata_documents",
+        "dynamic_client_registration",
+        "cimd_allowed_hosts",
+        "authorization_code_ttl_seconds",
+        "access_token_ttl_seconds",
+        "refresh_idle_ttl_seconds",
+        "refresh_absolute_ttl_seconds",
+        "sign_in_code_ttl_seconds",
+        "rate_limit_per_minute"
+      ],
+      "title": "OAuthPolicy",
+      "type": "object"
+    },
+    "ProxySettings": {
+      "additionalProperties": false,
+      "properties": {
+        "trusted_proxies": {
+          "description": "IPs/CIDRs allowed to set X-Forwarded-For/-Proto (client address for rate limits and logs). Advertised URLs never come from request headers.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Trusted Proxies",
+          "type": "array"
+        }
+      },
+      "title": "ProxySettings",
+      "type": "object"
+    },
+    "SecretRef": {
+      "additionalProperties": false,
+      "description": "Where a secret comes from \u2014 never its value.",
+      "properties": {
+        "source": {
+          "enum": [
+            "env",
+            "file",
+            "default",
+            "unset"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Environment variable name or file path.",
+          "title": "Reference"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SecretRef",
+      "type": "object"
+    },
+    "StorageSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "local",
+          "enum": [
+            "local",
+            "gcs"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "local_store_dir": {
+          "default": "artifacts/local",
+          "title": "Local Store Dir",
+          "type": "string"
+        },
+        "gcs_bucket": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gcs Bucket"
+        },
+        "gcs_project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gcs Project"
+        }
+      },
+      "title": "StorageSettings",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "deployment_mode": {
+      "enum": [
+        "local",
+        "self-hosted"
+      ],
+      "title": "Deployment Mode",
+      "type": "string"
+    },
+    "transport": {
+      "enum": [
+        "stdio",
+        "streamable-http"
+      ],
+      "title": "Transport",
+      "type": "string"
+    },
+    "host": {
+      "title": "Host",
+      "type": "string"
+    },
+    "port": {
+      "maximum": 65535,
+      "minimum": 1,
+      "title": "Port",
+      "type": "integer"
+    },
+    "public_endpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Public Endpoint"
+    },
+    "instance_name": {
+      "default": "MAK4I",
+      "title": "Instance Name",
+      "type": "string"
+    },
+    "environment": {
+      "default": "unspecified",
+      "title": "Environment",
+      "type": "string"
+    },
+    "storage": {
+      "$ref": "#/$defs/StorageSettings"
+    },
+    "control_plane": {
+      "$ref": "#/$defs/ControlPlaneSettings"
+    },
+    "auth": {
+      "$ref": "#/$defs/AuthSettings"
+    },
+    "proxy": {
+      "$ref": "#/$defs/ProxySettings"
+    },
+    "logging": {
+      "$ref": "#/$defs/LoggingSettings"
+    }
+  },
+  "required": [
+    "deployment_mode",
+    "transport",
+    "host",
+    "port",
+    "storage",
+    "control_plane",
+    "auth",
+    "proxy",
+    "logging"
+  ],
+  "type": "object"
+}
