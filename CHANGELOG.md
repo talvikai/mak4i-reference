@@ -3,6 +3,48 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
+## v2.0.0-rc.1 — (unreleased, in progress)
+
+Implements the MAK4I protocol v0.2 drafts (talvikai/mak4i-protocol#6):
+MAK-0006 (identity and access control) and MAK-0008 (MCP binding and
+authorization). Entries are added per milestone; the release is not yet
+prepared.
+
+### Added
+
+- **Built-in OAuth 2.1 authorization server for MCP over HTTP** (MAK-0008
+  §4–§8), off unless `MAK4I_OAUTH_ENABLED=1`: protected-resource and
+  authorization-server metadata (path-prefix aware), `WWW-Authenticate`
+  challenges, authorization code with PKCE S256 only, exact redirect
+  matching with the RFC 8252 loopback rule, CLI-issued one-time sign-in
+  codes (`mak4i oauth sign-in-code`) and a consent page, single-use codes
+  (reuse revokes the authorization), opaque hashed tokens bound to the
+  resource, refresh rotation with replay revocation and idle/absolute
+  lifetimes, RFC 7009 revocation, RFC 9207 `iss`, client registration by
+  pre-registration and client ID metadata documents (SSRF-protected), with
+  dynamic registration optional and off by default.
+- `mak4i oauth` administration: sign-in codes, `client register|list|disable`,
+  `authorization list|revoke` (by authorization, principal or client).
+- Permission `resolve` (MAK-0006 §5.1), used by conflict resolution.
+- Migration `0002_oauth` (additive, reversible).
+
+### Changed
+
+- Effective permissions are the live grant intersected with the
+  authentication ceiling (OAuth scopes); scopes never widen a grant, and a
+  tool call whose token lacks the tool's scope gets HTTP 403
+  `insufficient_scope` (MAK-0006 §5.3, MAK-0008 §4.2).
+- Bearer authentication: the scheme is case-insensitive; duplicate
+  `Authorization` headers and tokens in the query string are rejected
+  (400); credential and OAuth tokens are told apart by prefix and never
+  fall back to each other; MCP sessions are bound to the principal that
+  opened them; `/.well-known/*` returns 404 instead of 401 when absent.
+- A deactivated principal loses access on its very next request, whatever
+  the authentication method; stdio sessions re-check their credential
+  before every operation.
+- `mak4i_whoami` adds `principal.principal_type` (canonical; `type` kept
+  as an alias), `auth_method` and, for OAuth, `scopes`.
+
 ## v0.1.0-rc.5 — Developer Preview (2026-10-10)
 
 Security and maintenance release candidate. Developer Preview: for

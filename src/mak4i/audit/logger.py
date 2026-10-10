@@ -31,6 +31,18 @@ EventType = Literal[
     "GET_CURRENT",
     "SEARCH",
     "HISTORY",
+    # OAuth authorization service (MAK-0008); never carry a secret.
+    "OAUTH_SIGN_IN_CODE_ISSUED",
+    "OAUTH_SIGN_IN",
+    "OAUTH_AUTHORIZATION_GRANTED",
+    "OAUTH_AUTHORIZATION_DENIED",
+    "OAUTH_TOKEN_ISSUED",
+    "OAUTH_TOKEN_REJECTED",
+    "OAUTH_CODE_REUSE",
+    "OAUTH_REFRESH_REPLAY",
+    "OAUTH_REVOKED",
+    "OAUTH_CLIENT_REGISTERED",
+    "OAUTH_CLIENT_DISABLED",
 ]
 
 
@@ -118,6 +130,7 @@ class AuditLogger:
         success: bool,
         principal_id: str | None = None,
         reason: str | None = None,
+        auth_method: str = "credential",
     ) -> dict[str, Any]:
         """Never receives or logs the raw token or its hash — only the
         outcome, the resolved `principal_id` on success, and an internal
@@ -128,7 +141,7 @@ class AuditLogger:
             "AUTHENTICATE_SUCCESS" if success else "AUTHENTICATE_FAILURE",
             correlation_id=correlation_id,
             actor=principal_id or "unauthenticated",
-            context=AuditContext(principal_id=principal_id, auth_method="credential"),
+            context=AuditContext(principal_id=principal_id, auth_method=auth_method),
             **extra,
         )
 
