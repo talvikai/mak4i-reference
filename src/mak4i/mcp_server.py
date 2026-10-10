@@ -22,7 +22,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from mak4i import __version__
-from mak4i.api import ArtifactNotActiveError, MAK4IEngine, SubjectKeyChangeError
+from mak4i.api import MAK4IEngine
 from mak4i.errors import MAK4IError
 from mak4i.resolution import Conflict, ResolutionRecord
 from mak4i.audit import AuditLogger
