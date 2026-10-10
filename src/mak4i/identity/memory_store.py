@@ -42,6 +42,16 @@ class InMemoryControlPlaneStore:
     def put_principal(self, principal: Principal) -> None:
         self._principals[principal.principal_id] = principal
 
+    def get_principal_by_agent_id(self, organization_id: str, agent_id: str) -> Principal | None:
+        return next(
+            (
+                p
+                for p in self._principals.values()
+                if p.organization_id == organization_id and p.agent_id == agent_id
+            ),
+            None,
+        )
+
     def list_principals(self, organization_id: str) -> list[Principal]:
         return [
             p for p in self._principals.values() if p.organization_id == organization_id

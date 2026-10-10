@@ -9,7 +9,14 @@ from mak4i.discovery import Discovery
 from mak4i.identity import AuthorizedProject, ControlPlane, Organization, Principal
 from mak4i.identity.auth_context import AuthContext
 from mak4i.identity.authz import Authorizer, apply_ceiling
-from mak4i.models import Artifact, bump_version, normalize_subject_key, utc_now
+from mak4i.models import (
+    Artifact,
+    ClientMetadata,
+    Provenance,
+    bump_version,
+    normalize_subject_key,
+    utc_now,
+)
 from mak4i.resolution import IntegrityError, Resolver
 from mak4i.store.base import ArtifactNotFoundError, ArtifactStore
 
@@ -111,6 +118,7 @@ class MAK4IEngine:
         subject_key: str | None = None,
         auth_method: str = CREDENTIAL,
         auth: AuthContext | None = None,
+        client: ClientMetadata | None = None,
     ) -> Artifact:
         """Create a brand-new lineage in `project`. The principal must hold
         WRITE on it or `AccessDeniedError` is raised (and audited) before
@@ -145,6 +153,7 @@ class MAK4IEngine:
             superseded_by=None,
             tags=tags or [],
             subject_key=subject_key,
+            provenance=_provenance(principal, auth, auth_method, client, now),
         )
         self._store.put_new(artifact)
         if self._audit is not None:
@@ -170,6 +179,7 @@ class MAK4IEngine:
         release_subject_key: bool = False,
         auth_method: str = CREDENTIAL,
         auth: AuthContext | None = None,
+        client: ClientMetadata | None = None,
     ) -> Artifact:
         """Corrected write sequence per MVP_ARCHITECTURE.md §5, now
         project-scoped. WRITE on `project` is required. `old_id` is looked
@@ -266,6 +276,7 @@ class MAK4IEngine:
             tags=tags if tags is not None else old.tags,
             subject_key=new_subject_key,
             released_subject_key=released_subject_key,
+            provenance=_provenance(principal, auth, auth_method, client, now),
         )
         # Step 5: on the (rare, racy) chance this id was claimed between
         # `_next_available_id`'s check and here, this raises
@@ -527,6 +538,30 @@ class MAK4IEngine:
             if self._store.get(organization_id, project, candidate) is None:
                 return candidate
         raise RuntimeError(f"could not find an available successor id for {old_id!r}")
+
+
+def _provenance(
+    principal: Principal,
+    auth: AuthContext | None,
+    auth_method: str,
+    client: ClientMetadata | None,
+    now,
+) -> Provenance:
+    """MAK-0006 §7: built only from the authenticated principal and the
+    verified authentication context; `client` is the unverified
+    self-report."""
+    method, _ceiling = _resolve_auth(auth, auth_method)
+    return Provenance(
+        principal_id=principal.principal_id,
+        principal_type=principal.type,
+        agent_id=principal.agent_id,
+        display_name=principal.display_name,
+        auth_method="oauth" if method == "oauth" else ("credential" if method == CREDENTIAL else "operator"),
+        credential_id=auth.credential_id if auth is not None else None,
+        oauth_client_id=auth.oauth_client_id if auth is not None else None,
+        client=client,
+        recorded_at=now,
+    )
 
 
 def _resolve_auth(

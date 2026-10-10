@@ -52,6 +52,7 @@ from mak4i.identity import (
 )
 from mak4i.identity.authz import Authorizer
 from mak4i.identity.errors import PrincipalNotFoundError
+from mak4i.identity.models import utc_now
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
@@ -162,6 +163,10 @@ def _resolve_actor(control_plane: ControlPlane, args: argparse.Namespace) -> Pri
 
 
 def _to_json_safe(value: Any) -> Any:
+    if isinstance(value, Principal):
+        # MAK-0006 §2.2: `principal_type` is canonical; `type` stays as an alias.
+        data = value.model_dump(mode="json")
+        return {"principal_type": data["type"], **data}
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if isinstance(value, list):
@@ -375,15 +380,77 @@ def _cmd_project_show(args: argparse.Namespace) -> int:
 def _cmd_principal_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_actor(control_plane, args)
-    principal = control_plane.create_principal(
-        actor=actor,
-        organization_id=args.organization_id,
-        type=args.type,
-        display_name=args.display_name,
-        role=args.role,
-    )
+    try:
+        principal = control_plane.create_principal(
+            actor=actor,
+            organization_id=args.organization_id,
+            type=args.type,
+            display_name=args.display_name,
+            role=args.role,
+            agent_id=args.agent_id,
+        )
+    except ValueError as exc:  # pydantic validation (e.g. agent_id rules)
+        raise _CliError(_first_validation_message(exc)) from exc
     _print_json(principal)
     return 0
+
+
+def _first_validation_message(exc: ValueError) -> str:
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            return str(errors()[0]["msg"]).removeprefix("Value error, ")
+        except Exception:
+            pass
+    return str(exc)
+
+
+def _cmd_principal_rename(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    _print_json(
+        control_plane.rename_principal(
+            actor=actor, principal_id=args.principal_id, display_name=args.display_name
+        )
+    )
+    return 0
+
+
+def _cmd_principal_deactivate(args: argparse.Namespace) -> int:
+    """MAK-0006 §2.3 / §6.3: the principal can no longer authenticate by any
+    method; its OAuth authorizations are revoked. History is untouched."""
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    principal = control_plane.deactivate_principal(actor=actor, principal_id=args.principal_id)
+    revoked = _revoke_oauth_of_deactivated(control_plane, principal.principal_id)
+    _print_json({"principal": principal, "oauth_authorizations_revoked": revoked})
+    return 0
+
+
+def _revoke_oauth_of_deactivated(control_plane: ControlPlane, principal_id: str) -> int:
+    """Revoke OAuth authorizations even when OAuth is currently disabled, so
+    re-enabling it can never revive them. Needs only the database."""
+    from sqlalchemy import inspect
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.oauth.store import SqlOAuthStore
+
+    store = control_plane._store  # noqa: SLF001 - same database by design
+    if not isinstance(store, SqlControlPlaneStore):
+        return 0
+    if "oauth_authorizations" not in inspect(store.engine).get_table_names():
+        return 0
+    oauth_store = SqlOAuthStore(store.engine)
+    principal = control_plane.get_principal(principal_id)
+    count = 0
+    for row in oauth_store.list_authorizations(
+        organization_id=principal.organization_id, principal_id=principal_id
+    ):
+        if row["status"] == "active" and oauth_store.revoke_authorization(
+            row["authorization_id"], "principal_deactivated", utc_now()
+        ):
+            count += 1
+    return count
 
 
 def _cmd_principal_list(args: argparse.Namespace) -> int:
@@ -1306,6 +1373,13 @@ def build_parser() -> argparse.ArgumentParser:
     principal_create.add_argument("--type", required=True, choices=["human", "service", "agent"])
     principal_create.add_argument("--display-name", required=True)
     principal_create.add_argument("--role", default="member", choices=["member", "owner"])
+    principal_create.add_argument(
+        "--agent-id",
+        help=(
+            "required for --type agent: stable organization-scoped id (3-64 of a-z 0-9 . _ -), "
+            "immutable and never reused (MAK-0006 §3)"
+        ),
+    )
     principal_create.set_defaults(func=_cmd_principal_create)
     principal_list = principal_sub.add_parser(
         "list", help="List every principal in an organization (owner-only)."
@@ -1326,6 +1400,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--principal-id", required=True, help="the specific principal to show"
     )
     principal_show.set_defaults(func=_cmd_principal_show)
+    principal_rename = principal_sub.add_parser(
+        "rename", help="Change a principal's display name (ids and recorded history never change)."
+    )
+    principal_rename.add_argument("--actor", help=ACTOR_HELP)
+    principal_rename.add_argument("--principal-id", required=True)
+    principal_rename.add_argument("--display-name", required=True)
+    principal_rename.set_defaults(func=_cmd_principal_rename)
+    principal_deactivate = principal_sub.add_parser(
+        "deactivate",
+        help="Deactivate a principal: all its credentials and OAuth access stop; history is kept.",
+    )
+    principal_deactivate.add_argument("--actor", help=ACTOR_HELP)
+    principal_deactivate.add_argument("--principal-id", required=True)
+    principal_deactivate.set_defaults(func=_cmd_principal_deactivate)
 
     grant = subparsers.add_parser("grant", help="Control-plane: grants (principal x project permissions).")
     grant_sub = grant.add_subparsers(dest="grant_command", required=True)

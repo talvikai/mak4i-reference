@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from mak4i.identity.errors import (
     AccessDeniedError,
+    AgentIdTakenError,
     CredentialInvalidError,
     CredentialNotFoundError,
     CrossOrganizationGrantError,
@@ -173,16 +174,35 @@ class ControlPlane:
         type: PrincipalType,
         display_name: str,
         role: str = "member",
+        agent_id: str | None = None,
     ) -> Principal:
+        """`agent_id` is required for `type="agent"` and assigned here, by an
+        owner, once (MAK-0006 §3.4)."""
         self._require_owner(actor, organization_id)
         principal = Principal(
             organization_id=organization_id,
             type=type,
             role=role,
             display_name=display_name,
+            agent_id=agent_id,
         )
+        if agent_id is not None and self._store.get_principal_by_agent_id(organization_id, agent_id):
+            raise AgentIdTakenError(agent_id)
         self._store.put_principal(principal)
         return principal
+
+    def rename_principal(self, *, actor: Principal, principal_id: str, display_name: str) -> Principal:
+        """Change only `display_name` (MAK-0006 §2.4): identifiers and
+        recorded provenance never change."""
+        target = self._store.get_principal(principal_id)
+        if target is None:
+            raise PrincipalNotFoundError(principal_id)
+        self._require_owner(actor, target.organization_id)
+        renamed = Principal.model_validate(
+            {**target.model_dump(), "display_name": display_name, "updated_at": self._now()}
+        )
+        self._store.put_principal(renamed)
+        return renamed
 
     def grant(
         self,

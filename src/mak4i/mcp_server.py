@@ -9,7 +9,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from urllib.parse import parse_qs
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from mak4i.identity import AccessDeniedError, ControlPlane, CredentialInvalidErr
 from mak4i.identity.auth_context import CREDENTIAL, DEFAULT_AUTH, AuthContext
 from mak4i.identity.authz import Authorizer
 from mak4i.identity.tokens import TOKEN_PREFIX
-from mak4i.models import Artifact
+from mak4i.models import Artifact, ClientMetadata
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
@@ -97,6 +97,9 @@ class PrincipalRef(BaseModel):
     type: str
     """Deprecated alias of `principal_type` (MAK-0006 §2.2)."""
     role: str
+    agent_id: str | None = None
+    """The authenticated agent's stable identifier; `None` for humans and
+    services (MAK-0006 §3). Always taken from the stored principal."""
 
 
 class WhoAmI(BaseModel):
@@ -181,6 +184,22 @@ def _require_principal() -> Principal:
     if principal is None:
         raise ToolError("not authenticated")
     return principal
+
+
+def _client_metadata(ctx: Context | None) -> ClientMetadata | None:
+    """The MCP client's self-reported `clientInfo`, recorded only as
+    unverified metadata (MAK-0006 §7.3). Never raises."""
+    try:
+        params = ctx.session.client_params if ctx is not None else None
+        info = getattr(params, "client_info", None) or getattr(params, "clientInfo", None)
+    except Exception:
+        return None
+    if info is None:
+        return None
+    name, version = getattr(info, "name", None), getattr(info, "version", None)
+    if not name and not version:
+        return None
+    return ClientMetadata(name=str(name)[:200] if name else None, version=str(version)[:100] if version else None)
 
 
 def _require_auth() -> tuple[Principal, AuthContext]:
@@ -310,6 +329,7 @@ def build_server(
                 principal_type=principal.type,
                 type=principal.type,
                 role=principal.role,
+                agent_id=principal.agent_id,
             ),
             auth_method=auth.auth_method,
             scopes=list(auth.scopes) if auth.auth_method == "oauth" else None,
@@ -424,12 +444,14 @@ def build_server(
         rationale: str | None = None,
         tags: list[str] | None = None,
         subject_key: str | None = None,
+        ctx: Context | None = None,
     ) -> Artifact:
         principal, auth = _require_auth()
         try:
             return engine.create_artifact(
                 principal=principal,
                 auth=auth,
+                client=_client_metadata(ctx),
                 project=project,
                 artifact_id=artifact_id,
                 artifact_type=artifact_type,
@@ -468,12 +490,14 @@ def build_server(
         tags: list[str] | None = None,
         subject_key: str | None = None,
         release_subject_key: bool = False,
+        ctx: Context | None = None,
     ) -> Artifact:
         principal, auth = _require_auth()
         try:
             return engine.supersede_artifact(
                 principal=principal,
                 auth=auth,
+                client=_client_metadata(ctx),
                 project=project,
                 old_id=old_id,
                 content=content,
