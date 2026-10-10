@@ -92,6 +92,11 @@ services:
       # several MAK4I connections can tell them apart.
       MAK4I_INSTANCE_NAME: ${MAK4I_INSTANCE_NAME:-MAK4I Enterprise}
       MAK4I_ENVIRONMENT: ${MAK4I_ENVIRONMENT:-enterprise}
+      MAK4I_DEPLOYMENT_MODE: self-hosted
+      # IPs/CIDRs of reverse proxies whose X-Forwarded-For is trusted (client
+      # address for rate limits and logs). Empty: none.
+      MAK4I_TRUSTED_PROXIES: ${MAK4I_TRUSTED_PROXIES:-}
+      MAK4I_LOG_LEVEL: ${MAK4I_LOG_LEVEL:-INFO}
       # Built-in OAuth authorization server (MAK-0008); off unless enabled.
       MAK4I_OAUTH_ENABLED: ${MAK4I_OAUTH_ENABLED:-0}
       MAK4I_OAUTH_ISSUER: ${MAK4I_OAUTH_ISSUER:-}

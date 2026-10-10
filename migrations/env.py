@@ -17,7 +17,12 @@ from mak4i.identity.schema import metadata
 
 config = context.config
 
-_url = os.environ.get("MAK4I_CONTROL_PLANE_DB") or config.get_main_option("sqlalchemy.url")
+_file = os.environ.get("MAK4I_CONTROL_PLANE_DB_FILE")
+_url = (
+    os.environ.get("MAK4I_CONTROL_PLANE_DB")
+    or (open(_file).read().strip() if _file else None)
+    or config.get_main_option("sqlalchemy.url")
+)
 if _url:
     config.set_main_option("sqlalchemy.url", _url)
 

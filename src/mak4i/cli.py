@@ -682,6 +682,29 @@ def _cmd_admin_inventory(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- configuration (MAK-0008 §12) -----------------------------------------------
+
+
+def _cmd_config_check(args: argparse.Namespace) -> int:
+    """Validate the MAK4I_* environment exactly as the server does at start
+    and print the effective configuration — secrets only as references."""
+    from mak4i.settings import ConfigError, describe, load_settings
+
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        raise _CliError(str(exc)) from exc
+    _print_json(describe(settings))
+    return 0
+
+
+def _cmd_config_schema(args: argparse.Namespace) -> int:
+    from mak4i.settings import settings_json_schema
+
+    print(json.dumps(settings_json_schema(), indent=2))
+    return 0
+
+
 # -- conflicts (MAK-0004 Part A; CLI equivalents of the MCP conflict tools) ----
 #
 #   mak4i conflict list     <->  mak4i_list_conflicts
@@ -1656,6 +1679,15 @@ def build_parser() -> argparse.ArgumentParser:
     org_reactivate = org_sub.add_parser("reactivate", help="Instance operator: reactivate a suspended organization.")
     org_reactivate.add_argument("--organization-id", required=True)
     org_reactivate.set_defaults(func=_cmd_org_set_status("active"))
+
+    config = subparsers.add_parser("config", help="Validate and describe the configuration.")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    config_check = config_sub.add_parser(
+        "check", help="Validate MAK4I_* settings as the server would and print them (no secrets)."
+    )
+    config_check.set_defaults(func=_cmd_config_check)
+    config_schema = config_sub.add_parser("schema", help="Print the versioned configuration JSON Schema.")
+    config_schema.set_defaults(func=_cmd_config_schema)
 
     audit = subparsers.add_parser("audit", help="Administrative audit history (owners, own organization).")
     audit_sub = audit.add_subparsers(dest="audit_command", required=True)

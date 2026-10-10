@@ -68,6 +68,17 @@ prepared.
   `org suspend|reactivate` (instance operator); `mak4i admin inventory` and
   the bootstrap's `admin-info` for recovering organization, owner, project,
   principal and credential metadata without querying the database (#21).
+- **Versioned, validated configuration** (MAK-0008 §12): the server
+  validates every `MAK4I_*` setting at start and refuses to run with a full
+  list of problems; `mak4i config check` prints the effective configuration
+  (secrets only as references) following `docs/config.schema.json`
+  (`mak4i config schema`). New settings: `MAK4I_DEPLOYMENT_MODE`,
+  `MAK4I_TRUSTED_PROXIES` (forwarded headers trusted only from listed
+  proxies), `MAK4I_LOG_LEVEL`, and `*_FILE` secret references for the
+  control-plane database URL and the stdio token.
+- Docs: stdio vs HTTP authentication, OAuth state across restarts (no
+  signing keys), custom authentication adapter trust boundary, and an
+  explicit single-replica statement.
 
 ### Changed
 
