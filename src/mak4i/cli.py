@@ -627,7 +627,7 @@ def _cmd_audit_list(args: argparse.Namespace) -> int:
     events = control_plane.list_admin_events(
         actor=actor, organization_id=args.organization_id or actor.organization_id, limit=args.limit
     )
-    _print_json(events)
+    _print_json([event.to_protocol() for event in events])
     return 0
 
 
