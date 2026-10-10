@@ -380,8 +380,14 @@ with `MAK4I_TOKEN` exported in your shell) and the CLI authenticates it.
 
 ## 7. Connect AI clients
 
-Every MCP client connects with the endpoint URL (ending in `/mcp`) and a
-static `Authorization: Bearer <token>` header. For example, Claude Code:
+There are two ways to authenticate a client: a static bearer credential
+(any client that can send a header) or OAuth (clients such as claude.ai
+that connect only through OAuth — see [7.1](#71-oauth-sign-in)). Both can
+be enabled at once.
+
+With a credential, the client connects with the endpoint URL (ending in
+`/mcp`) and a static `Authorization: Bearer <token>` header. For example,
+Claude Code:
 
 ```bash
 claude mcp add mak4i-acme --transport http https://mak4i.example.com/mcp \
@@ -401,6 +407,58 @@ does on *other* connections, so review writes your client proposes when
 several MAK4I connections are configured
 ([#8](https://github.com/talvikai/mak4i-reference/issues/8),
 [#9](https://github.com/talvikai/mak4i-reference/issues/9)).
+
+### 7.1 OAuth sign-in
+
+MAK4I includes its own OAuth 2.1 authorization server (MAK-0008): no
+external identity provider is needed. A person (or an agent's operator)
+signs in on a MAK4I page with a one-time **sign-in code** issued by the
+CLI, then approves the client. Tokens never exceed the principal's
+project grants, and revoking or deactivating takes effect on the next
+request.
+
+**Requirements.** HTTPS on a public name that the client can reach (the
+`tls` profile). Hosted clients such as claude.ai connect from the
+internet, so a private-http installation can't be used with them.
+
+**Enable it** in `deploy/compose/.env`, then restart the stack:
+
+```bash
+MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp
+MAK4I_OAUTH_ENABLED=1
+```
+
+Check discovery (both must return JSON without a token):
+
+```bash
+curl -s https://mak4i.example.com/.well-known/oauth-protected-resource/mcp
+curl -s https://mak4i.example.com/.well-known/oauth-authorization-server
+```
+
+**Connect a client.** Add the server by URL only
+(`https://mak4i.example.com/mcp`) and choose OAuth. Clients that publish a
+client ID metadata document (for example Claude) register themselves; for
+others, an owner pre-registers the client:
+
+```bash
+docker compose exec mak4i mak4i oauth client register --actor "$OWNER" \
+  --name "My client" --redirect-uri https://client.example/callback
+```
+
+**Sign in.** When the client opens the MAK4I sign-in page, get a code
+(for yourself, or as an owner for anyone in your organization) and enter
+it, then review and approve the consent page:
+
+```bash
+docker compose exec mak4i mak4i oauth sign-in-code --actor "$OWNER" --principal-id "$PRINCIPAL"
+```
+
+**Revoke.** `mak4i oauth authorization list|revoke` (by authorization,
+principal or client) and `mak4i oauth client disable`. Deactivating a
+principal or removing its grant also stops its OAuth access at once.
+
+Which clients have been verified end to end is recorded in the release
+notes; treat any other client as untested.
 
 ## 8. Operate
 
@@ -702,6 +760,12 @@ The one table of Enterprise Self-Hosted settings. The bootstrap writes
 | `MAK4I_HTTP_BIND` | `.env` | Host address MAK4I's HTTP port is published on. `127.0.0.1` with TLS; a private address for private-http. **Never** a public address or `0.0.0.0` without a firewall in front. |
 | `MAK4I_HTTP_PORT` | `.env` | Host port for MAK4I's HTTP listener (default `8080`). |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | `.env` | How this installation names itself to AI clients (`mak4i_whoami`, project listings, denials). Default `MAK4I Enterprise` / `enterprise`. |
+| `MAK4I_OAUTH_ENABLED` | `.env` | `1` enables OAuth sign-in ([7.1](#71-oauth-sign-in)); default `0`. Requires an https `MAK4I_PUBLIC_ENDPOINT`. |
+| `MAK4I_OAUTH_ISSUER` | `.env` | OAuth issuer. Default: `MAK4I_PUBLIC_ENDPOINT` without its trailing `/mcp`. Same origin as the endpoint. |
+| `MAK4I_OAUTH_CIMD`, `MAK4I_OAUTH_DCR` | `.env` | Client registration modes: client ID metadata documents (default `1`) and dynamic registration (default `0`). |
+| `MAK4I_OAUTH_CIMD_ALLOWED_HOSTS` | `.env` | Optional comma-separated allowlist of hosts whose client metadata documents are accepted. |
+| `MAK4I_OAUTH_ACCESS_TOKEN_TTL`, `MAK4I_OAUTH_REFRESH_IDLE_TTL`, `MAK4I_OAUTH_REFRESH_ABSOLUTE_TTL`, `MAK4I_OAUTH_CODE_TTL`, `MAK4I_OAUTH_SIGN_IN_CODE_TTL` | `.env` | Token policy in seconds; defaults 3600, 604800 (7 days), 2592000 (30 days), 60, 600. After the idle or absolute lifetime a person must sign in again. |
+| `MAK4I_OAUTH_RATE_LIMIT_PER_MINUTE` | `.env` | Sign-in / token / revocation / registration attempts per client address per minute (default 20). |
 | `MAK4I_BOOTSTRAP_PROFILE`, `MAK4I_INSTALL_STATE`, `MAK4I_INSTALLED_RELEASE` | `.env` | Bootstrap bookkeeping. Don't edit. |
 | `MAK4I_TRANSPORT=http`, `MAK4I_HOST=0.0.0.0`, `MAK4I_PORT=8080`, `MAK4I_STORE=local`, `MAK4I_LOCAL_STORE_DIR=/data/artifacts`, `MAK4I_CONTROL_PLANE_DB` | `compose.yaml` (fixed) | The container runtime settings. `MAK4I_HOST=0.0.0.0` applies **inside** the container only; host exposure is `MAK4I_HTTP_BIND`. |
 
@@ -741,7 +805,9 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 
 | Symptom | Cause and fix |
 |---|---|
-| `401` | Missing, wrong, revoked or expired token, or no literal `Bearer ` prefix. The server deliberately doesn't say which. |
+| `401` | Missing, wrong, revoked or expired token. The server deliberately doesn't say which. With OAuth enabled the response's `WWW-Authenticate` header tells OAuth clients where to sign in. |
+| `403 insufficient_scope` | An OAuth token without the scope a tool needs (for example a read-only connection calling a write tool). Reconnect and approve the wider scope; scopes never exceed the principal's grants anyway. |
+| The OAuth sign-in page says the code is invalid | Codes work once and expire after 10 minutes; issue a new one with `mak4i oauth sign-in-code`. |
 | `404` | The URL doesn't end in `/mcp`. |
 | `421 Misdirected Request` | Your own proxy reaches MAK4I on a loopback bind. Keep `MAK4I_HOST=0.0.0.0` inside the container (as `compose.yaml` sets); control exposure with `MAK4I_HTTP_BIND`. |
 | Sessions drop or responses stall behind your own proxy | It buffers or times out streamed responses; see [`DEPLOYMENT.md` → Reverse proxy requirements](DEPLOYMENT.md#reverse-proxy-requirements). |

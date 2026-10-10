@@ -582,6 +582,6 @@ from `.mak4i/`, so you normally set none of them.
 | A working credential suddenly returns `401` after changing directories | `mak4i serve` uses the `.mak4i/` in its current directory. Two directories mean two separate environments with different credentials (their banners can look identical). |
 | `421 Misdirected Request` while tunneling | The server is on loopback; restart with `--host 0.0.0.0` after reading its [security warning](#43-network-http-and-tunnels). |
 | A cloud client can't reach your endpoint | It can't reach `127.0.0.1` on your machine: use a tunnel (section 4.3) or Enterprise Self-Hosted. |
-| A cloud client asks how the server "signs in" | MAK4I doesn't implement OAuth by design; use the client's custom-header setup and enter `Authorization: Bearer <credential>`. |
+| A cloud client asks how the server "signs in" | That client uses OAuth. MAK4I's OAuth sign-in needs a public HTTPS endpoint the client can reach (see [Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)); on a local install, use the client's custom-header setup with `Authorization: Bearer <credential>` instead. |
 | `access denied … on MAK4I connection '…'` | Your principal has no grant (or only `read`) on that project here. It's final for this connection: don't write the same thing to another MAK4I connection without choosing it deliberately. |
 | `ERROR: MAK4I could not start. 127.0.0.1:<port> is already in use.` | Stop the other process, or use `--port`. |
