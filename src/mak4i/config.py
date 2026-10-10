@@ -53,6 +53,11 @@ def build_control_plane_from_env() -> ControlPlane:
     url = resolve_secret("MAK4I_CONTROL_PLANE_DB", default=DEFAULT_CONTROL_PLANE_DB)
     create_tables = os.environ.get("MAK4I_CONTROL_PLANE_CREATE_TABLES") == "1"
     store = SqlControlPlaneStore(url, create_tables=create_tables)
+    # A local SQLite environment created by an earlier release is brought up
+    # to the current schema in place (Alembic-managed databases are not).
+    from mak4i.identity.local_schema import reconcile
+
+    reconcile(store.engine)
     return ControlPlane(store, events=SqlAdminEventSink(store.engine))
 
 

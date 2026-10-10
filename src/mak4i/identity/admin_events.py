@@ -37,6 +37,22 @@ class AdminEvent(BaseModel):
     detail: str | None = None
     correlation_id: str
 
+    def to_protocol(self) -> dict:
+        """The `admin-event.schema.json` shape (MAK-0006 §8.5)."""
+        out = {
+            "event_id": self.event_id,
+            "occurred_at": self.occurred_at.isoformat(),
+            "organization_id": self.organization_id,
+            "actor": {"principal_id": self.actor_principal_id, "auth_method": self.actor_auth_method},
+            "action": self.action,
+            "targets": dict(self.targets),
+            "outcome": self.outcome,
+            "correlation_id": self.correlation_id,
+        }
+        if self.detail is not None:
+            out["detail"] = self.detail
+        return out
+
 
 class AdminEventSink(Protocol):
     def record(self, event: AdminEvent) -> None: ...

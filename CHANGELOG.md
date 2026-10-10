@@ -3,12 +3,15 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
-## v2.0.0-rc.1 — (unreleased, in progress)
+## v2.0.0-rc.1 — Developer Preview (prepared, not yet released)
 
 Implements the MAK4I protocol v0.2 drafts (talvikai/mak4i-protocol#6):
-MAK-0006 (identity and access control) and MAK-0008 (MCP binding and
-authorization). Entries are added per milestone; the release is not yet
-prepared.
+MAK-0006 (identity and access control), MAK-0008 (MCP binding and
+authorization), and Part A of MAK-0004 (subject conflicts) and MAK-0005
+(governed project records). Developer Preview: for evaluation and
+feedback, not for production use. The version jumps from 0.1 to 2.0
+because of the breaking changes below; the protocol's own version (v0.2)
+is independent.
 
 ### Added
 
@@ -79,6 +82,24 @@ prepared.
 - Docs: stdio vs HTTP authentication, OAuth state across restarts (no
   signing keys), custom authentication adapter trust boundary, and an
   explicit single-replica statement.
+
+### Upgrade
+
+- Supported path: `v0.1.0-rc.5` → `v2.0.0-rc.1` (bootstrap `upgrade`, which
+  backs up first). Migrations `0002`–`0005` are additive; existing agent
+  principals get `agent-<12 hex>` ids. Local SQLite environments are
+  upgraded in place. Rollback = restore the pre-upgrade backup with
+  `v0.1.0-rc.5` (it can't read records written by this release).
+
+### Known limitations
+
+- Real-client OAuth interoperability (claude.ai / Claude Code and MCP
+  Inspector over public HTTPS) is not yet verified for this release
+  candidate; see the release notes before relying on a specific client.
+- One server process per installation (see DEPLOYMENT.md → Replicas).
+- Skills are planned/deferred and not part of this release.
+- A general writer-initiated withdraw/retire operation is not provided
+  (protocol issue #4); `withdrawn` is set only by conflict resolution.
 
 ### Changed
 

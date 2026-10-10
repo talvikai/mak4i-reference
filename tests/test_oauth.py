@@ -394,8 +394,8 @@ def test_csrf_is_enforced_on_sign_in(world):  # M10
     page = world.authorize()
     code, _ = world.oauth.issue_sign_in_code(actor=world.owner, principal_id=world.owner.principal_id)
     response = world.client.post("/oauth/sign-in", data={"code": code, "csrf": "forged"})
-    assert response.status_code == 400
-    assert "could not be verified" in response.text
+    assert response.status_code == 400, response.text
+    assert "could not be verified" in response.text, response.text  # observed failing once under heavy load
     assert page.status_code == 200
 
 

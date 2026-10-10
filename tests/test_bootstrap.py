@@ -65,7 +65,7 @@ def host(tmp_path):
         'for a in "$@"; do [ "$a" = "%{http_code}" ] && printf 200 && exit 0; done\n'
         "exit 0\n",
     )
-    _script(bin_ / "git", 'echo "${STUB_GIT_TAG:-v0.1.0-rc.5}"\n')
+    _script(bin_ / "git", 'echo "${STUB_GIT_TAG:-v2.0.0-rc.1}"\n')
 
     os_release = tmp_path / "os-release"
     os_release.write_text('ID=debian\nVERSION_ID="12"\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n')
@@ -307,7 +307,7 @@ def test_install_private_http_creates_a_private_env_and_verifies(host):
     assert re.fullmatch(r"[0-9a-f]{64}", password)
     env = host.env_file.read_text()
     assert "MAK4I_INSTALL_STATE=complete" in env
-    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.5" in env
+    assert "MAK4I_INSTALLED_RELEASE=v2.0.0-rc.1" in env
     assert "MAK4I_BOOTSTRAP_PROFILE=private-http" in env
     assert "MAK4I_HTTP_BIND=127.0.0.1" in env
     # The secret is never shown or logged.
@@ -459,7 +459,7 @@ def test_backup_is_private_verified_and_complete(host):
         assert (dest / name).is_file()
         assert stat.S_IMODE((dest / name).stat().st_mode) & 0o077 == 0
     manifest = (dest / "manifest.env").read_text()
-    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.5" in manifest
+    assert "MAK4I_BACKUP_RELEASE=v2.0.0-rc.1" in manifest
     assert "MAK4I_BACKUP_ARTIFACT_COUNT=5" in manifest
     # mak4i was stopped for consistency and started again.
     assert host.compose_calls("stop") and host.compose_calls("start")
@@ -497,7 +497,7 @@ def test_restore_accepts_a_backup_from_the_previous_release(host):
     assert _install_private(host).returncode == 0
     assert host.run("backup", "--backup-dir", str(host.backups)).returncode == 0
     (dest,) = list(host.backups.glob("mak4i-backup-*"))
-    _relabel_backup(dest, "v0.1.0-rc.4")
+    _relabel_backup(dest, "v0.1.0-rc.5")
     r = host.run("restore", "--from", str(dest), "--yes")
     assert r.returncode == 0, r.output
     assert "Restore complete and verified" in r.output
@@ -535,33 +535,33 @@ def test_upgrade_refuses_unsupported_versions(host):
     host.set_state(running=["postgres", "mak4i"], version="0.1.0rc3")
     r = host.run("upgrade", "--backup-dir", str(host.backups))
     assert r.returncode == 7
-    assert "v0.1.0-rc.4 -> v0.1.0-rc.5" in r.output
+    assert "v0.1.0-rc.5 -> v2.0.0-rc.1" in r.output
     assert _mutations(host) == []
 
 
-def test_upgrade_from_rc4_backs_up_first_and_adopts_the_installation(host):
+def test_upgrade_from_rc5_backs_up_first_and_adopts_the_installation(host):
     host.env_file.write_text("POSTGRES_PASSWORD=abc\nMAK4I_HTTP_BIND=127.0.0.1\n")
     host.env_file.chmod(0o600)
-    host.set_state(running=["postgres", "mak4i"], volumes=["mak4i_pgdata", "mak4i_artifacts"], version="0.1.0rc4")
+    host.set_state(running=["postgres", "mak4i"], volumes=["mak4i_pgdata", "mak4i_artifacts"], version="0.1.0rc5")
 
-    # The running version flips to RC5 when the stack is recreated.
+    # The running version flips to v2 when the stack is recreated.
     import json as _json
     stub_state = Path(host.env["STUB_DIR"]) / "state.json"
 
     r = host.run("upgrade", "--backup-dir", str(host.backups), env={})
-    # First run sees rc4 during the backup; the stub keeps reporting rc4
+    # First run sees rc5 during the backup; the stub keeps reporting rc5
     # after `up`, so verification must catch the version mismatch.
     assert r.returncode == 1, r.output
-    assert "expected v0.1.0-rc.5" in r.output
+    assert "expected v2.0.0-rc.1" in r.output
     assert list(host.backups.glob("mak4i-backup-*")), "backup must be taken before upgrading"
 
     state = _json.loads(stub_state.read_text())
-    state["version"] = "0.1.0rc5"
+    state["version"] = "2.0.0rc1"
     stub_state.write_text(_json.dumps(state))
     r = host.run("upgrade", "--backup-dir", str(host.backups))
     assert r.returncode == 0, r.output
     env = host.env_file.read_text()
-    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.5" in env
+    assert "MAK4I_INSTALLED_RELEASE=v2.0.0-rc.1" in env
     assert "MAK4I_INSTALL_STATE=complete" in env
     assert "Rollback to" in r.output
 

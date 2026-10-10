@@ -651,7 +651,7 @@ wheels = [
 
 [[package]]
 name = "mak4i"
-version = "0.1.0rc5"
+version = "2.0.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
