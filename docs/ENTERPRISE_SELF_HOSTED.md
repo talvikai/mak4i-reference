@@ -6,7 +6,7 @@ AI clients connect to over HTTPS.
 
 **Audience:** cloud administrators, platform engineers, DevOps and SRE.
 
-> **Developer Preview.** This is a release candidate (`v0.1.0-rc.4`) for
+> **Developer Preview.** This is a release candidate (`v0.1.0-rc.5`) for
 > evaluation and feedback, not a production-supported release. It is a
 > single-VM reference deployment: Docker Compose with PostgreSQL (the
 > control plane), artifacts on a Docker volume, and Caddy for HTTPS.
@@ -26,7 +26,7 @@ AI clients connect to over HTTPS.
 6. [Create your organization and access](#6-create-your-organization-and-access)
 7. [Connect AI clients](#7-connect-ai-clients)
 8. [Operate](#8-operate)
-9. [Upgrade from v0.1.0-rc.3](#9-upgrade-from-v010-rc3)
+9. [Upgrade from v0.1.0-rc.4](#9-upgrade-from-v010-rc4)
 10. [Uninstall](#10-uninstall)
 11. [Manual Compose procedure](#11-manual-compose-procedure)
 12. [Configuration reference](#12-configuration-reference)
@@ -141,7 +141,7 @@ docker compose version            # must print v2.x or later
 ## 4. Get the release
 
 ```bash
-git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 ```
 
@@ -239,7 +239,7 @@ this installation names itself to AI clients (see
 Expected ending:
 
 ```
-MAK4I Enterprise v0.1.0-rc.4 is installed and healthy.
+MAK4I Enterprise v0.1.0-rc.5 is installed and healthy.
   Profile:   tls
   Endpoint:  https://mak4i.example.com/mcp
   ...
@@ -263,7 +263,7 @@ changes nothing: it never regenerates the database password, creates
 organizations or replaces credentials. It refuses to overwrite a different
 installation: a different profile or domain, existing data volumes without
 their `.env`, or a manual installation (adopt that with
-[`upgrade`](#9-upgrade-from-v010-rc3)).
+[`upgrade`](#9-upgrade-from-v010-rc4)).
 
 ### 5.4 Verify
 
@@ -459,7 +459,7 @@ working. It verifies every checksum and the backup's release first, asks
 you to type `restore` (or pass `--yes` for automation), runs migrations,
 and checks that the restored counts match the manifest. Expect MAK4I to be
 unavailable for under a minute on small installations. It restores
-`v0.1.0-rc.4` backups; the installation's current `.env` is kept.
+`v0.1.0-rc.5` backups; the installation's current `.env` is kept.
 
 **On a new VM:** install first (section 5), then restore. Restoring
 brings back all organizations, principals, grants and credentials.
@@ -476,43 +476,44 @@ Every bootstrap run is also logged, mode 600, under
 `~/.local/state/mak4i-enterprise/logs/`. No secret is ever printed, so none
 is logged.
 
-## 9. Upgrade from v0.1.0-rc.3
+## 9. Upgrade from v0.1.0-rc.4
 
-The supported path is `v0.1.0-rc.3` → `v0.1.0-rc.4`, preserving all data.
-It works for installations made with the RC3 manual guide (the bootstrap
-adopts them) and for bootstrap installations.
+The supported path is `v0.1.0-rc.4` → `v0.1.0-rc.5`, preserving all data.
+An installation still on `v0.1.0-rc.3` upgrades to `v0.1.0-rc.4` first,
+following that release's guide (its bootstrap adopts RC3 manual
+installations), then to `v0.1.0-rc.5`.
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.4
-git checkout v0.1.0-rc.4
+git fetch --depth 1 origin tag v0.1.0-rc.5
+git checkout v0.1.0-rc.5
 ./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
 ```
 
 `upgrade`:
 
 1. detects the installed version (from the bootstrap state or the running
-   container; `--from-version v0.1.0-rc.3` if the stack is stopped) and
+   container; `--from-version v0.1.0-rc.4` if the stack is stopped) and
    refuses any other path;
 2. **takes a verified backup first** (or verifies one you give with
    `--use-backup DIR`);
-3. pulls and builds the pinned `v0.1.0-rc.4` images;
+3. pulls and builds the pinned `v0.1.0-rc.5` images;
 4. recreates the containers; migrations run before MAK4I starts;
 5. verifies the version, health, readiness, schema, unchanged data counts
    and HTTPS;
 6. prints the rollback steps.
 
 Database, artifacts, certificates, `.env` and every credential are kept.
-RC4 adds no database migration, so rolling back to RC3 keeps working data:
+RC5 adds no database migration, so rolling back to RC4 keeps working data:
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.3 && git checkout v0.1.0-rc.3   # rollback to the previous release
+git fetch --depth 1 origin tag v0.1.0-rc.4 && git checkout v0.1.0-rc.4   # rollback to the previous release
 cd deploy/compose && docker compose --profile tls up -d --build --wait   # leave out --profile tls for private-http
 ```
 
 If PostgreSQL reports a **collation version change** after the upgrade
 (`upgrade` warns and prints the command), rebuild the indexes once. This
 happens when an older installation's PostgreSQL image was built on an
-earlier Debian release than the one RC4 pins.
+earlier Debian release than the one this release pins.
 
 ## 10. Uninstall
 
@@ -661,8 +662,8 @@ directories you've made private.)
 Back up first, then:
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.4
-git checkout v0.1.0-rc.4
+git fetch --depth 1 origin tag v0.1.0-rc.5
+git checkout v0.1.0-rc.5
 docker compose --profile tls up -d --build --wait
 ```
 
@@ -758,7 +759,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `install` | Configure, start, verify | Yes (`--dry-run` shows the plan) |
 | `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
 | `restart` | Restart and verify health and data | Yes |
-| `upgrade` | Back up, then `v0.1.0-rc.3` → `v0.1.0-rc.4` | Yes |
+| `upgrade` | Back up, then `v0.1.0-rc.4` → `v0.1.0-rc.5` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
 | `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
