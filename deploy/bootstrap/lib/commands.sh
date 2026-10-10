@@ -3,7 +3,7 @@
 # option parsing; state lives in the Compose .env (MAK4I_BOOTSTRAP_PROFILE,
 # MAK4I_INSTALL_STATE, MAK4I_INSTALLED_RELEASE) and in the Docker volumes.
 
-readonly UPGRADE_FROM="v0.1.0-rc.4"
+readonly UPGRADE_FROM="v0.1.0-rc.5"
 
 compose_hint() {
   if [[ "$PROFILE" == tls ]]; then printf 'docker compose --profile tls'; else printf 'docker compose'; fi

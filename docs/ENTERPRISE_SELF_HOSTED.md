@@ -6,7 +6,7 @@ AI clients connect to over HTTPS.
 
 **Audience:** cloud administrators, platform engineers, DevOps and SRE.
 
-> **Developer Preview.** This is a release candidate (`v0.1.0-rc.5`) for
+> **Developer Preview.** This is a release candidate (`v2.0.0-rc.1`) for
 > evaluation and feedback, not a production-supported release. It is a
 > single-VM reference deployment: Docker Compose with PostgreSQL (the
 > control plane), artifacts on a Docker volume, and Caddy for HTTPS.
@@ -26,7 +26,7 @@ AI clients connect to over HTTPS.
 6. [Create your organization and access](#6-create-your-organization-and-access)
 7. [Connect AI clients](#7-connect-ai-clients)
 8. [Operate](#8-operate)
-9. [Upgrade from v0.1.0-rc.4](#9-upgrade-from-v010-rc4)
+9. [Upgrade from v0.1.0-rc.5](#9-upgrade-from-v010-rc5)
 10. [Uninstall](#10-uninstall)
 11. [Manual Compose procedure](#11-manual-compose-procedure)
 12. [Configuration reference](#12-configuration-reference)
@@ -141,7 +141,7 @@ docker compose version            # must print v2.x or later
 ## 4. Get the release
 
 ```bash
-git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v2.0.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 ```
 
@@ -239,7 +239,7 @@ this installation names itself to AI clients (see
 Expected ending:
 
 ```
-MAK4I Enterprise v0.1.0-rc.5 is installed and healthy.
+MAK4I Enterprise v2.0.0-rc.1 is installed and healthy.
   Profile:   tls
   Endpoint:  https://mak4i.example.com/mcp
   ...
@@ -263,7 +263,7 @@ changes nothing: it never regenerates the database password, creates
 organizations or replaces credentials. It refuses to overwrite a different
 installation: a different profile or domain, existing data volumes without
 their `.env`, or a manual installation (adopt that with
-[`upgrade`](#9-upgrade-from-v010-rc4)).
+[`upgrade`](#9-upgrade-from-v010-rc5)).
 
 ### 5.4 Verify
 
@@ -525,7 +525,7 @@ working. It verifies every checksum and the backup's release first, asks
 you to type `restore` (or pass `--yes` for automation), runs migrations,
 and checks that the restored counts match the manifest. Expect MAK4I to be
 unavailable for under a minute on small installations. It restores
-`v0.1.0-rc.5` backups; the installation's current `.env` is kept.
+`v2.0.0-rc.1` backups; the installation's current `.env` is kept.
 
 **On a new VM:** install first (section 5), then restore. Restoring
 brings back all organizations, principals, grants and credentials.
@@ -542,38 +542,51 @@ Every bootstrap run is also logged, mode 600, under
 `~/.local/state/mak4i-enterprise/logs/`. No secret is ever printed, so none
 is logged.
 
-## 9. Upgrade from v0.1.0-rc.4
+## 9. Upgrade from v0.1.0-rc.5
 
-The supported path is `v0.1.0-rc.4` → `v0.1.0-rc.5`, preserving all data.
-An installation still on `v0.1.0-rc.3` upgrades to `v0.1.0-rc.4` first,
-following that release's guide (its bootstrap adopts RC3 manual
-installations), then to `v0.1.0-rc.5`.
+The supported path is `v0.1.0-rc.5` → `v2.0.0-rc.1`, preserving all data.
+An installation on an earlier release upgrades to `v0.1.0-rc.5` first,
+following that release's guide.
+
+**What changes for you.** v2.0.0-rc.1 adds database tables and a column
+(migrations `0002`–`0005`: OAuth, `agent_id`, conflict resolution records,
+administrative audit), and new fields on records written from now on
+(provenance, resolution fields). Existing principals, credentials, grants
+and records are kept unchanged; existing agent principals get an
+`agent_id` of the form `agent-<12 hex digits>`. Read the **breaking
+changes** in [`CHANGELOG.md`](../CHANGELOG.md) (conflict object shape,
+filters no longer hide one side of a conflict, releasing a subject key
+during a conflict is refused) before upgrading clients that rely on them.
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.5
-git checkout v0.1.0-rc.5
+git fetch --depth 1 origin tag v2.0.0-rc.1
+git checkout v2.0.0-rc.1
 ./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
 ```
 
 `upgrade`:
 
 1. detects the installed version (from the bootstrap state or the running
-   container; `--from-version v0.1.0-rc.4` if the stack is stopped) and
+   container; `--from-version v0.1.0-rc.5` if the stack is stopped) and
    refuses any other path;
 2. **takes a verified backup first** (or verifies one you give with
    `--use-backup DIR`);
-3. pulls and builds the pinned `v0.1.0-rc.5` images;
-4. recreates the containers; migrations run before MAK4I starts;
+3. pulls and builds the pinned `v2.0.0-rc.1` images;
+4. recreates the containers; the migrations run before MAK4I starts;
 5. verifies the version, health, readiness, schema, unchanged data counts
    and HTTPS;
 6. prints the rollback steps.
 
 Database, artifacts, certificates, `.env` and every credential are kept.
-RC5 adds no database migration, so rolling back to RC4 keeps working data:
+OAuth stays off until you enable it ([7.1](#71-oauth-sign-in)).
+
+**Rollback.** v0.1.0-rc.5 can't read records written by v2.0.0-rc.1, so
+rolling back means restoring the backup `upgrade` took (anything written
+after the upgrade is lost):
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.4 && git checkout v0.1.0-rc.4   # rollback to the previous release
-cd deploy/compose && docker compose --profile tls up -d --build --wait   # leave out --profile tls for private-http
+git fetch --depth 1 origin tag v0.1.0-rc.5 && git checkout v0.1.0-rc.5   # rollback to the previous release
+./deploy/bootstrap/mak4i-enterprise restore --from /srv/mak4i-backups/mak4i-backup-<timestamp>
 ```
 
 If PostgreSQL reports a **collation version change** after the upgrade
@@ -728,8 +741,8 @@ directories you've made private.)
 Back up first, then:
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.5
-git checkout v0.1.0-rc.5
+git fetch --depth 1 origin tag v2.0.0-rc.1
+git checkout v2.0.0-rc.1
 docker compose --profile tls up -d --build --wait
 ```
 
@@ -839,7 +852,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
 | `admin-info` | Non-secret inventory: organizations, owners, projects, principals (incl. `agent_id`), grants, credential metadata. Use it to recover ids you didn't keep; tokens can't be recovered, only reissued | No |
 | `restart` | Restart and verify health and data | Yes |
-| `upgrade` | Back up, then `v0.1.0-rc.4` → `v0.1.0-rc.5` | Yes |
+| `upgrade` | Back up, then `v0.1.0-rc.5` → `v2.0.0-rc.1` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
 | `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
