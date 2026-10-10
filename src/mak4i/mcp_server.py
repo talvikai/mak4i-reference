@@ -1104,10 +1104,11 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         app = build_http_app(server, control_plane=control_plane, audit=audit, host=host, oauth=oauth)
         # Forwarded headers are honored only from configured proxies (for the
         # client address in rate limits/logs); advertised URLs never use them.
-        proxy_options = {
-            "proxy_headers": bool(settings.proxy.trusted_proxies),
-            "forwarded_allow_ips": ",".join(settings.proxy.trusted_proxies) or None,
-        }
+        proxy_options = (
+            {"proxy_headers": True, "forwarded_allow_ips": ",".join(settings.proxy.trusted_proxies)}
+            if settings.proxy.trusted_proxies
+            else {}  # uvicorn's default: only loopback may set forwarded headers
+        )
         if on_http_started is None:
             uvicorn.run(app, host=host, port=port, **proxy_options)
             return
