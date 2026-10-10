@@ -43,6 +43,11 @@ EventType = Literal[
     "OAUTH_REVOKED",
     "OAUTH_CLIENT_REGISTERED",
     "OAUTH_CLIENT_DISABLED",
+    # Conflict resolution (MAK-0004 §A9).
+    "RESOLUTION_STARTED",
+    "RESOLUTION_COMPLETED",
+    "RESOLUTION_ABORTED",
+    "RESOLUTION_REJECTED",
 ]
 
 
@@ -283,10 +288,13 @@ class AuditLogger:
             correlation_id=correlation_id,
             actor=actor,
             context=context,
+            conflict_id=conflict.conflict_id,
+            state=conflict.state,
+            generation=conflict.generation,
             artifact_type=conflict.artifact_type,
             subject_key=conflict.subject_key,
-            lineage_ids=conflict.lineage_ids,
-            candidates=[a.artifact_id for a in conflict.artifacts],
+            lineage_ids=[c.lineage_id for c in conflict.candidates],
+            candidates=[c.artifact_id for c in conflict.candidates],
         )
 
     def log_integrity_error(

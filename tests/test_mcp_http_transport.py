@@ -286,6 +286,9 @@ def test_tools_list_over_http_returns_the_registered_mak4i_tools(client, raw_tok
         "mak4i_create",
         "mak4i_supersede",
         "mak4i_history",
+        "mak4i_list_conflicts",
+        "mak4i_get_conflict",
+        "mak4i_resolve_conflict",
     }
 
 

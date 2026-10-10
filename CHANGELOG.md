@@ -41,8 +41,40 @@ prepared.
   the principal's OAuth authorizations).
 - Migration `0003_agent_id`: adds `principals.agent_id`; existing agent
   principals get `agent-<12 hex of their id>`; reversible.
+- **Deterministic conflict resolution** (MAK-0004 Part A): conflicts get
+  a stable `conflict_id`, a state (`open` / `resolving` / `resolved`), every
+  candidate with content, content hash and authenticated provenance, and an
+  `identical_content` flag. New MCP tools `mak4i_list_conflicts`,
+  `mak4i_get_conflict`, `mak4i_resolve_conflict` and CLI
+  `mak4i conflict list|show|resolve`. Resolutions (`select_winner`, `merge`,
+  `separate_subjects`) need the `resolve` permission, name the exact
+  candidates they decide on (`conflict_changed` otherwise), are idempotent
+  with an `idempotency_key`, record a durable resolution record (actor,
+  reason, effects, resulting heads), and survive interruption (pending
+  resolutions are completed at server start).
+- Lifecycle status `withdrawn` (set only by a resolution), and
+  `resolution_id` / `merged_from` on the versions a resolution creates or
+  withdraws.
+- Structured tool errors (MAK-0008 §9): failed tool results carry
+  `structuredContent: {"error": {"code", "message", "retryable"}}` with
+  codes such as `access_denied`, `validation_error`, `stale_head`,
+  `subject_in_conflict`, `conflict_changed`, `conflict_not_open`.
+- Migration `0004_resolution_records`; reversible.
 
 ### Changed
+
+- **Breaking:** the `conflicts` entries of `mak4i_get_current` now follow
+  the protocol conflict schema (`conflict_id`, `state`, `candidates`, …)
+  instead of `lineage_ids` / `artifacts`.
+- **Breaking:** conflict detection runs before the type/tags filters, so a
+  tag filter can no longer return one side of a conflict as current.
+- **Breaking:** `mak4i_supersede` with `release_subject_key=true` is
+  refused (`subject_in_conflict`) while the lineage's subject is in an open
+  conflict; resolve with `mak4i_resolve_conflict` instead.
+- A supersede that loses a concurrent race is now audited
+  (`SUPERSEDE_REJECTED`) and reported as `stale_head`.
+- Subject keys are Unicode-NFC normalized (ASCII keys are unchanged) and
+  limited to 512 characters.
 
 - Effective permissions are the live grant intersected with the
   authentication ceiling (OAuth scopes); scopes never widen a grant, and a
