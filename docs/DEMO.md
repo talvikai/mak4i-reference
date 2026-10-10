@@ -271,32 +271,46 @@ mak4i_create(project="prj_a1…", artifact_id="caching-decision-memcached",
 
 mak4i_get_current(project="prj_a1…", tags=["caching"])
 → { "artifacts": [],
-    "conflicts": [ { "artifact_type": "decision",
-                     "subject_key": "session-cache",
-                     "lineage_ids": ["caching-decision", "caching-decision-memcached"],
-                     "artifacts": [ …Redis…, …Memcached… ] } ],
+    "conflicts": [ { "conflict_id": "cfl_3f…", "state": "open",
+                     "artifact_type": "decision", "subject_key": "session-cache",
+                     "identical_content": false,
+                     "candidates": [ { "artifact_id": "caching-decision",
+                                       "content": "Use Redis.",
+                                       "provenance": { "principal_id": "prn_…", "agent_id": null, … } },
+                                     { "artifact_id": "caching-decision-memcached",
+                                       "content": "Use Memcached.", … } ] } ],
     "integrity_errors": [] }
 ```
 
-`artifacts` is empty and `conflicts` holds both competing decisions —
-MAK4I never picks one. To resolve it in favor of Redis, supersede the
-losing lineage and **explicitly release** its claim on the subject:
+`artifacts` is empty and `conflicts` holds every competing decision with
+who wrote it — MAK4I never picks one, not even the newest, and a tag filter
+can't hide one side. Once the user decides, a principal with the `resolve`
+permission resolves it explicitly, naming the candidates it showed the
+user:
 
 ```
-mak4i_supersede(project="prj_a1…", old_id="caching-decision-memcached",
-  content="Memcached option rejected; Redis selected for session-cache.",
-  reason="Resolved the session-cache conflict in favor of Redis.",
-  release_subject_key=true)
-→ { …, "subject_key": null, "released_subject_key": "session-cache", … }
+mak4i_resolve_conflict(project="prj_a1…", conflict_id="cfl_3f…",
+  candidate_artifact_ids=["caching-decision", "caching-decision-memcached"],
+  action="select_winner", winner_artifact_id="caching-decision",
+  reason="Redis selected for session-cache.")
+→ { "state": "completed", "effects": [ …unchanged…, …withdrawn… ], … }
 ```
 
-The Memcached lineage stays readable (its history still shows it competed
-for `session-cache`) but no longer claims the subject; the Redis lineage
-is untouched and is now the only current claim. A normal supersede never
-changes a lineage's `subject_key`: attempting it is rejected. Both steps
-are audited (`CONFLICT` on detection; `SUPERSEDE` with
-`released_subject_key` on resolution). A broken lineage (zero or multiple
-active versions, a dangling pointer) surfaces the same way but as
+The three actions are `select_winner` (the others are withdrawn),
+`merge` (one new authoritative version, the others withdrawn) and
+`separate_subjects` (every candidate gets its own subject key). Nothing is
+deleted: withdrawn versions keep their content and their claim in
+history, and the resolution record (who, when, why, what changed) stays
+retrievable with `mak4i_get_conflict` / `mak4i_list_conflicts`. If the
+candidates changed after the user looked, the call fails with
+`conflict_changed` instead of acting on stale information. A new
+contribution after a resolution starts a new conflict. Releasing a
+subject key with `mak4i_supersede` is refused while the subject is in
+conflict. The CLI equivalents are `mak4i conflict list|show|resolve`.
+
+Detection and resolution are audited (`CONFLICT`, `RESOLUTION_STARTED`,
+`RESOLUTION_COMPLETED`). A broken lineage (zero or multiple active
+versions, a dangling pointer) surfaces the same way but as
 `integrity_errors`, a distinct category.
 
 Whether a retracted-but-still-readable artifact should influence a
