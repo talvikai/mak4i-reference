@@ -5,7 +5,7 @@ and a local MCP server, with no cloud account and nothing shared with
 anyone else. It covers every local runtime option, from installation to
 removal.
 
-> **Developer Preview.** This is a release candidate (`v0.1.0-rc.4`) for
+> **Developer Preview.** This is a release candidate (`v0.1.0-rc.5`) for
 > evaluation and feedback, not a production-supported release.
 >
 > For a shared server that other people and remote AI clients connect to,
@@ -47,7 +47,7 @@ inside the repository.
 macOS / Linux:
 
 ```bash
-git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 uv sync --extra dev --no-editable
 source .venv/bin/activate
@@ -57,14 +57,14 @@ mak4i --version
 Windows PowerShell:
 
 ```powershell
-git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/talvikai/mak4i-reference.git
 Set-Location mak4i-reference
 uv sync --extra dev --no-editable
 .\.venv\Scripts\Activate.ps1
 mak4i --version
 ```
 
-Expected: `mak4i 0.1.0rc4`. Git may note that the tag "is not a commit"
+Expected: `mak4i 0.1.0rc5`. Git may note that the tag "is not a commit"
 while cloning; that's normal for an annotated release tag.
 
 **Why `--no-editable`.** `uv`'s editable install marks its generated
@@ -342,8 +342,8 @@ release keeps all your data. Stop MAK4I first.
 macOS / Linux:
 
 ```bash
-git fetch --depth 1 origin tag v0.1.0-rc.4
-git checkout v0.1.0-rc.4
+git fetch --depth 1 origin tag v0.1.0-rc.5
+git checkout v0.1.0-rc.5
 uv sync --extra dev --no-editable
 source .venv/bin/activate
 mak4i --version
@@ -352,21 +352,21 @@ mak4i --version
 Windows PowerShell:
 
 ```powershell
-git fetch --depth 1 origin tag v0.1.0-rc.4
-git checkout v0.1.0-rc.4
+git fetch --depth 1 origin tag v0.1.0-rc.5
+git checkout v0.1.0-rc.5
 uv sync --extra dev --no-editable
 .\.venv\Scripts\Activate.ps1
 mak4i --version
 ```
 
-Expected: `mak4i 0.1.0rc4`. Your data and MCP client registrations keep
+Expected: `mak4i 0.1.0rc5`. Your data and MCP client registrations keep
 working. If `uv sync` reports files in use on Windows, release the file
 locks ([Uninstall](#11-uninstall)) and recreate `.venv`
 ([Recreate the Python environment](#111-recreate-the-python-environment)).
 
 Downgrading isn't always possible: an artifact written with a
-`subject_key` (new in v0.1.0-rc.3) can't be read by v0.1.0-rc.2. RC4 adds
-no change to stored data.
+`subject_key` (new in v0.1.0-rc.3) can't be read by v0.1.0-rc.2. RC4 and RC5
+add no change to stored data.
 
 ## 10. Backup and restore
 

@@ -3,7 +3,49 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
-## v0.1.0-rc.4 — Developer Preview (unreleased)
+## v0.1.0-rc.5 — Developer Preview (2026-10-10)
+
+Security and maintenance release candidate. Developer Preview: for
+evaluation and feedback, not for production use. Everyone on
+`v0.1.0-rc.4` should upgrade.
+
+### Security
+
+- **urllib3 2.7.0 → 2.8.0** (PYSEC-2026-4175, PYSEC-2026-4176,
+  PYSEC-2026-4177) ([#23](https://github.com/talvikai/mak4i-reference/pull/23)).
+
+### Fixed
+
+- **Bootstrap backups taken in the same second no longer collide.** A
+  second backup (for example an `upgrade` retried immediately) failed with
+  `... already exists`; the directory name now gets a `-1`, `-2`, …
+  suffix ([#23](https://github.com/talvikai/mak4i-reference/pull/23)).
+- **Bootstrap `restore` and `upgrade --use-backup` accept backups made by
+  the previous release** (`v0.1.0-rc.4`), so a backup taken just before
+  upgrading stays usable. Older backups are still refused.
+
+### Changed
+
+- Runtime image: **Python 3.13 → 3.14** (`python:3.14.7-slim`)
+  ([#13](https://github.com/talvikai/mak4i-reference/pull/13)) and uv
+  0.13.0 ([#22](https://github.com/talvikai/mak4i-reference/pull/22)).
+- Dependencies: `mcp` 2.3.0
+  ([#17](https://github.com/talvikai/mak4i-reference/pull/17)),
+  starlette 1.7.0, uvicorn 0.54.0, alembic 1.20.0, google-auth 2.60.0
+  ([#19](https://github.com/talvikai/mak4i-reference/pull/19),
+  [#15](https://github.com/talvikai/mak4i-reference/pull/15),
+  [#14](https://github.com/talvikai/mak4i-reference/pull/14),
+  [#16](https://github.com/talvikai/mak4i-reference/pull/16)).
+
+### Compatibility
+
+- **No data migration.** RC5 reads and writes the same database schema
+  and artifact format as RC4, and tool results are unchanged.
+- The supported upgrade path is `v0.1.0-rc.4` → `v0.1.0-rc.5` (bootstrap
+  `upgrade`, or the manual procedure). A `v0.1.0-rc.3` installation
+  upgrades to RC4 first. Rolling back to RC4 keeps working data.
+
+## v0.1.0-rc.4 — Developer Preview (2026-09-30)
 
 Hardening release candidate. Developer Preview: for evaluation and
 feedback, not for production use.

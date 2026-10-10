@@ -74,7 +74,7 @@ migration_at_head() {
 }
 
 # running_version — the MAK4I release the running container reports, as a
-# tag (v0.1.0-rc.4), or nothing.
+# tag (v0.1.0-rc.5), or nothing.
 running_version() {
   local v
   v=$(compose exec -T mak4i mak4i --version 2>/dev/null | awk '{print $2}') || return 0

@@ -3,7 +3,7 @@
 # option parsing; state lives in the Compose .env (MAK4I_BOOTSTRAP_PROFILE,
 # MAK4I_INSTALL_STATE, MAK4I_INSTALLED_RELEASE) and in the Docker volumes.
 
-readonly UPGRADE_FROM="v0.1.0-rc.3"
+readonly UPGRADE_FROM="v0.1.0-rc.4"
 
 compose_hint() {
   if [[ "$PROFILE" == tls ]]; then printf 'docker compose --profile tls'; else printf 'docker compose'; fi
@@ -422,9 +422,12 @@ verify_backup() {
   [[ -f "$manifest" && -f "$src/control-plane.dump" && -d "$src/artifacts" && -f "$src/artifacts.sha256" ]] ||
     die "$EX_BACKUP" "$src is not a complete bootstrap backup (manifest.env, control-plane.dump, artifacts/, artifacts.sha256)"
   release=$(env_get "$manifest" MAK4I_BACKUP_RELEASE)
+  # Backups from the previous release are accepted too: restore and upgrade
+  # run migrations before MAK4I starts, so an older schema is brought up to
+  # date, and a backup taken just before upgrading must stay usable.
   case "$release" in
-    "$MAK4I_RELEASE") ;;
-    *) die "$EX_UNSUPPORTED" "backup was made by $release; this bootstrap restores $MAK4I_RELEASE backups" ;;
+    "$MAK4I_RELEASE" | "$UPGRADE_FROM") ;;
+    *) die "$EX_UNSUPPORTED" "backup was made by $release; this bootstrap restores $MAK4I_RELEASE and $UPGRADE_FROM backups" ;;
   esac
   dump_sha=$(env_get "$manifest" MAK4I_BACKUP_DUMP_SHA256)
   list_sha=$(env_get "$manifest" MAK4I_BACKUP_ARTIFACTS_SHA256)
