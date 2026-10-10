@@ -142,6 +142,9 @@ def exec_(state, opts):
         if command[:2] == ["alembic", "current"]:
             print("0001_initial_control_plane (head)")
             return 0
+        if command[:3] == ["mak4i", "admin", "inventory"]:
+            print(json.dumps({"organizations": [{"organization_id": "org_x", "owners": ["prn_owner"]}]}))
+            return 0
         if command[:2] == ["mak4i", "--version"]:
             print(f"mak4i {state.get('version', '0.1.0rc5')}")
             return 0
