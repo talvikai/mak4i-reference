@@ -302,6 +302,10 @@ class OAuthService:
             "updated_at": now,
         }
         self._store.put_client(client)
+        self._cp.record_admin_event(
+            action="oauth_client.register", actor=actor, organization_id=organization_id,
+            targets={"client_id": client["client_id"], "confidential": str(confidential).lower()},
+        )
         self._log(
             "OAUTH_CLIENT_REGISTERED",
             actor=actor.principal_id,
@@ -379,6 +383,10 @@ class OAuthService:
             organization_id=client["organization_id"], client_id=client_id
         ):
             self._store.revoke_authorization(authorization["authorization_id"], "client_disabled", now)
+        self._cp.record_admin_event(
+            action="oauth_client.disable", actor=actor, organization_id=client["organization_id"],
+            targets={"client_id": client_id},
+        )
         self._log("OAUTH_CLIENT_DISABLED", actor=actor.principal_id, client_id=client_id)
         return _public_client({**client, "status": "disabled"})
 
@@ -405,6 +413,10 @@ class OAuthService:
                 "expires_at": expires_at,
                 "used_at": None,
             }
+        )
+        self._cp.record_admin_event(
+            action="oauth_sign_in_code.issue", actor=actor, organization_id=target.organization_id,
+            targets={"principal_id": principal_id},
         )
         self._log(
             "OAUTH_SIGN_IN_CODE_ISSUED",
@@ -702,6 +714,10 @@ class OAuthService:
         if actor.principal_id != target.principal_id:
             self._cp.require_owner(actor, target.organization_id)
         self._store.revoke_authorization(authorization_id, "revoked_by_admin", self._now())
+        self._cp.record_admin_event(
+            action="oauth_authorization.revoke", actor=actor, organization_id=target.organization_id,
+            targets={"authorization_id": authorization_id},
+        )
         self._log("OAUTH_REVOKED", actor=actor.principal_id, authorization_id=authorization_id, by="admin")
         return _public_authorization(self._store.get_authorization(authorization_id))
 
@@ -722,6 +738,10 @@ class OAuthService:
                 row["authorization_id"], reason, now
             ):
                 revoked += 1
+        self._cp.record_admin_event(
+            action="oauth_authorization.revoke_all", actor=actor, organization_id=actor.organization_id,
+            targets={"principal_id": principal_id, "client_id": client_id, "count": str(revoked)},
+        )
         self._log(
             "OAUTH_REVOKED",
             actor=actor.principal_id,

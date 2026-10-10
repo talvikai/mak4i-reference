@@ -375,6 +375,11 @@ revoke it and issue a new one.
 | Issue a credential | `credential issue --actor "$OWNER" --principal-id … --display-name "…"` (optional `--expires-at`) |
 | Revoke a credential (immediate) | `credential revoke --actor "$OWNER" --credential-id cred_…` |
 | Inspect (never prints tokens) | `org show`, `project list`, `principal list`, `grant list`, `credential list` |
+| Give conflict-resolution rights | `grant create … --permissions read,write,resolve` (`resolve` lets a principal settle conflicts; it never grants administration) |
+| Archive a project (nothing deleted; access stops) | `project archive --actor "$OWNER" --project-id …` |
+| See who changed what | `audit list --actor "$OWNER"` — every administrative action, including denied attempts, with actor and time; never secrets |
+| Recover lost ids (organization, owner, projects) | `./deploy/bootstrap/mak4i-enterprise admin-info` (or `mak4i admin inventory` in the container) |
+| Suspend / reactivate an organization (instance operator) | `org suspend --organization-id …` / `org reactivate --organization-id …` |
 | Onboard an external collaborator in one step | `access provision` (new org, member principal, project, grant and credential) |
 
 Once you hold the owner's token you can stop passing `--actor`: pass the
@@ -827,6 +832,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `preflight` | Check host, Docker, network, configuration | No (`--check-inbound` briefly runs a probe container) |
 | `install` | Configure, start, verify | Yes (`--dry-run` shows the plan) |
 | `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
+| `admin-info` | Non-secret inventory: organizations, owners, projects, principals (incl. `agent_id`), grants, credential metadata. Use it to recover ids you didn't keep; tokens can't be recovered, only reissued | No |
 | `restart` | Restart and verify health and data | Yes |
 | `upgrade` | Back up, then `v0.1.0-rc.4` → `v0.1.0-rc.5` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
