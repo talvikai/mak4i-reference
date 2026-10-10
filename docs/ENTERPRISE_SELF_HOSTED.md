@@ -365,7 +365,10 @@ revoke it and issue a new one.
 
 | Task | `docker compose exec mak4i mak4i …` |
 |---|---|
-| Add a person, service or agent | `principal create --actor "$OWNER" --organization-id "$ORG" --type human\|service\|agent --display-name "…"` |
+| Add a person or service | `principal create --actor "$OWNER" --organization-id "$ORG" --type human\|service --display-name "…"` |
+| Add an agent | `principal create --actor "$OWNER" --organization-id "$ORG" --type agent --agent-id release-bot --display-name "…"` — `--agent-id` is required, unique in the organization, permanent and never reused; records the agent writes carry it as authenticated provenance |
+| Rename (history keeps the old name) | `principal rename --actor "$OWNER" --principal-id … --display-name "…"` |
+| Deactivate (immediate; history kept) | `principal deactivate --actor "$OWNER" --principal-id …` — every credential and OAuth authorization of the principal stops working |
 | Add a project | `project create --actor "$OWNER" --organization-id "$ORG" --name "…"` |
 | Give access | `grant create --actor "$OWNER" --principal-id … --project-id … --permissions read` (or `read,write`) |
 | Remove access (immediate) | `grant revoke --actor "$OWNER" --principal-id … --project-id …` |

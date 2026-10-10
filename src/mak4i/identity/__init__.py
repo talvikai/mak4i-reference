@@ -2,6 +2,7 @@ from mak4i.identity.authz import AuthorizationOutcome, Authorizer
 from mak4i.identity.control_plane import AuthorizedProject, ControlPlane
 from mak4i.identity.errors import (
     AccessDeniedError,
+    AgentIdTakenError,
     CredentialInvalidError,
     CredentialNotFoundError,
     CrossOrganizationGrantError,
@@ -32,6 +33,7 @@ from mak4i.identity.tokens import generate_token, hash_token, tokens_match
 
 __all__ = [
     "AccessDeniedError",
+    "AgentIdTakenError",
     "CredentialInvalidError",
     "CredentialNotFoundError",
     "CrossOrganizationGrantError",

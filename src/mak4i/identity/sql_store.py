@@ -120,6 +120,7 @@ class SqlControlPlaneStore:
             "role": principal.role,
             "display_name": principal.display_name,
             "status": principal.status,
+            "agent_id": principal.agent_id,
             "created_at": _utc(principal.created_at),
             "updated_at": _utc(principal.updated_at),
         }
@@ -130,6 +131,16 @@ class SqlControlPlaneStore:
                 {"principal_id": principal.principal_id},
                 values,
             )
+
+    def get_principal_by_agent_id(self, organization_id: str, agent_id: str) -> Principal | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(schema.principals).where(
+                    schema.principals.c.organization_id == organization_id,
+                    schema.principals.c.agent_id == agent_id,
+                )
+            ).first()
+        return _to_principal(row) if row else None
 
     def list_principals(self, organization_id: str) -> list[Principal]:
         with self._engine.connect() as conn:
@@ -290,6 +301,7 @@ def _to_principal(row) -> Principal:
         role=row.role,
         display_name=row.display_name,
         status=row.status,
+        agent_id=row.agent_id,
         created_at=_aware(row.created_at),
         updated_at=_aware(row.updated_at),
     )

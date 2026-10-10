@@ -27,6 +27,20 @@ prepared.
   `authorization list|revoke` (by authorization, principal or client).
 - Permission `resolve` (MAK-0006 §5.1), used by conflict resolution.
 - Migration `0002_oauth` (additive, reversible).
+- **Authenticated agent identity** (MAK-0006 §3): agent principals carry
+  a required, organization-scoped, immutable `agent_id`
+  (`principal create --type agent --agent-id …`); humans and services
+  have none. `mak4i_whoami` reports it from the stored principal.
+- **Authenticated provenance** on every new record version (MAK-0006 §7):
+  author principal, `principal_type`, `agent_id`, display name at write
+  time, authentication method, credential or OAuth client, and the MCP
+  client's self-reported name marked `verified: false`. Identity arguments
+  in tool calls are ignored and never change authorship or access.
+  Versions written earlier have no `provenance` and are not rewritten.
+- `principal rename` and `principal deactivate` (deactivation also revokes
+  the principal's OAuth authorizations).
+- Migration `0003_agent_id`: adds `principals.agent_id`; existing agent
+  principals get `agent-<12 hex of their id>`; reversible.
 
 ### Changed
 

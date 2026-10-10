@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mak4i.models import utc_now
 
@@ -36,6 +37,10 @@ PrincipalStatus = Literal["active", "deactivated"]
 ProjectStatus = Literal["active", "archived"]
 Permission = Literal["read", "write", "resolve"]
 CredentialStatus = Literal["active", "revoked"]
+
+AGENT_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{1,62}[a-z0-9])$")
+"""MAK-0006 §3.2: 3–64 lowercase ASCII letters, digits, '.', '_', '-',
+starting and ending with a letter or digit."""
 
 _PERMISSION_ORDER = {"read": 0, "write": 1, "resolve": 2}
 """MAK-0006 §5.1: `read`, `write` and `resolve` are independent — none
@@ -95,14 +100,36 @@ class Organization(_Entity):
 
 
 class Principal(_Entity):
+    """MAK-0006 §2. `type` is exposed on interfaces as `principal_type`
+    (canonical) with `type` kept as an alias. `agent_id` is required for
+    agents and absent for humans and services (§3); it is organization-
+    scoped, immutable and never reused."""
+
     principal_id: str = Field(default_factory=new_principal_id)
     organization_id: str
     type: PrincipalType
     role: PrincipalRole = "member"
     display_name: str
     status: PrincipalStatus = "active"
+    agent_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _agent_id_rules(self) -> Principal:
+        if self.type == "agent":
+            if self.agent_id is None or not AGENT_ID_PATTERN.match(self.agent_id):
+                raise ValueError(
+                    "an agent principal needs an agent_id of 3-64 lowercase letters, digits, "
+                    "'.', '_' or '-', starting and ending with a letter or digit"
+                )
+        elif self.agent_id is not None:
+            raise ValueError("only agent principals have an agent_id")
+        return self
+
+    @property
+    def principal_type(self) -> PrincipalType:
+        return self.type
 
 
 class Project(_Entity):
