@@ -580,9 +580,31 @@ git checkout v2.0.0-rc.1
 Database, artifacts, certificates, `.env` and every credential are kept.
 OAuth stays off until you enable it ([7.1](#71-oauth-sign-in)).
 
-**Rollback.** v0.1.0-rc.5 can't read records written by v2.0.0-rc.1, so
-rolling back means restoring the backup `upgrade` took (anything written
-after the upgrade is lost):
+**Schema downgrade is not a rollback.** The migrations can be reversed
+(`alembic downgrade 0001_initial` drops the OAuth, resolution and audit
+tables and the `agent_id` column), but that doesn't make the data usable
+by v0.1.0-rc.5: every record version v2.0.0-rc.1 writes carries
+provenance, and conflict resolution writes the `withdrawn` status — v0.1.0-rc.5
+rejects both. Records that existed before the upgrade and were never
+changed stay readable. Use a schema downgrade only together with
+restoring data.
+
+**Rollback = restore the pre-upgrade backup** with v0.1.0-rc.5. Restoring
+it returns the database and artifacts to the moment of the upgrade, so
+everything after that is lost:
+
+- records created or superseded, and conflict resolutions (with their
+  records), after the upgrade;
+- organizations, projects, principals (including `agent_id`s), grants and
+  credentials created or changed after the upgrade — credentials issued
+  after it stop working, revoked ones from before it work again;
+- all OAuth state (clients, authorizations, tokens): OAuth clients must
+  connect again, if you re-upgrade later;
+- the administrative audit history.
+
+Keep the backup's `.env` (it holds the database password), and export
+anything you need from the post-upgrade period first (for example
+`mak4i audit list`, `mak4i_history`).
 
 ```bash
 git fetch --depth 1 origin tag v0.1.0-rc.5 && git checkout v0.1.0-rc.5   # rollback to the previous release
