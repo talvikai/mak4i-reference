@@ -77,7 +77,13 @@ class World:
             project_id=self.project.project_id,
             permissions=["read", "write"],
         )
-        settings = dict(resource=RESOURCE, issuer=ORIGIN)
+        # The browser-session cookie's Max-Age is enforced by the client in
+        # *wall-clock* time, while these tests drive the server with a fake
+        # clock. A long TTL keeps the tests independent of wall-clock time
+        # (a machine that sleeps mid-test once expired the 15-minute cookie
+        # between two requests); expiry itself is tested deterministically
+        # on the server clock in test_browser_session_expires_on_the_server_clock.
+        settings = dict(resource=RESOURCE, issuer=ORIGIN, browser_session_ttl=86400)
         settings.update(settings_overrides)
         self.settings = OAuthSettings(**settings)
         self.oauth = self.make_service()
@@ -395,8 +401,20 @@ def test_csrf_is_enforced_on_sign_in(world):  # M10
     code, _ = world.oauth.issue_sign_in_code(actor=world.owner, principal_id=world.owner.principal_id)
     response = world.client.post("/oauth/sign-in", data={"code": code, "csrf": "forged"})
     assert response.status_code == 400, response.text
-    assert "could not be verified" in response.text, response.text  # observed failing once under heavy load
+    assert "could not be verified" in response.text, response.text
     assert page.status_code == 200
+
+
+def test_browser_session_expires_on_the_server_clock(tmp_path):  # M10 / §5.3.3
+    w = World(tmp_path, browser_session_ttl=900)
+    with w.client:
+        page = w.authorize()
+        w.clock.advance(901)  # server-side expiry, independent of the cookie's Max-Age
+        response = w.sign_in(page)
+        assert response.status_code == 400 and "session expired" in response.text
+        page = w.authorize()
+        w.clock.advance(899)
+        assert w.sign_in(page).status_code == 200
 
 
 def test_pages_forbid_framing_and_caching(world):  # M10
