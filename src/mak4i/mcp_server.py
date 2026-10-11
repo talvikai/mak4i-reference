@@ -1032,14 +1032,14 @@ def build_http_app(
     return app
 
 
-def configure_audit_logging() -> None:
+def configure_audit_logging(level: str = "INFO") -> None:
     """Without this, AuditLogger's logger.info(...) calls are silent
     no-ops: Python's root logger defaults to WARNING with no handler
     attached, so nothing reaches stdout for Cloud Logging to capture
     (MVP_ARCHITECTURE.md §21's "watch the Cloud Run logs" requires this to
     actually work). format="%(message)s" keeps each line pure JSON, as
     AuditLogger emits it."""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(message)s")
 
 
 def main(*, on_http_started: Callable[[], None] | None = None) -> None:
@@ -1052,7 +1052,17 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     if the bind fails. `mak4i serve` uses it to print its "ready" line only
     when that is true. Without it (the container entry point), HTTP serving
     is exactly `uvicorn.run(...)` as before."""
-    configure_audit_logging()
+    from mak4i.settings import ConfigError, load_settings, resolve_secret
+
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        # MAK-0008 §12: refuse to start rather than run misconfigured.
+        import sys
+
+        print(f"MAK4I could not start: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    configure_audit_logging(settings.logging.level)
 
     store = build_store_from_env()
     control_plane = build_control_plane_from_env()
@@ -1075,7 +1085,9 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     if transport == "stdio":
         # A local stdio session is single-user for its whole lifetime —
         # one credential is authenticated once at startup, not per call.
-        token = os.environ["MAK4I_TOKEN"]
+        token = resolve_secret("MAK4I_TOKEN")
+        if not token:
+            raise KeyError("MAK4I_TOKEN")
         principal, credential_id = control_plane.authenticate_with_credential(token)
         current_principal.set(principal)
         current_auth.set(AuthContext(auth_method=CREDENTIAL, credential_id=credential_id))
@@ -1090,8 +1102,15 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         port = resolve_port()
         oauth = build_oauth_from_env(control_plane, audit=audit)
         app = build_http_app(server, control_plane=control_plane, audit=audit, host=host, oauth=oauth)
+        # Forwarded headers are honored only from configured proxies (for the
+        # client address in rate limits/logs); advertised URLs never use them.
+        proxy_options = (
+            {"proxy_headers": True, "forwarded_allow_ips": ",".join(settings.proxy.trusted_proxies)}
+            if settings.proxy.trusted_proxies
+            else {}  # uvicorn's default: only loopback may set forwarded headers
+        )
         if on_http_started is None:
-            uvicorn.run(app, host=host, port=port)
+            uvicorn.run(app, host=host, port=port, **proxy_options)
             return
 
         class _NotifyingServer(uvicorn.Server):
@@ -1102,7 +1121,7 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
                 if self.started:
                     on_http_started()
 
-        _NotifyingServer(uvicorn.Config(app, host=host, port=port)).run()
+        _NotifyingServer(uvicorn.Config(app, host=host, port=port, **proxy_options)).run()
 
 
 if __name__ == "__main__":

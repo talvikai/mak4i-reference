@@ -774,6 +774,11 @@ The one table of Enterprise Self-Hosted settings. The bootstrap writes
 | `MAK4I_OAUTH_CIMD_ALLOWED_HOSTS` | `.env` | Optional comma-separated allowlist of hosts whose client metadata documents are accepted. |
 | `MAK4I_OAUTH_ACCESS_TOKEN_TTL`, `MAK4I_OAUTH_REFRESH_IDLE_TTL`, `MAK4I_OAUTH_REFRESH_ABSOLUTE_TTL`, `MAK4I_OAUTH_CODE_TTL`, `MAK4I_OAUTH_SIGN_IN_CODE_TTL` | `.env` | Token policy in seconds; defaults 3600, 604800 (7 days), 2592000 (30 days), 60, 600. After the idle or absolute lifetime a person must sign in again. |
 | `MAK4I_OAUTH_RATE_LIMIT_PER_MINUTE` | `.env` | Sign-in / token / revocation / registration attempts per client address per minute (default 20). |
+| `MAK4I_TRUSTED_PROXIES` | `.env` | Reverse proxies whose `X-Forwarded-For` is trusted (default none). With the `tls` profile, set it to the Compose network (find it with `docker network inspect mak4i_default`) so rate limits see real client addresses. |
+| `MAK4I_LOG_LEVEL` | `.env` | Log level (default `INFO`). |
+
+Check the configuration the way the server will (no secrets printed):
+`docker compose exec mak4i mak4i config check`.
 | `MAK4I_BOOTSTRAP_PROFILE`, `MAK4I_INSTALL_STATE`, `MAK4I_INSTALLED_RELEASE` | `.env` | Bootstrap bookkeeping. Don't edit. |
 | `MAK4I_TRANSPORT=http`, `MAK4I_HOST=0.0.0.0`, `MAK4I_PORT=8080`, `MAK4I_STORE=local`, `MAK4I_LOCAL_STORE_DIR=/data/artifacts`, `MAK4I_CONTROL_PLANE_DB` | `compose.yaml` (fixed) | The container runtime settings. `MAK4I_HOST=0.0.0.0` applies **inside** the container only; host exposure is `MAK4I_HTTP_BIND`. |
 
