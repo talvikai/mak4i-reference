@@ -40,6 +40,7 @@ class Resolver:
         tags: list[str] | None = None,
         *,
         resolving: set[Subject] | frozenset[Subject] = frozenset(),
+        pending_resolution_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ResolutionResult:
         trace: list[str] = []
         integrity_errors: list[IntegrityError] = []
@@ -52,7 +53,7 @@ class Resolver:
 
         heads: dict[str, Artifact] = {}
         for lineage_id, members in lineages.items():
-            outcome = self._resolve_lineage(lineage_id, members)
+            outcome = self._resolve_lineage(lineage_id, members, pending_resolution_ids)
             if outcome is None:
                 trace.append(f"lineage {lineage_id!r}: withdrawn by a resolution; no current head")
             elif isinstance(outcome, IntegrityError):
@@ -115,12 +116,16 @@ class Resolver:
             trace=trace,
         )
 
-    def heads(self, all_project_artifacts: Iterable[Artifact]) -> dict[str, Artifact]:
+    def heads(
+        self,
+        all_project_artifacts: Iterable[Artifact],
+        pending_resolution_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> dict[str, Artifact]:
         """Current head per lineage (lineages with integrity errors or
         withdrawn ones omitted)."""
         out = {}
         for lineage_id, members in self._group_by_lineage(all_project_artifacts).items():
-            outcome = self._resolve_lineage(lineage_id, members)
+            outcome = self._resolve_lineage(lineage_id, members, pending_resolution_ids)
             if isinstance(outcome, Artifact):
                 out[lineage_id] = outcome
         return out
@@ -143,7 +148,10 @@ class Resolver:
         return True
 
     def _resolve_lineage(
-        self, lineage_id: str, members: list[Artifact]
+        self,
+        lineage_id: str,
+        members: list[Artifact],
+        pending_resolution_ids: set[str] | frozenset[str] = frozenset(),
     ) -> Artifact | IntegrityError | None:
         actives = [m for m in members if m.status == "active"]
 
@@ -151,6 +159,16 @@ class Resolver:
             latest = max(members, key=lambda m: _version_number(m.version))
             if latest.status == "withdrawn":
                 return None  # MAK-0005 §A6: withdrawn by a resolution
+            if (
+                latest.status == "superseded"
+                and latest.resolution_id in pending_resolution_ids
+                and not any(m.artifact_id == latest.superseded_by for m in members)
+            ):
+                # MAK-0004 §A8.2: a pending resolution marked this head
+                # superseded and hasn't written the successor yet. Until it
+                # completes, the version stays this lineage's candidate (its
+                # subject is reported as `resolving`, never as resolved).
+                return latest
             return IntegrityError(
                 lineage_id=lineage_id,
                 kind="zero_active",

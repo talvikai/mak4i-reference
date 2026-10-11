@@ -412,7 +412,11 @@ class MAK4IEngine:
         all_artifacts = self._store.all(organization_id, project)
         pending = self._pending_by_subject(organization_id, project)
         resolution = self._resolver.resolve(
-            all_artifacts, artifact_type=artifact_type, tags=tags, resolving=set(pending)
+            all_artifacts,
+            artifact_type=artifact_type,
+            tags=tags,
+            resolving=set(pending),
+            pending_resolution_ids={r.resolution_id for r in pending.values()},
         )
         conflicts = [
             self._to_conflict(organization_id, project, detected, pending)
@@ -891,21 +895,33 @@ class MAK4IEngine:
         if found is None:
             raise ArtifactNotFoundError(head_id)
         old, token = found
+        now = utc_now()
         if old.status == "superseded" and old.superseded_by:
             successor = self._store.get(org, project, old.superseded_by)
-            if successor is not None and successor[0].resolution_id == record.resolution_id:
-                return successor[0].artifact_id  # already applied
-        if old.status != "active":
+            if successor is not None:
+                if successor[0].resolution_id == record.resolution_id:
+                    return successor[0].artifact_id  # already applied
+                raise ConflictChangedError(f"{head_id!r} was superseded by another write")
+            if old.resolution_id != record.resolution_id:
+                raise ConflictChangedError(f"{head_id!r} is no longer a current head")
+            # Crash recovery (MAK-0004 §A8.2): this resolution marked the head
+            # superseded but died before writing the successor — finish it.
+            new_id = old.superseded_by
+        elif old.status != "active":
             raise ConflictChangedError(f"{head_id!r} is no longer a current head")
-        new_id = self._next_available_id(org, project, head_id)
-        now = utc_now()
-        try:
-            self._store.put_if_match(
-                old.model_copy(update={"status": "superseded", "superseded_by": new_id, "updated_at": now}),
-                expected_version_token=token,
-            )
-        except ConcurrentModificationError as exc:
-            raise ConflictChangedError(f"{head_id!r} changed during the resolution") from exc
+        else:
+            new_id = self._next_available_id(org, project, head_id)
+            try:
+                # The marker records which resolution owns this half-step.
+                self._store.put_if_match(
+                    old.model_copy(update={
+                        "status": "superseded", "superseded_by": new_id, "updated_at": now,
+                        "resolution_id": record.resolution_id,
+                    }),
+                    expected_version_token=token,
+                )
+            except ConcurrentModificationError as exc:
+                raise ConflictChangedError(f"{head_id!r} changed during the resolution") from exc
         successor = Artifact(
             artifact_id=new_id,
             artifact_type=old.artifact_type,
@@ -985,7 +1001,11 @@ class MAK4IEngine:
 
     def _open_conflicts(self, org: str, project: str) -> dict[str, Conflict]:
         pending = self._pending_by_subject(org, project)
-        result = self._resolver.resolve(self._store.all(org, project), resolving=set(pending))
+        result = self._resolver.resolve(
+            self._store.all(org, project),
+            resolving=set(pending),
+            pending_resolution_ids={r.resolution_id for r in pending.values()},
+        )
         conflicts = [self._to_conflict(org, project, d, pending) for d in result.conflicts]
         return {c.conflict_id: c for c in conflicts}
 
