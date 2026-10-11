@@ -524,6 +524,11 @@ def test_restore_with_yes_restores_and_verifies_counts(host):
     # one-off root chown to descend into them (found on a real host).
     chowns = [c for c in host.compose_calls("run") if "chown" in c]
     assert chowns and "DAC_READ_SEARCH" in chowns[0]
+    # A restore never resurrects OAuth authorizations revoked after the backup.
+    assert ["exec", "-T", "mak4i", "mak4i", "admin", "revoke-oauth", "--all", "--reason",
+            "restored_from_backup"] in host.compose_calls("exec")
+    assert "OAuth clients must sign in again" in r.output
+    assert "Credentials revoked AFTER this backup was taken are valid again" in r.output
 
 
 # -- upgrade -------------------------------------------------------------------------

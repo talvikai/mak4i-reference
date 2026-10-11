@@ -600,7 +600,7 @@ class OAuthService:
         if authorization is None or authorization["status"] != "active":
             raise self._token_rejected("invalid_grant", "authorization is no longer valid")
         principal = self._active_or_reject(authorization)
-        return self._issue_tokens(authorization, tuple(row["scopes"]), principal, now)
+        return self._issue_tokens(authorization, tuple(row["scopes"]), principal, now, grant_type="authorization_code")
 
     def refresh(self, form: dict, client: dict) -> dict:
         raw = form.get("refresh_token") or ""
@@ -630,7 +630,7 @@ class OAuthService:
         if not self._store.rotate_refresh_token(token["token_hash"]):
             self._replay(authorization, now)  # lost a concurrent rotation race
         self._store.touch_authorization(authorization["authorization_id"], now)
-        return self._issue_tokens(authorization, requested, principal, now)
+        return self._issue_tokens(authorization, requested, principal, now, grant_type="refresh_token")
 
     def revoke(self, form: dict, client: dict) -> None:
         """RFC 7009 (§6.7). Always succeeds from the caller's view."""
@@ -792,7 +792,13 @@ class OAuthService:
             raise self._token_rejected("invalid_grant", "the signed-in principal can no longer act") from exc
 
     def _issue_tokens(
-        self, authorization: dict, scopes: tuple[str, ...], principal: Principal, now: datetime
+        self,
+        authorization: dict,
+        scopes: tuple[str, ...],
+        principal: Principal,
+        now: datetime,
+        *,
+        grant_type: str,
     ) -> dict:
         access = _random_token(ACCESS_TOKEN_PREFIX)
         refresh = _random_token(REFRESH_TOKEN_PREFIX)
@@ -822,6 +828,9 @@ class OAuthService:
             authorization_id=authorization["authorization_id"],
             client_id=authorization["client_id"],
             scopes=list(scopes),
+            # authorization_code = a new sign-in; refresh_token = a rotation
+            # within the same authorization (acceptance evidence for refresh).
+            grant_type=grant_type,
         )
         return {
             "access_token": access,

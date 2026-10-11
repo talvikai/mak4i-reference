@@ -1039,3 +1039,41 @@ def test_cli_oauth_commands(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"revoked": 0}
     assert cli.main(["oauth", "client", "disable", "--client-id", client_id]) == 0
     assert '"status": "disabled"' in capsys.readouterr().out
+
+
+def test_token_events_distinguish_sign_in_from_refresh(world, caplog):  # M8 evidence
+    caplog.set_level(logging.INFO)
+    tokens = world.tokens()
+    world.refresh(tokens["refresh_token"])
+    events = [json.loads(r.getMessage()) for r in caplog.records if "OAUTH_TOKEN_ISSUED" in r.getMessage()]
+    assert [e["grant_type"] for e in events] == ["authorization_code", "refresh_token"]
+    assert events[0]["authorization_id"] == events[1]["authorization_id"]
+
+
+def test_restoring_an_old_database_cannot_resurrect_revoked_oauth_access(tmp_path, monkeypatch, capsys):
+    """Restoring a backup taken before a revocation brings the revoked
+    authorization back in the database; `mak4i admin revoke-oauth --all`
+    (run by the bootstrap restore) closes that hole."""
+    import shutil
+
+    from mak4i import cli
+
+    w = World(tmp_path)
+    with w.client:
+        tokens = w.tokens()
+        backup = tmp_path / "backup.db"
+        shutil.copy(tmp_path / "cp.db", backup)  # "backup" while the authorization is active
+        w.oauth.revoke_all(actor=w.owner, principal_id=w.owner.principal_id)
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 401
+        w.db.dispose()
+        shutil.copy(backup, tmp_path / "cp.db")  # "restore"
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 200  # resurrected!
+
+        monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'cp.db'}")
+        monkeypatch.setenv("MAK4I_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["admin", "revoke-oauth", "--all", "--reason", "restored_from_backup"]) == 0
+        assert json.loads(capsys.readouterr().out) == {"revoked": 1}
+        w.db.dispose()
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 401
+        assert w.refresh(tokens["refresh_token"]).json()["error"] == "invalid_grant"

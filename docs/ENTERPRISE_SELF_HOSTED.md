@@ -374,6 +374,7 @@ revoke it and issue a new one.
 | Remove access (immediate) | `grant revoke --actor "$OWNER" --principal-id … --project-id …` |
 | Issue a credential | `credential issue --actor "$OWNER" --principal-id … --display-name "…"` (optional `--expires-at`) |
 | Revoke a credential (immediate) | `credential revoke --actor "$OWNER" --credential-id cred_…` |
+| Revoke OAuth access | `oauth authorization revoke --authorization-id oaz_…` (one), `--principal-id …` (all of one principal's), `--client-id …` (**every** principal in your organization that authorized that client) |
 | Inspect (never prints tokens) | `org show`, `project list`, `principal list`, `grant list`, `credential list` |
 | Give conflict-resolution rights | `grant create … --permissions read,write,resolve` (`resolve` lets a principal settle conflicts; it never grants administration) |
 | Archive a project (nothing deleted; access stops) | `project archive --actor "$OWNER" --project-id …` |
@@ -521,7 +522,21 @@ or into system directories. Copy backups off the VM on your own schedule.
 
 Restore **replaces all current data** of this installation: the database
 contents and the artifacts volume. Credentials issued after the backup stop
-working. It verifies every checksum and the backup's release first, asks
+working.
+
+**Revocations made after the backup come back undone**, because the
+revocation state is part of the restored database (and so is the audit
+history that recorded them):
+
+- **OAuth:** the restore revokes *every* OAuth authorization
+  (`mak4i admin revoke-oauth --all`), so no OAuth access revoked after the
+  backup can return; every OAuth client signs in again.
+- **Credentials:** a credential revoked after the backup works again.
+  The restore can't know which ones, so re-revoke them yourself
+  (`credential list` / `credential revoke`) from your own records of what
+  you revoked since the backup.
+- Principal deactivations, grant removals and project archives made after
+  the backup are undone in the same way — re-apply them. It verifies every checksum and the backup's release first, asks
 you to type `restore` (or pass `--yes` for automation), runs migrations,
 and checks that the restored counts match the manifest. Expect MAK4I to be
 unavailable for under a minute on small installations. It restores

@@ -79,6 +79,11 @@ is independent.
   `MAK4I_TRUSTED_PROXIES` (forwarded headers trusted only from listed
   proxies), `MAK4I_LOG_LEVEL`, and `*_FILE` secret references for the
   control-plane database URL and the stdio token.
+- **Restore never resurrects OAuth access:** the bootstrap `restore` revokes
+  every OAuth authorization afterwards (`mak4i admin revoke-oauth --all`),
+  and warns that credentials revoked after the backup are valid again.
+- OAuth token events record `grant_type` (`authorization_code` for a new
+  sign-in, `refresh_token` for a rotation).
 - Docs: stdio vs HTTP authentication, OAuth state across restarts (no
   signing keys), custom authentication adapter trust boundary, and an
   explicit single-replica statement.

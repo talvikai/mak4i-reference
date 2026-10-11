@@ -166,6 +166,20 @@ class SqlOAuthStore:
             )
         return changed == 1
 
+    def revoke_all_active(self, reason: str, now: datetime) -> int:
+        """Revoke every active authorization and its tokens (instance-wide).
+        Used after restoring a backup, which can bring back authorizations
+        that were revoked after the backup was taken."""
+        a, tok = schema.oauth_authorizations, schema.oauth_tokens
+        with self._engine.begin() as conn:
+            count = conn.execute(
+                a.update()
+                .where(a.c.status == "active")
+                .values(status="revoked", revoked_reason=reason, revoked_at=_utc(now))
+            ).rowcount
+            conn.execute(tok.update().where(tok.c.status != "revoked").values(status="revoked"))
+        return count
+
     def list_authorizations(
         self,
         *,

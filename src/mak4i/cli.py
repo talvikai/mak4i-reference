@@ -631,6 +631,33 @@ def _cmd_audit_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_admin_revoke_oauth(args: argparse.Namespace) -> int:
+    """Instance operator: revoke every active OAuth authorization (and its
+    tokens). Run after restoring a backup — the restored database can
+    contain authorizations that were revoked after the backup was taken.
+    Every OAuth client then signs in again. Works whether or not OAuth is
+    currently enabled."""
+    from sqlalchemy import inspect
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.oauth.store import SqlOAuthStore
+
+    if not args.all:
+        raise _CliError("pass --all to revoke every active OAuth authorization")
+    control_plane = _make_control_plane()
+    store = control_plane._store  # noqa: SLF001 - operator action on the same database
+    if not isinstance(store, SqlControlPlaneStore) or "oauth_authorizations" not in inspect(store.engine).get_table_names():
+        _print_json({"revoked": 0})
+        return 0
+    count = SqlOAuthStore(store.engine).revoke_all_active(args.reason, utc_now())
+    control_plane.record_admin_event(
+        action="oauth_authorization.revoke_all_instance", actor=None, organization_id=None,
+        targets={"reason": args.reason, "count": str(count)},
+    )
+    _print_json({"revoked": count})
+    return 0
+
+
 def _cmd_admin_inventory(args: argparse.Namespace) -> int:
     """Issue #21: the non-secret administrative inventory of this
     installation, for the instance operator (who already has direct
@@ -1704,6 +1731,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Non-secret inventory: organizations, owners, projects, principals, grants, credential metadata.",
     )
     admin_inventory.set_defaults(func=_cmd_admin_inventory)
+    admin_revoke_oauth = admin_sub.add_parser(
+        "revoke-oauth",
+        help="Revoke every active OAuth authorization (run after restoring a backup).",
+    )
+    admin_revoke_oauth.add_argument("--all", action="store_true", required=True)
+    admin_revoke_oauth.add_argument("--reason", default="operator")
+    admin_revoke_oauth.set_defaults(func=_cmd_admin_revoke_oauth)
 
     conflict = subparsers.add_parser(
         "conflict",

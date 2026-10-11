@@ -468,7 +468,10 @@ Restore REPLACES all current data of this installation with the backup:
   - control-plane database (organizations, principals, projects, grants,
     credentials): current contents are dropped and replaced;
   - artifacts volume: current files are deleted and replaced.
-Credentials issued after the backup stop working. MAK4I is unavailable to
+Credentials issued after the backup stop working, and credentials revoked
+after the backup work again — re-revoke them after the restore. Every
+OAuth authorization is revoked by the restore, so OAuth clients sign in
+again. MAK4I is unavailable to
 clients during the restore (typically well under a minute for small
 installations). The current .env (database password) is kept.
 EOF
@@ -501,7 +504,13 @@ EOF
     die "$EX_BACKUP" "restored control-plane counts ($counts) don't match the backup"
   [[ "$acount" == "$(env_get "$src/manifest.env" MAK4I_BACKUP_ARTIFACT_COUNT)" ]] ||
     die "$EX_BACKUP" "restored artifact count ($acount) doesn't match the backup"
+  # The restored database can hold OAuth authorizations that were revoked
+  # after the backup was taken; never let a restore resurrect them.
+  run compose exec -T mak4i mak4i admin revoke-oauth --all --reason restored_from_backup ||
+    die "$EX_FAILURE" "restored, but revoking OAuth authorizations failed; run: docker compose exec mak4i mak4i admin revoke-oauth --all"
   say "Restore complete and verified: $counts (organizations principals projects grants credentials), $acount artifact file(s)."
+  warn "All OAuth authorizations were revoked: OAuth clients must sign in again."
+  warn "Credentials revoked AFTER this backup was taken are valid again (the audit history was restored too). Re-revoke them: mak4i credential list / credential revoke."
 }
 
 # --- upgrade ------------------------------------------------------------------
