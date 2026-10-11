@@ -26,7 +26,7 @@ def _onboarded_world():
         actor=owner,
         principal_id=principal.principal_id,
         project_id=project.project_id,
-        permissions=["read", "write"],
+        permissions=["read", "write", "resolve"],
     )
     return control_plane, project.project_id, principal
 
@@ -58,7 +58,7 @@ def _authenticated(world):
     current_principal.reset(token)
 
 
-async def test_lists_exactly_the_seven_required_tools(server):
+async def test_lists_exactly_the_ten_required_tools(server):
     async with Client(server=server) as client:
         result = await client.list_tools()
         names = {t.name for t in result.tools}
@@ -70,6 +70,9 @@ async def test_lists_exactly_the_seven_required_tools(server):
             "mak4i_history",
             "mak4i_list_projects",
             "mak4i_whoami",
+            "mak4i_list_conflicts",
+            "mak4i_get_conflict",
+            "mak4i_resolve_conflict",
         }
 
 
@@ -87,7 +90,7 @@ async def test_list_projects_returns_the_authorized_project(server, world):
         assert not result.is_error
         projects = result.structured_content["result"]
         assert [p["project_id"] for p in projects] == [world["project"]]
-        assert set(projects[0]["permissions"]) == {"read", "write"}
+        assert set(projects[0]["permissions"]) == {"read", "write", "resolve"}
 
 
 async def test_create_then_get_current_round_trips(server, world):
@@ -291,16 +294,28 @@ async def test_subject_key_conflict_and_explicit_release_over_mcp(server, world)
         )
         assert change.is_error
 
+        # v2 (MAK-0004 §A3.7): releasing a candidate's key mid-conflict is
+        # rejected with a structured error; the conflict is resolved explicitly.
         released = await client.call_tool(
             "mak4i_supersede",
             {"project": world["project"], "old_id": "use-memcached",
              "content": "Memcached rejected; Redis selected.", "reason": "resolved",
              "release_subject_key": True},
         )
-        assert not released.is_error
-        assert released.structured_content["subject_key"] is None
-        assert released.structured_content["released_subject_key"] == "session-cache"
+        assert released.is_error
+        assert released.structured_content["error"]["code"] == "subject_in_conflict"
+
+        conflict = package["conflicts"][0]
+        candidates = [c["artifact_id"] for c in conflict["candidates"]]
+        resolved = await client.call_tool(
+            "mak4i_resolve_conflict",
+            {"project": world["project"], "conflict_id": conflict["conflict_id"],
+             "candidate_artifact_ids": candidates, "action": "select_winner",
+             "winner_artifact_id": "use-redis", "reason": "Redis selected."},
+        )
+        assert not resolved.is_error, resolved.content
+        assert resolved.structured_content["state"] == "completed"
 
         package = (await client.call_tool("mak4i_get_current", {"project": world["project"]})).structured_content
         assert package["conflicts"] == []
-        assert {a["artifact_id"] for a in package["artifacts"]} == {"use-redis", "tag-twin", released.structured_content["artifact_id"]}
+        assert {a["artifact_id"] for a in package["artifacts"]} == {"use-redis", "tag-twin"}

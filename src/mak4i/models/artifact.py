@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-ArtifactStatus = Literal["active", "superseded"]
+ArtifactStatus = Literal["active", "superseded", "withdrawn"]
+"""MAK-0005 §A6. `withdrawn` is set only by a conflict resolution and is
+terminal: the lineage then has no current head (not an integrity error)."""
+
+SUBJECT_KEY_MAX_LENGTH = 512
 
 
 class ClientMetadata(BaseModel):
@@ -83,6 +88,10 @@ class Artifact(BaseModel):
     # authenticated. Absent on versions written before v2.0.0-rc.1 (never
     # back-filled — MAK-0006 §7.5); `created_by` is the legacy attribution.
     provenance: Provenance | None = None
+    # MAK-0004 §A7: set on versions created or withdrawn by a conflict
+    # resolution; `merged_from` lists the candidates a merge result replaces.
+    resolution_id: str | None = None
+    merged_from: list[str] | None = None
 
     @field_validator(
         "artifact_id", "artifact_type", "organization_id", "project", "title",
@@ -119,7 +128,13 @@ class Artifact(BaseModel):
 # that don't use them stay readable by an RC2 install (whose model rejects
 # unknown fields) — only artifacts that actually carry a subject_key are
 # RC3-only on disk.
-_OMIT_WHEN_UNSET = ("subject_key", "released_subject_key", "provenance")
+_OMIT_WHEN_UNSET = (
+    "subject_key",
+    "released_subject_key",
+    "provenance",
+    "resolution_id",
+    "merged_from",
+)
 
 
 def dump_for_storage(artifact: Artifact) -> str:
@@ -129,15 +144,18 @@ def dump_for_storage(artifact: Artifact) -> str:
 
 
 def normalize_subject_key(value: str | None) -> str | None:
-    """Minimal, predictable normalization for `subject_key`: `None` stays
-    `None`; otherwise surrounding whitespace is trimmed and an empty result
-    is rejected. Nothing else (no case folding, no derivation)."""
+    """MAK-0005 §A5.2: Unicode NFC, then trim surrounding whitespace; empty
+    is rejected, at most 512 characters. Comparison is exact (no case
+    folding, no derivation). ASCII keys normalize exactly as in earlier
+    releases (trim only)."""
     if value is None:
         return None
-    trimmed = value.strip()
-    if not trimmed:
+    normalized = unicodedata.normalize("NFC", value).strip()
+    if not normalized:
         raise ValueError("subject_key must not be empty; omit it instead")
-    return trimmed
+    if len(normalized) > SUBJECT_KEY_MAX_LENGTH:
+        raise ValueError(f"subject_key must be at most {SUBJECT_KEY_MAX_LENGTH} characters")
+    return normalized
 
 
 def bump_version(version: str) -> str:

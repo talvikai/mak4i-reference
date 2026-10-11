@@ -4,22 +4,33 @@ from collections import defaultdict
 from typing import Iterable
 
 from mak4i.models import Artifact
-from mak4i.resolution.types import Conflict, IntegrityError, ResolutionResult
+from mak4i.resolution.types import DetectedConflict, IntegrityError, ResolutionResult
+
+Subject = tuple[str, str]
+"""(artifact_type, normalized subject_key) within one organization/project."""
 
 
 class Resolver:
-    """Applicability, integrity, and cross-lineage conflict resolution.
+    """Integrity checking and deterministic subject-conflict detection
+    (MAK-0004 Part A, MAK-0005 Part A).
 
-    [PROTOCOL] mechanism per MVP_ARCHITECTURE.md §7: applicability → group
-    by lineage_id → integrity check (fail closed, §5) → cross-lineage
-    conflict check (§18) → resolved/conflict/integrity-error outcome,
-    every step captured in a trace.
+    Order of operations — every step recorded in the trace:
 
-    Deliberately store-independent and stateless: it operates on whatever
-    artifact list it is given (typically `store.all(project)`, supplied by
-    the engine) so it stays trivially testable and carries no
-    scenario-specific logic — a caching lineage and a database lineage
-    are grouped, integrity-checked, and conflict-checked identically.
+    1. group the project's versions by lineage and find each lineage's
+       single current head (fail closed on integrity errors; a lineage whose
+       last version was withdrawn by a resolution simply has no head);
+    2. detect conflicts over **all** heads: two or more lineages whose heads
+       share `artifact_type` and `subject_key`, or a subject whose
+       resolution is still in progress (§A4.2);
+    3. only then apply the caller's filters, which choose what is
+       *reported* but never what is *detected* (§A6.2): a conflict is
+       reported, with all of its candidates, when its type matches and at
+       least one candidate matches the tags.
+
+    Deliberately store-independent and stateless, with no
+    scenario-specific logic: a caching lineage and a database lineage go
+    through identical code. Tags never create a conflict, content is never
+    compared to infer one, and no candidate is ever chosen by recency.
     """
 
     def resolve(
@@ -27,6 +38,8 @@ class Resolver:
         all_project_artifacts: Iterable[Artifact],
         artifact_type: str | None = None,
         tags: list[str] | None = None,
+        *,
+        resolving: set[Subject] | frozenset[Subject] = frozenset(),
     ) -> ResolutionResult:
         trace: list[str] = []
         integrity_errors: list[IntegrityError] = []
@@ -37,39 +50,63 @@ class Resolver:
             f"across {len(lineages)} lineage(s)"
         )
 
-        current_by_lineage: dict[str, Artifact] = {}
+        heads: dict[str, Artifact] = {}
         for lineage_id, members in lineages.items():
             outcome = self._resolve_lineage(lineage_id, members)
-            if isinstance(outcome, IntegrityError):
+            if outcome is None:
+                trace.append(f"lineage {lineage_id!r}: withdrawn by a resolution; no current head")
+            elif isinstance(outcome, IntegrityError):
                 integrity_errors.append(outcome)
                 trace.append(
                     f"lineage {lineage_id!r}: integrity error ({outcome.kind}) — "
                     f"{outcome.detail}; contributes nothing"
                 )
             else:
-                current_by_lineage[lineage_id] = outcome
+                heads[lineage_id] = outcome
                 trace.append(f"lineage {lineage_id!r}: current is {outcome.artifact_id!r}")
 
-        applicable = {
-            lineage_id: artifact
-            for lineage_id, artifact in current_by_lineage.items()
-            if self._matches(artifact, artifact_type, tags)
+        # Detection over every head, before any filter (§A3.2).
+        by_subject: dict[Subject, list[Artifact]] = defaultdict(list)
+        for lineage_id in sorted(heads):
+            head = heads[lineage_id]
+            if head.subject_key is not None:
+                by_subject[(head.artifact_type, head.subject_key)].append(head)
+        conflicted = {
+            subject: members
+            for subject, members in by_subject.items()
+            if len(members) > 1 or subject in resolving
         }
-        trace.append(
-            f"{len(applicable)} lineage(s) applicable to "
-            f"artifact_type={artifact_type!r} tags={tags!r}"
-        )
-
-        conflicts, resolved_by_lineage = self._group_conflicts(applicable)
-        for conflict in conflicts:
+        for subject in sorted(resolving):
+            conflicted.setdefault(subject, by_subject.get(subject, []))
+        for (subject_type, subject_key), members in sorted(conflicted.items()):
+            note = " (resolution in progress)" if (subject_type, subject_key) in resolving else ""
             trace.append(
-                f"conflict: lineages {conflict.lineage_ids} share "
-                f"artifact_type={conflict.artifact_type!r} and "
-                f"subject_key={conflict.subject_key!r}"
+                f"conflict{note}: lineages {[m.lineage_id for m in members]} claim "
+                f"artifact_type={subject_type!r} subject_key={subject_key!r}"
             )
 
-        resolved = list(resolved_by_lineage.values())
-        trace.append(f"resolved {len(resolved)} artifact(s), {len(conflicts)} conflict(s)")
+        # Reporting filters (§A6.2).
+        conflicts = [
+            DetectedConflict(
+                artifact_type=subject_type,
+                subject_key=subject_key,
+                lineage_ids=[m.lineage_id for m in members],
+                artifacts=members,
+            )
+            for (subject_type, subject_key), members in sorted(conflicted.items())
+            if (artifact_type is None or subject_type == artifact_type)
+            and (not tags or not members or any(set(tags).issubset(m.tags) for m in members))
+        ]
+        resolved = [
+            head
+            for _lineage_id, head in sorted(heads.items())
+            if not (head.subject_key is not None and (head.artifact_type, head.subject_key) in conflicted)
+            and self._matches(head, artifact_type, tags)
+        ]
+        trace.append(
+            f"applied filters artifact_type={artifact_type!r} tags={tags!r}: "
+            f"resolved {len(resolved)} artifact(s), reported {len(conflicts)} conflict(s)"
+        )
 
         return ResolutionResult(
             resolved=resolved,
@@ -77,6 +114,16 @@ class Resolver:
             integrity_errors=integrity_errors,
             trace=trace,
         )
+
+    def heads(self, all_project_artifacts: Iterable[Artifact]) -> dict[str, Artifact]:
+        """Current head per lineage (lineages with integrity errors or
+        withdrawn ones omitted)."""
+        out = {}
+        for lineage_id, members in self._group_by_lineage(all_project_artifacts).items():
+            outcome = self._resolve_lineage(lineage_id, members)
+            if isinstance(outcome, Artifact):
+                out[lineage_id] = outcome
+        return out
 
     # -- internals --------------------------------------------------------
 
@@ -97,10 +144,13 @@ class Resolver:
 
     def _resolve_lineage(
         self, lineage_id: str, members: list[Artifact]
-    ) -> Artifact | IntegrityError:
+    ) -> Artifact | IntegrityError | None:
         actives = [m for m in members if m.status == "active"]
 
         if len(actives) == 0:
+            latest = max(members, key=lambda m: _version_number(m.version))
+            if latest.status == "withdrawn":
+                return None  # MAK-0005 §A6: withdrawn by a resolution
             return IntegrityError(
                 lineage_id=lineage_id,
                 kind="zero_active",
@@ -151,52 +201,9 @@ class Resolver:
                 )
         return None
 
-    @staticmethod
-    def _group_conflicts(
-        applicable: dict[str, Artifact],
-    ) -> tuple[list[Conflict], dict[str, Artifact]]:
-        """Cross-lineage conflict grouping, by explicit identity only.
 
-        Two current, applicable artifacts from DIFFERENT lineages compete
-        only when they have the same `artifact_type` AND the same non-empty
-        `subject_key` (MVP_ARCHITECTURE.md §18). Everything here is already
-        scoped to one organization and project (the engine passes
-        `store.all(organization_id, project)`), each entry is its lineage's
-        single current artifact, and supersession never crosses lineages, so
-        "different lineages, neither supersedes the other" holds by
-        construction.
-
-        Tags are classification and search metadata only: they never
-        establish identity or conflict membership (issue #5 — the previous
-        "same type + >= 2 shared tags" heuristic grouped independent
-        artifacts such as four separate requirements documents). An
-        artifact without a `subject_key` (including every pre-RC3 artifact)
-        never takes part in a cross-lineage conflict. No content-level
-        (semantic) incompatibility is inferred.
-        """
-        by_identity: dict[tuple[str, str], list[tuple[str, Artifact]]] = defaultdict(list)
-        resolved: dict[str, Artifact] = {}
-        for lineage_id, artifact in applicable.items():
-            if artifact.subject_key is None:
-                resolved[lineage_id] = artifact
-            else:
-                by_identity[(artifact.artifact_type, artifact.subject_key)].append(
-                    (lineage_id, artifact)
-                )
-
-        conflicts: list[Conflict] = []
-        for (artifact_type, subject_key), group in by_identity.items():
-            if len(group) > 1:
-                conflicts.append(
-                    Conflict(
-                        artifact_type=artifact_type,
-                        subject_key=subject_key,
-                        lineage_ids=[lineage_id for lineage_id, _ in group],
-                        artifacts=[artifact for _, artifact in group],
-                    )
-                )
-            else:
-                lineage_id, artifact = group[0]
-                resolved[lineage_id] = artifact
-
-        return conflicts, resolved
+def _version_number(version: str) -> int:
+    try:
+        return int(version.partition(".")[0])
+    except ValueError:
+        return -1

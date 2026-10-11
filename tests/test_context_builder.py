@@ -47,20 +47,29 @@ def test_build_wraps_resolution_result():
 
 
 def test_build_carries_conflicts_and_integrity_errors():
+    from mak4i.resolution import ConflictCandidate
+
+    first, second = _artifact(), _artifact(artifact_id="decision-cache-004")
     conflict = Conflict(
+        conflict_id="cfl_" + "1" * 32,
+        state="open",
+        generation=0,
+        organization_id=first.organization_id,
+        project=first.project,
         artifact_type="architecture_decision",
         subject_key="application-cache",
-        lineage_ids=["decision-cache-001", "decision-cache-004"],
-        artifacts=[_artifact(), _artifact(artifact_id="decision-cache-004")],
+        identical_content=False,
+        reason="2 lineage(s) claim the subject",
+        candidates=[ConflictCandidate.of(first), ConflictCandidate.of(second)],
     )
     integrity_error = IntegrityError(
         lineage_id="decision-db-001", kind="zero_active", detail="no active member"
     )
     resolution = ResolutionResult(
-        resolved=[], conflicts=[conflict], integrity_errors=[integrity_error], trace=["x"]
+        resolved=[], conflicts=[], integrity_errors=[integrity_error], trace=["x"]
     )
 
-    package = ContextBuilder().build(resolution)
+    package = ContextBuilder().build(resolution, conflicts=[conflict])
 
     assert package.conflicts == [conflict]
     assert package.integrity_errors == [integrity_error]

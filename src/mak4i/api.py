@@ -17,8 +17,27 @@ from mak4i.models import (
     normalize_subject_key,
     utc_now,
 )
+from mak4i.errors import (
+    ConflictChangedError,
+    ConflictNotOpenError,
+    MAK4IError,
+    NotFoundError,
+    SubjectCollisionError,
+    SubjectInConflictError,
+    ValidationFailedError,
+)
 from mak4i.resolution import IntegrityError, Resolver
-from mak4i.store.base import ArtifactNotFoundError, ArtifactStore
+from mak4i.resolution.records import InMemoryResolutionStore, ResolutionStore, SlotTakenError
+from mak4i.resolution.types import (
+    Conflict,
+    ConflictCandidate,
+    DetectedConflict,
+    ResolutionEffect,
+    ResolutionRecord,
+    ResultingHead,
+    conflict_id_for,
+)
+from mak4i.store.base import ArtifactNotFoundError, ArtifactStore, ConcurrentModificationError
 
 _MAX_SUCCESSOR_ID_ATTEMPTS = 1000
 
@@ -26,13 +45,15 @@ CREDENTIAL = "credential"
 OPERATOR_IMPERSONATION = "operator_impersonation"
 
 
-class ArtifactNotActiveError(Exception):
+class ArtifactNotActiveError(MAK4IError):
     """Raised by supersede_artifact when the target isn't currently active.
 
     A supersede must never be applied to an already-superseded artifact —
     MVP_ARCHITECTURE.md §5 step 2: "Confirm old.status == active. If not,
     reject." Nothing is written when this is raised.
     """
+
+    code = "artifact_not_active"
 
     def __init__(self, artifact_id: str, status: str):
         super().__init__(
@@ -42,7 +63,7 @@ class ArtifactNotActiveError(Exception):
         self.status = status
 
 
-class SubjectKeyChangeError(Exception):
+class SubjectKeyChangeError(MAK4IError):
     """Raised by supersede_artifact when a supersede would alter the
     lineage's `subject_key` other than by an explicit release: supplying a
     different key, acquiring a key for a lineage that has none (including
@@ -52,6 +73,8 @@ class SubjectKeyChangeError(Exception):
     (carried forward) or restate it, and may give it up only via
     `release_subject_key=True`. Nothing is written when this is raised.
     """
+
+    code = "subject_key_change"
 
     def __init__(
         self,
@@ -70,6 +93,25 @@ class SubjectKeyChangeError(Exception):
         self.artifact_id = artifact_id
         self.current = current
         self.requested = requested
+
+
+class StaleHeadError(ConcurrentModificationError):
+    """MAK-0005 §A4.2: another write replaced the head between read and
+    write; nothing was written. Re-read and retry. (A
+    `ConcurrentModificationError`, so existing callers keep working.)"""
+
+    code = "stale_head"
+    retryable = True
+
+    def __init__(self, artifact_id: str):
+        super().__init__(artifact_id)
+        self.message = (
+            f"{artifact_id!r} changed while this supersede was in progress; nothing was "
+            "written — re-read the lineage and retry"
+        )
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class MAK4IEngine:
@@ -93,7 +135,9 @@ class MAK4IEngine:
         *,
         authorizer: Authorizer,
         control_plane: ControlPlane,
+        resolutions: ResolutionStore | None = None,
     ):
+        self._resolutions = resolutions or InMemoryResolutionStore()
         self._store = store
         self._audit = audit
         self._authorizer = authorizer
@@ -247,6 +291,22 @@ class MAK4IEngine:
         new_subject_key = None if release_subject_key else old.subject_key
         released_subject_key = old.subject_key if release_subject_key else None
 
+        if old.subject_key is not None:
+            subject = (old.artifact_type, old.subject_key)
+            if subject in self._resolving_subjects(organization_id, project):
+                # MAK-0004 §A8.3: don't move a candidate under a resolution.
+                self._reject_supersede(correlation_id, principal, old_id, context, "a resolution of this subject is in progress")
+                raise ConflictChangedError(
+                    "a resolution of this subject is in progress; nothing was written — re-read and retry"
+                )
+            if release_subject_key and self._subject_in_conflict(organization_id, project, subject):
+                self._reject_supersede(correlation_id, principal, old_id, context, "release during open conflict")
+                raise SubjectInConflictError(
+                    f"subject_key {old.subject_key!r} is in an open conflict; resolve it with "
+                    "mak4i_resolve_conflict (select a winner, merge, or separate the subjects) "
+                    "instead of releasing the key"
+                )
+
         new_id = self._next_available_id(organization_id, project, old_id)
         now = utc_now()
 
@@ -254,8 +314,13 @@ class MAK4IEngine:
             update={"status": "superseded", "superseded_by": new_id, "updated_at": now}
         )
         # Step 4: the GCS-native race-closing check — if `old` changed since
-        # we read it, reject the whole operation here and write nothing else.
-        self._store.put_if_match(old_marked_superseded, expected_version_token=old_token)
+        # we read it, reject the whole operation here and write nothing else
+        # (MAK-0005 §A4.2), and record the rejection (§A4.4).
+        try:
+            self._store.put_if_match(old_marked_superseded, expected_version_token=old_token)
+        except ConcurrentModificationError as exc:
+            self._reject_supersede(correlation_id, principal, old_id, context, "stale head")
+            raise StaleHeadError(old_id) from exc
 
         new_artifact = Artifact(
             artifact_id=new_id,
@@ -345,9 +410,14 @@ class MAK4IEngine:
             )
 
         all_artifacts = self._store.all(organization_id, project)
+        pending = self._pending_by_subject(organization_id, project)
         resolution = self._resolver.resolve(
-            all_artifacts, artifact_type=artifact_type, tags=tags
+            all_artifacts, artifact_type=artifact_type, tags=tags, resolving=set(pending)
         )
+        conflicts = [
+            self._to_conflict(organization_id, project, detected, pending)
+            for detected in resolution.conflicts
+        ]
         if self._audit is not None:
             self._audit.log_resolve(
                 correlation_id=correlation_id,
@@ -355,7 +425,7 @@ class MAK4IEngine:
                 resolution=resolution,
                 context=context,
             )
-            for conflict in resolution.conflicts:
+            for conflict in conflicts:
                 self._audit.log_conflict(
                     correlation_id=correlation_id,
                     actor=principal.principal_id,
@@ -370,7 +440,9 @@ class MAK4IEngine:
                     context=context,
                 )
 
-        package = self._context_builder.build(resolution, resolution_trace_id=correlation_id)
+        package = self._context_builder.build(
+            resolution, resolution_trace_id=correlation_id, conflicts=conflicts
+        )
         if self._audit is not None:
             self._audit.log_inject(
                 correlation_id=correlation_id,
@@ -530,6 +602,462 @@ class MAK4IEngine:
         result = self._resolver.resolve(all_artifacts)
         return result.integrity_errors
 
+    # -- conflicts (MAK-0004 Part A) ------------------------------------------
+
+    def list_conflicts(
+        self,
+        *,
+        principal: Principal,
+        project: str,
+        artifact_type: str | None = None,
+        state: str = "open",
+        auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
+    ) -> list[Conflict]:
+        """Open (incl. resolving) conflicts, resolved ones from their
+        records, or both. READ required."""
+        if state not in ("open", "resolved", "all"):
+            raise ValidationFailedError("state must be 'open', 'resolved' or 'all'")
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
+        correlation_id = str(uuid.uuid4())
+        outcome = self._authorizer.require(
+            principal, project, "read",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        organization_id = outcome.organization_id
+        out: list[Conflict] = []
+        if state in ("open", "all"):
+            out.extend(self._open_conflicts(organization_id, project).values())
+        if state in ("resolved", "all"):
+            out.extend(
+                self._resolved_view(record)
+                for record in self._resolutions.for_project(organization_id, project, state="completed")
+            )
+        if artifact_type is not None:
+            out = [c for c in out if c.artifact_type == artifact_type]
+        return out
+
+    def get_conflict(
+        self,
+        *,
+        principal: Principal,
+        project: str,
+        conflict_id: str,
+        auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
+    ) -> Conflict:
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
+        correlation_id = str(uuid.uuid4())
+        outcome = self._authorizer.require(
+            principal, project, "read",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        organization_id = outcome.organization_id
+        open_conflicts = self._open_conflicts(organization_id, project)
+        if conflict_id in open_conflicts:
+            return open_conflicts[conflict_id]
+        for record in self._resolutions.by_conflict(conflict_id):
+            if (record.organization_id, record.project) == (organization_id, project) and record.state == "completed":
+                return self._resolved_view(record)
+        raise NotFoundError("no conflict with this id in this project")
+
+    def resolve_conflict(
+        self,
+        *,
+        principal: Principal,
+        project: str,
+        conflict_id: str,
+        candidate_artifact_ids: list[str],
+        action: str,
+        reason: str,
+        winner_artifact_id: str | None = None,
+        into_artifact_id: str | None = None,
+        content: str | None = None,
+        title: str | None = None,
+        rationale: str | None = None,
+        assignments: list[dict] | None = None,
+        idempotency_key: str | None = None,
+        auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
+        client: ClientMetadata | None = None,
+    ) -> ResolutionRecord:
+        """MAK-0004 §A7–§A8. Requires `read` and `resolve` (any principal
+        type). Fails with `conflict_changed` if the candidates differ from
+        `candidate_artifact_ids`, `conflict_not_open` if another resolution
+        of this generation exists, and is idempotent for an identical retry
+        with the same `idempotency_key`."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
+        correlation_id = str(uuid.uuid4())
+        outcome = self._authorizer.require(
+            principal, project, "read",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        self._authorizer.require(
+            principal, project, "resolve",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        context = self._authorizer.audit_context(outcome, auth_method=auth_method)
+        organization_id = outcome.organization_id
+        if not (reason or "").strip():
+            raise ValidationFailedError("reason is required: a resolution without a reason is not explainable")
+        parameters = _resolution_parameters(
+            action,
+            winner_artifact_id=winner_artifact_id,
+            into_artifact_id=into_artifact_id,
+            content=content,
+            title=title,
+            rationale=rationale,
+            assignments=assignments,
+        )
+
+        # §A8.4: an identical retry returns (or finishes) the existing record.
+        for record in self._resolutions.by_conflict(conflict_id):
+            if (record.organization_id, record.project) != (organization_id, project) or record.state == "aborted":
+                continue
+            same_request = (
+                idempotency_key is not None
+                and record.idempotency_key == idempotency_key
+                and record.action == action
+                and record.parameters == parameters
+                and sorted(record.candidate_artifact_ids) == sorted(candidate_artifact_ids)
+            )
+            if not same_request:
+                self._log_resolution("RESOLUTION_REJECTED", correlation_id, principal, context, conflict_id=conflict_id, reason="conflict_not_open")
+                raise ConflictNotOpenError("this conflict was already resolved or is being resolved")
+            return self._apply_resolution(record, correlation_id, context) if record.state == "pending" else record
+
+        open_conflicts = self._open_conflicts(organization_id, project)
+        conflict = open_conflicts.get(conflict_id)
+        if conflict is None:
+            raise NotFoundError("no open conflict with this id in this project")
+        current = sorted(c.artifact_id for c in conflict.candidates)
+        if sorted(set(candidate_artifact_ids)) != current or len(candidate_artifact_ids) != len(current):
+            self._log_resolution("RESOLUTION_REJECTED", correlation_id, principal, context, conflict_id=conflict_id, reason="conflict_changed")
+            raise ConflictChangedError(
+                "the conflict's candidates changed since they were read; re-read the conflict and retry"
+            )
+        self._validate_resolution(organization_id, project, conflict, action, parameters)
+
+        now = utc_now()
+        record = ResolutionRecord(
+            resolution_id="res_" + uuid.uuid4().hex,
+            conflict_id=conflict_id,
+            organization_id=organization_id,
+            project=project,
+            artifact_type=conflict.artifact_type,
+            subject_key=conflict.subject_key,
+            generation=conflict.generation,
+            action=action,
+            parameters=parameters,
+            reason=reason.strip(),
+            candidate_artifact_ids=current,
+            actor=_provenance(principal, auth, auth_method, client, now),
+            state="pending",
+            idempotency_key=idempotency_key,
+            created_at=now,
+        )
+        try:
+            self._resolutions.create_pending(record)
+        except SlotTakenError as exc:
+            self._log_resolution("RESOLUTION_REJECTED", correlation_id, principal, context, conflict_id=conflict_id, reason="conflict_not_open")
+            raise ConflictNotOpenError("this conflict is already being resolved") from exc
+        self._log_resolution(
+            "RESOLUTION_STARTED", correlation_id, principal, context,
+            resolution_id=record.resolution_id, conflict_id=conflict_id, action=action,
+            candidates=current,
+        )
+        return self._apply_resolution(record, correlation_id, context)
+
+    def recover_pending_resolutions(self) -> list[ResolutionRecord]:
+        """MAK-0004 §A8.2: drive every pending resolution to completed (or
+        aborted). Called at server start; safe to call any time."""
+        finished = []
+        for record in self._resolutions.all_pending():
+            try:
+                finished.append(self._apply_resolution(record, str(uuid.uuid4()), None))
+            except ConflictChangedError:
+                finished.append(self._resolutions.get(record.resolution_id))
+        return finished
+
+    # -- conflict internals ------------------------------------------------------
+
+    def _apply_resolution(self, record: ResolutionRecord, correlation_id: str, context) -> ResolutionRecord:
+        org, project = record.organization_id, record.project
+        params = record.parameters
+        candidates = sorted(record.candidate_artifact_ids)
+        effects: list[ResolutionEffect] = []
+        heads: list[ResultingHead] = []
+        try:
+            if record.action == "select_winner":
+                winner = params["winner_artifact_id"]
+                for artifact_id in candidates:
+                    if artifact_id == winner:
+                        effects.append(ResolutionEffect(artifact_id=artifact_id, effect="unchanged"))
+                    else:
+                        self._withdraw(org, project, artifact_id, record)
+                        effects.append(ResolutionEffect(artifact_id=artifact_id, effect="withdrawn"))
+                heads.append(ResultingHead(subject_key=record.subject_key, artifact_id=winner))
+            elif record.action == "merge":
+                into = params["into_artifact_id"]
+                successor = self._resolution_successor(
+                    org, project, into, record,
+                    content=params["content"],
+                    title=params.get("title"),
+                    rationale=params.get("rationale") or record.reason,
+                    subject_key=record.subject_key,
+                    merged_from=candidates,
+                )
+                effects.append(ResolutionEffect(artifact_id=into, effect="superseded", successor_artifact_id=successor))
+                for artifact_id in candidates:
+                    if artifact_id != into:
+                        self._withdraw(org, project, artifact_id, record)
+                        effects.append(ResolutionEffect(artifact_id=artifact_id, effect="withdrawn"))
+                heads.append(ResultingHead(subject_key=record.subject_key, artifact_id=successor))
+            else:  # separate_subjects
+                for assignment in sorted(params["assignments"], key=lambda a: a["artifact_id"]):
+                    artifact_id, key = assignment["artifact_id"], assignment["subject_key"]
+                    if key == record.subject_key:
+                        effects.append(ResolutionEffect(artifact_id=artifact_id, effect="unchanged"))
+                        heads.append(ResultingHead(subject_key=key, artifact_id=artifact_id))
+                    else:
+                        successor = self._resolution_successor(
+                            org, project, artifact_id, record,
+                            content=None, title=None, rationale=record.reason, subject_key=key,
+                            merged_from=None,
+                        )
+                        effects.append(ResolutionEffect(artifact_id=artifact_id, effect="superseded", successor_artifact_id=successor))
+                        heads.append(ResultingHead(subject_key=key, artifact_id=successor))
+        except (ConflictChangedError, ArtifactNotFoundError) as exc:
+            aborted = record.model_copy(update={"state": "aborted", "effects": effects, "completed_at": utc_now()})
+            self._resolutions.update(aborted)
+            self._log_resolution(
+                "RESOLUTION_ABORTED", correlation_id, None, context,
+                resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+                applied_effects=[e.model_dump() for e in effects],
+            )
+            raise ConflictChangedError(
+                "a candidate changed while the resolution was being applied; it was aborted "
+                "(effects already applied are recorded) — re-read the conflict and retry"
+            ) from exc
+        completed = record.model_copy(
+            update={"state": "completed", "effects": effects, "resulting_heads": heads, "completed_at": utc_now()}
+        )
+        self._resolutions.update(completed)
+        self._log_resolution(
+            "RESOLUTION_COMPLETED", correlation_id, None, context,
+            resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+            action=record.action, effects=[e.model_dump() for e in effects],
+            resulting_heads=[h.model_dump() for h in heads], actor_principal_id=record.actor.principal_id,
+        )
+        return completed
+
+    def _withdraw(self, org: str, project: str, artifact_id: str, record: ResolutionRecord) -> None:
+        found = self._store.get(org, project, artifact_id)
+        if found is None:
+            raise ArtifactNotFoundError(artifact_id)
+        artifact, token = found
+        if artifact.status == "withdrawn" and artifact.resolution_id == record.resolution_id:
+            return  # already applied (retry / recovery)
+        if artifact.status != "active":
+            raise ConflictChangedError(f"{artifact_id!r} is no longer a current head")
+        withdrawn = artifact.model_copy(
+            update={"status": "withdrawn", "resolution_id": record.resolution_id, "updated_at": utc_now()}
+        )
+        try:
+            self._store.put_if_match(withdrawn, expected_version_token=token)
+        except ConcurrentModificationError as exc:
+            raise ConflictChangedError(f"{artifact_id!r} changed during the resolution") from exc
+
+    def _resolution_successor(
+        self,
+        org: str,
+        project: str,
+        head_id: str,
+        record: ResolutionRecord,
+        *,
+        content: str | None,
+        title: str | None,
+        rationale: str,
+        subject_key: str,
+        merged_from: list[str] | None,
+    ) -> str:
+        """Supersede `head_id` on behalf of a resolution (the MAK-0005 §A5.3
+        exception: the subject key may change here). Idempotent."""
+        found = self._store.get(org, project, head_id)
+        if found is None:
+            raise ArtifactNotFoundError(head_id)
+        old, token = found
+        if old.status == "superseded" and old.superseded_by:
+            successor = self._store.get(org, project, old.superseded_by)
+            if successor is not None and successor[0].resolution_id == record.resolution_id:
+                return successor[0].artifact_id  # already applied
+        if old.status != "active":
+            raise ConflictChangedError(f"{head_id!r} is no longer a current head")
+        new_id = self._next_available_id(org, project, head_id)
+        now = utc_now()
+        try:
+            self._store.put_if_match(
+                old.model_copy(update={"status": "superseded", "superseded_by": new_id, "updated_at": now}),
+                expected_version_token=token,
+            )
+        except ConcurrentModificationError as exc:
+            raise ConflictChangedError(f"{head_id!r} changed during the resolution") from exc
+        successor = Artifact(
+            artifact_id=new_id,
+            artifact_type=old.artifact_type,
+            organization_id=old.organization_id,
+            project=old.project,
+            title=title if title is not None else old.title,
+            content=content if content is not None else old.content,
+            rationale=rationale,
+            status="active",
+            version=bump_version(old.version),
+            created_by=record.actor.principal_id,
+            created_at=now,
+            updated_at=now,
+            lineage_id=old.lineage_id,
+            supersedes=head_id,
+            superseded_by=None,
+            tags=list(old.tags),
+            subject_key=subject_key,
+            provenance=record.actor.model_copy(update={"recorded_at": now}),
+            resolution_id=record.resolution_id,
+            merged_from=merged_from,
+        )
+        self._store.put_new(successor)
+        return new_id
+
+    def _validate_resolution(self, org, project, conflict: Conflict, action: str, params: dict) -> None:
+        candidate_ids = {c.artifact_id for c in conflict.candidates}
+        if action == "select_winner":
+            if params["winner_artifact_id"] not in candidate_ids:
+                raise ValidationFailedError("winner_artifact_id must be one of the conflict's candidates")
+        elif action == "merge":
+            if params["into_artifact_id"] not in candidate_ids:
+                raise ValidationFailedError("into_artifact_id must be one of the conflict's candidates")
+        else:
+            assigned = [a["artifact_id"] for a in params["assignments"]]
+            if sorted(assigned) != sorted(candidate_ids):
+                raise ValidationFailedError(
+                    "separate_subjects needs exactly one assignment for every candidate "
+                    "(it assigns or confirms subjects; it doesn't dismiss the conflict)"
+                )
+            keys = [a["subject_key"] for a in params["assignments"]]
+            if len(set(keys)) != len(keys):
+                raise ValidationFailedError("assigned subject keys must be distinct")
+            if keys.count(conflict.subject_key) > 1:
+                raise ValidationFailedError("at most one candidate may keep the conflicted subject key")
+            others = {
+                head.subject_key
+                for head in self._resolver.heads(self._store.all(org, project)).values()
+                if head.artifact_type == conflict.artifact_type
+                and head.subject_key is not None
+                and head.artifact_id not in candidate_ids
+            }
+            clash = sorted(set(keys) & others)
+            if clash:
+                raise SubjectCollisionError(
+                    f"subject key(s) {clash} already belong to another current record of this type"
+                )
+
+    def _pending_by_subject(self, org: str, project: str) -> dict[tuple[str, str], ResolutionRecord]:
+        """Subjects with a resolution in progress, including the target keys
+        of a pending separate-subjects resolution (so a half-applied
+        separation never looks resolved, §A4.2)."""
+        pending: dict[tuple[str, str], ResolutionRecord] = {}
+        for record in self._resolutions.for_project(org, project, state="pending"):
+            pending[(record.artifact_type, record.subject_key)] = record
+            if record.action == "separate_subjects":
+                for assignment in record.parameters.get("assignments", []):
+                    pending.setdefault((record.artifact_type, assignment["subject_key"]), record)
+        return pending
+
+    def _resolving_subjects(self, org: str, project: str) -> set[tuple[str, str]]:
+        return set(self._pending_by_subject(org, project))
+
+    def _subject_in_conflict(self, org: str, project: str, subject: tuple[str, str]) -> bool:
+        heads = self._resolver.heads(self._store.all(org, project)).values()
+        return sum(1 for h in heads if (h.artifact_type, h.subject_key) == subject) > 1
+
+    def _open_conflicts(self, org: str, project: str) -> dict[str, Conflict]:
+        pending = self._pending_by_subject(org, project)
+        result = self._resolver.resolve(self._store.all(org, project), resolving=set(pending))
+        conflicts = [self._to_conflict(org, project, d, pending) for d in result.conflicts]
+        return {c.conflict_id: c for c in conflicts}
+
+    def _to_conflict(self, org: str, project: str, detected: DetectedConflict, pending) -> Conflict:
+        subject = (detected.artifact_type, detected.subject_key)
+        record = pending.get(subject)
+        generation = self._resolutions.completed_count(org, project, detected.artifact_type, detected.subject_key)
+        candidates = sorted(
+            (ConflictCandidate.of(a) for a in detected.artifacts), key=lambda c: c.artifact_id
+        )
+        hashes = {c.content_sha256 for c in candidates}
+        return Conflict(
+            conflict_id=conflict_id_for(org, project, detected.artifact_type, detected.subject_key, generation),
+            state="resolving" if record is not None else "open",
+            generation=generation,
+            organization_id=org,
+            project=project,
+            artifact_type=detected.artifact_type,
+            subject_key=detected.subject_key,
+            identical_content=len(candidates) > 1 and len(hashes) == 1,
+            reason=(
+                f"{len(candidates)} lineage(s) claim artifact_type={detected.artifact_type!r} "
+                f"subject_key={detected.subject_key!r}"
+                + (" (resolution in progress)" if record is not None else "")
+            ),
+            candidates=candidates,
+            hidden_candidate_count=0,
+            resolution=record,
+        )
+
+    def _resolved_view(self, record: ResolutionRecord) -> Conflict:
+        candidates = []
+        for artifact_id in record.candidate_artifact_ids:
+            found = self._store.get(record.organization_id, record.project, artifact_id)
+            if found is not None:
+                candidates.append(ConflictCandidate.of(found[0]))
+        hashes = {c.content_sha256 for c in candidates}
+        return Conflict(
+            conflict_id=record.conflict_id,
+            state="resolved",
+            generation=record.generation,
+            organization_id=record.organization_id,
+            project=record.project,
+            artifact_type=record.artifact_type,
+            subject_key=record.subject_key,
+            identical_content=len(candidates) > 1 and len(hashes) == 1,
+            reason=f"resolved by {record.action} ({record.reason})",
+            candidates=candidates,
+            hidden_candidate_count=0,
+            resolution=record,
+        )
+
+    def _reject_supersede(self, correlation_id, principal, old_id, context, reason) -> None:
+        if self._audit is not None:
+            self._audit.log_supersede_rejected(
+                correlation_id=correlation_id,
+                actor=principal.principal_id,
+                old_id=old_id,
+                reason=reason,
+                context=context,
+            )
+
+    def _log_resolution(self, event, correlation_id, principal, context, **fields) -> None:
+        if self._audit is not None:
+            self._audit.log(
+                event,
+                correlation_id=correlation_id,
+                actor=principal.principal_id if principal is not None else fields.get("actor_principal_id", "system"),
+                context=context,
+                **fields,
+            )
+
     # -- internals ------------------------------------------------------
 
     def _next_available_id(self, organization_id: str, project: str, old_id: str) -> str:
@@ -538,6 +1066,52 @@ class MAK4IEngine:
             if self._store.get(organization_id, project, candidate) is None:
                 return candidate
         raise RuntimeError(f"could not find an available successor id for {old_id!r}")
+
+
+def _resolution_parameters(
+    action: str,
+    *,
+    winner_artifact_id,
+    into_artifact_id,
+    content,
+    title,
+    rationale,
+    assignments,
+) -> dict:
+    """Validate and normalize the action's parameters (MAK-0004 §A7.3–§A7.5)."""
+    if action == "select_winner":
+        if not winner_artifact_id:
+            raise ValidationFailedError("select_winner needs winner_artifact_id")
+        return {"winner_artifact_id": winner_artifact_id}
+    if action == "merge":
+        if not into_artifact_id or not (content or "").strip():
+            raise ValidationFailedError("merge needs into_artifact_id and non-empty content")
+        params = {"into_artifact_id": into_artifact_id, "content": content}
+        if title is not None:
+            if not title.strip():
+                raise ValidationFailedError("title must not be blank")
+            params["title"] = title
+        if rationale is not None:
+            params["rationale"] = rationale
+        return params
+    if action == "separate_subjects":
+        if not assignments:
+            raise ValidationFailedError("separate_subjects needs assignments")
+        normalized = []
+        for assignment in assignments:
+            if not isinstance(assignment, dict) or not assignment.get("artifact_id"):
+                raise ValidationFailedError("each assignment needs artifact_id and subject_key")
+            try:
+                key = normalize_subject_key(assignment.get("subject_key"))
+            except ValueError as exc:
+                raise ValidationFailedError(str(exc)) from exc
+            if key is None:
+                raise ValidationFailedError(
+                    "each assignment needs a subject_key; separation assigns subjects, it can't clear them"
+                )
+            normalized.append({"artifact_id": assignment["artifact_id"], "subject_key": key})
+        return {"assignments": normalized}
+    raise ValidationFailedError("action must be select_winner, merge or separate_subjects")
 
 
 def _provenance(

@@ -10,7 +10,10 @@ from contextvars import ContextVar
 from urllib.parse import parse_qs
 
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+from mcp.shared.exceptions import MCPError
+from pydantic import ValidationError as PydanticValidationError
+from mcp_types import CallToolResult, TextContent
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 from starlette.applications import Starlette
@@ -19,7 +22,9 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from mak4i import __version__
-from mak4i.api import ArtifactNotActiveError, MAK4IEngine, SubjectKeyChangeError
+from mak4i.api import MAK4IEngine
+from mak4i.errors import MAK4IError
+from mak4i.resolution import Conflict, ResolutionRecord
 from mak4i.audit import AuditLogger
 from mak4i.config import build_control_plane_from_env, build_store_from_env
 from mak4i.context import ContextPackage
@@ -127,6 +132,99 @@ def resolve_connection_identity() -> ConnectionIdentity:
     )
 
 
+class CodedToolError(ToolError):
+    """A tool failure with a MAK-0008 §9 error code. `_MAK4IServer` turns it
+    into `structuredContent: {"error": {code, message, retryable}}`."""
+
+    def __init__(self, code: str, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+
+def _coded(exc: Exception, *, connection: ConnectionIdentity, write: bool) -> CodedToolError:
+    """Map an engine/store exception to its MAK-0008 §9 code. Messages carry
+    no secrets and never reveal whether an unreadable project exists."""
+    if isinstance(exc, AccessDeniedError):
+        return CodedToolError("access_denied", str(_denied(exc, connection=connection)))
+    code = getattr(exc, "code", None)
+    if code is None:
+        if isinstance(exc, ArtifactNotFoundError):
+            code = "not_found"
+        elif isinstance(exc, ConcurrentModificationError):
+            code = "stale_head"
+        elif isinstance(exc, (ArtifactAlreadyExistsError, ValueError)):
+            code = "validation_error"
+        else:
+            code = "internal_error"
+    message = getattr(exc, "message", None) or str(exc)
+    if write:
+        message = str(_write_failed(message, connection=connection))
+    return CodedToolError(code, message, retryable=bool(getattr(exc, "retryable", False)) or code == "stale_head")
+
+
+_HANDLED = (
+    AccessDeniedError,
+    MAK4IError,
+    ArtifactNotFoundError,
+    ArtifactAlreadyExistsError,
+    ConcurrentModificationError,
+    ValueError,
+)
+
+
+class SubjectAssignment(BaseModel):
+    artifact_id: str
+    subject_key: str
+
+
+class _MAK4IServer(MCPServer):
+    """`MCPServer` whose failed tool results carry MAK-0008 §9 structured
+    errors. The tool runs exactly once; only the exception it raised is
+    classified."""
+
+    async def _handle_call_tool(self, ctx, params):
+        context = Context(
+            request_context=ctx, mcp_server=self, input_params=params, subscriptions=self._subscriptions
+        )
+        try:
+            return await self.call_tool(params.name, params.arguments or {}, context)
+        except MCPError:
+            raise
+        except Exception as exc:
+            coded = _find_coded(exc)
+            if coded is None:
+                if isinstance(exc, ToolError) and not isinstance(exc, UnexpectedToolError):
+                    is_validation = isinstance(exc.__cause__, PydanticValidationError) or "Unknown tool" in str(exc)
+                    coded = CodedToolError(
+                        "validation_error" if is_validation else "internal_error", str(exc)
+                    )
+                    logging.getLogger(__name__).info("Tool %r failed: %r", params.name, str(exc))
+                else:
+                    logging.getLogger(__name__).exception("Tool %r raised an unexpected exception", params.name)
+                    coded = CodedToolError(
+                        "internal_error", f"Error executing tool {params.name}", retryable=True
+                    )
+            return CallToolResult(
+                content=[TextContent(type="text", text=coded.message)],
+                structured_content={
+                    "error": {"code": coded.code, "message": coded.message, "retryable": coded.retryable}
+                },
+                is_error=True,
+            )
+
+
+def _find_coded(exc: BaseException | None) -> CodedToolError | None:
+    seen = 0
+    while exc is not None and seen < 10:
+        if isinstance(exc, CodedToolError):
+            return exc
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return None
+
+
 def _denied(exc: AccessDeniedError, *, connection: ConnectionIdentity) -> ToolError:
     """An access denial that names the connection that denied it and says,
     in the error itself, that it must not be retried elsewhere. It never
@@ -142,7 +240,7 @@ def _denied(exc: AccessDeniedError, *, connection: ConnectionIdentity) -> ToolEr
     )
 
 
-def _write_failed(exc: Exception, *, connection: ConnectionIdentity) -> ToolError:
+def _write_failed(exc: Exception | str, *, connection: ConnectionIdentity) -> ToolError:
     return ToolError(
         f"{exc} (MAK4I connection {connection.instance_name!r}, environment: "
         f"{connection.environment}; nothing was written). Do not retry this "
@@ -295,7 +393,7 @@ def build_server(
     denial — see issues #8/#9 and `_NO_CROSS_CONNECTION_FALLBACK`.
     """
     connection = connection or resolve_connection_identity()
-    server = MCPServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
+    server = _MAK4IServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> PlainTextResponse:
@@ -391,8 +489,8 @@ def build_server(
                 tags=tags,
                 status=status,
             )
-        except AccessDeniedError as exc:
-            raise _denied(exc, connection=connection) from exc
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
 
     @server.tool(
         description=(
@@ -420,8 +518,8 @@ def build_server(
                 artifact_type=artifact_type,
                 tags=tags,
             )
-        except AccessDeniedError as exc:
-            raise _denied(exc, connection=connection) from exc
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
 
     @server.tool(
         description=(
@@ -461,10 +559,8 @@ def build_server(
                 tags=tags,
                 subject_key=subject_key,
             )
-        except AccessDeniedError as exc:
-            raise _denied(exc, connection=connection) from exc
-        except (ArtifactAlreadyExistsError, ValueError) as exc:
-            raise _write_failed(exc, connection=connection) from exc
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=True) from exc
 
     @server.tool(
         description=(
@@ -474,11 +570,9 @@ def build_server(
             "the new artifact's rationale: a supersede without a stated "
             "reason is not explainable. " + _DURABLE_VS_CONVERSATION_GUIDANCE
             + " The lineage's `subject_key` is kept as-is and cannot be changed "
-            "here. To resolve a conflict between lineages that claim the same "
-            "subject_key, supersede the losing lineage with "
-            "`release_subject_key=true`: its new version stops claiming that "
-            "subject (its history keeps the old key); the winning lineage is "
-            "left unchanged. " + _NO_CROSS_CONNECTION_FALLBACK
+            "here. `release_subject_key=true` gives the subject up for good, but "
+            "is rejected while the subject is in an open conflict: resolve "
+            "conflicts with mak4i_resolve_conflict instead. " + _NO_CROSS_CONNECTION_FALLBACK
         )
     )
     def mak4i_supersede(
@@ -507,17 +601,8 @@ def build_server(
                 subject_key=subject_key,
                 release_subject_key=release_subject_key,
             )
-        except AccessDeniedError as exc:
-            raise _denied(exc, connection=connection) from exc
-        except (
-            ArtifactNotFoundError,
-            ArtifactNotActiveError,
-            SubjectKeyChangeError,
-            ValueError,
-            ArtifactAlreadyExistsError,
-            ConcurrentModificationError,
-        ) as exc:
-            raise _write_failed(exc, connection=connection) from exc
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=True) from exc
 
     @server.tool(
         description=(
@@ -536,8 +621,93 @@ def build_server(
             return engine.get_history(
                 principal=principal, auth=auth, project=project, lineage_id=lineage_id
             )
-        except AccessDeniedError as exc:
-            raise _denied(exc, connection=connection) from exc
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
+
+    @server.tool(
+        description=(
+            "List conflicts in a project: subjects (artifact_type + subject_key) "
+            "claimed by two or more lineages, so they have no current answer. "
+            "`state`: 'open' (default; includes conflicts being resolved), "
+            "'resolved' (with their resolution records) or 'all'. Read-only."
+        )
+    )
+    def mak4i_list_conflicts(
+        project: str, artifact_type: str | None = None, state: str = "open"
+    ) -> list[Conflict]:
+        principal, auth = _require_auth()
+        try:
+            return engine.list_conflicts(
+                principal=principal, auth=auth, project=project, artifact_type=artifact_type, state=state
+            )
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
+
+    @server.tool(
+        description=(
+            "Get one conflict by conflict_id: every candidate with its content, "
+            "authenticated author / agent_id and (unverified) client, timestamps, "
+            "and — once resolved — the resolution record. Read-only."
+        )
+    )
+    def mak4i_get_conflict(project: str, conflict_id: str) -> Conflict:
+        principal, auth = _require_auth()
+        try:
+            return engine.get_conflict(principal=principal, auth=auth, project=project, conflict_id=conflict_id)
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
+
+    @server.tool(
+        description=(
+            "Resolve a conflict — only after the user has decided. Requires the "
+            "`resolve` permission. Pass the conflict_id and the exact "
+            "candidate_artifact_ids you showed the user (if they changed you get "
+            "`conflict_changed`: re-read and ask again), a `reason`, and one action: "
+            "'select_winner' (winner_artifact_id; the other candidates are "
+            "withdrawn), 'merge' (into_artifact_id + content [+ title]; one merged "
+            "authoritative version, the others withdrawn), or 'separate_subjects' "
+            "(assignments: a subject_key for EVERY candidate, at most one keeping "
+            "the original). Nothing is deleted; history and the resolution record "
+            "are kept. Pass an idempotency_key to make retries safe. "
+            + _NO_CROSS_CONNECTION_FALLBACK
+        )
+    )
+    def mak4i_resolve_conflict(
+        project: str,
+        conflict_id: str,
+        candidate_artifact_ids: list[str],
+        action: str,
+        reason: str,
+        winner_artifact_id: str | None = None,
+        into_artifact_id: str | None = None,
+        content: str | None = None,
+        title: str | None = None,
+        rationale: str | None = None,
+        assignments: list[SubjectAssignment] | None = None,
+        idempotency_key: str | None = None,
+        ctx: Context | None = None,
+    ) -> ResolutionRecord:
+        principal, auth = _require_auth()
+        try:
+            return engine.resolve_conflict(
+                principal=principal,
+                auth=auth,
+                client=_client_metadata(ctx),
+                project=project,
+                conflict_id=conflict_id,
+                candidate_artifact_ids=candidate_artifact_ids,
+                action=action,
+                reason=reason,
+                winner_artifact_id=winner_artifact_id,
+                into_artifact_id=into_artifact_id,
+                content=content,
+                title=title,
+                rationale=rationale,
+                assignments=[a.model_dump() for a in assignments] if assignments else None,
+                idempotency_key=idempotency_key,
+            )
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=True) from exc
 
     return server
 
@@ -888,7 +1058,17 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     control_plane = build_control_plane_from_env()
     audit = AuditLogger()
     authorizer = Authorizer(control_plane, audit)
-    engine = MAK4IEngine(store, audit=audit, authorizer=authorizer, control_plane=control_plane)
+    from mak4i.config import build_resolution_store
+
+    engine = MAK4IEngine(
+        store,
+        audit=audit,
+        authorizer=authorizer,
+        control_plane=control_plane,
+        resolutions=build_resolution_store(control_plane),
+    )
+    # MAK-0004 §A8.2: finish any resolution a previous process left pending.
+    engine.recover_pending_resolutions()
     server = build_server(engine)
 
     transport = resolve_transport()

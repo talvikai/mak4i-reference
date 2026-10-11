@@ -266,8 +266,10 @@ The tools:
 | `mak4i_search` | raw candidate lookup by type, tags and status |
 | `mak4i_get_current` | the resolved current knowledge (conflict- and integrity-checked) |
 | `mak4i_create` | write new durable knowledge (optional `subject_key` names the subject it decides) |
-| `mak4i_supersede` | replace current knowledge, keeping lineage and history (`release_subject_key=true` gives up the lineage's subject claim) |
+| `mak4i_supersede` | replace current knowledge, keeping lineage and history (`release_subject_key=true` gives up the lineage's subject claim, except while it is in conflict) |
 | `mak4i_history` | every version in a lineage, oldest first |
+| `mak4i_list_conflicts`, `mak4i_get_conflict` | subjects claimed by more than one lineage, with every candidate and its author |
+| `mak4i_resolve_conflict` | resolve a conflict the user has decided (needs the `resolve` permission) |
 
 **Verify:** ask your client to (1) list MAK4I projects (your project with
 `["read","write"]`), (2) create an artifact in it, (3) get the current

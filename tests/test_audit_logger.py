@@ -118,17 +118,27 @@ def test_log_resolve(audit, caplog):
 
 
 def test_log_conflict(audit, caplog):
+    from mak4i.resolution import ConflictCandidate
+
+    a, b = _artifact(), _artifact(artifact_id="decision-cache-004")
     conflict = Conflict(
+        conflict_id="cfl_" + "0" * 32,
+        state="open",
+        generation=0,
+        organization_id=a.organization_id,
+        project=a.project,
         artifact_type="architecture_decision",
         subject_key="application-cache",
-        lineage_ids=["decision-cache-001", "decision-cache-004"],
-        artifacts=[_artifact(), _artifact(artifact_id="decision-cache-004")],
+        identical_content=False,
+        reason="2 lineage(s) claim the subject",
+        candidates=[ConflictCandidate.of(a), ConflictCandidate.of(b)],
     )
     audit.log_conflict(correlation_id="corr-1", actor="chatgpt", conflict=conflict)
     record = _records(caplog)[0]
     assert record["event"] == "CONFLICT"
     assert record["subject_key"] == "application-cache"
     assert record["candidates"] == ["decision-cache-001", "decision-cache-004"]
+    assert record["conflict_id"] == "cfl_" + "0" * 32 and record["state"] == "open"
 
 
 def test_log_integrity_error(audit, caplog):

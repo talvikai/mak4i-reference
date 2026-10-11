@@ -62,6 +62,8 @@ def world(tmp_path):
 
     return {
         "engine": engine,
+        "control_plane": control_plane,
+        "owner_a": owner_a,
         "store": store,
         "tmp_path": tmp_path,
         "org_a": org_a.organization_id,
@@ -162,7 +164,8 @@ def test_same_type_and_subject_key_in_different_lineages_conflict(world, artifac
     conflict = package.conflicts[0]
     assert conflict.artifact_type == artifact_type
     assert conflict.subject_key == "session-cache"
-    assert set(conflict.lineage_ids) == {"use-redis", "use-memcached"}
+    assert {c.lineage_id for c in conflict.candidates} == {"use-redis", "use-memcached"}
+    assert conflict.state == "open" and conflict.conflict_id.startswith("cfl_")
     assert any("subject_key='session-cache'" in step for step in package.resolution_trace)
     conflict_events = [r for r in _records(caplog) if r["event"] == "CONFLICT"]
     assert conflict_events and conflict_events[0]["subject_key"] == "session-cache"
@@ -299,39 +302,54 @@ def test_superseding_an_already_superseded_version_still_fails_clearly(world, ar
 
 
 @pytest.mark.parametrize("artifact_type", TYPES)
-def test_release_resolves_the_conflict_and_leaves_the_winner_unchanged(world, artifact_type, caplog):
+def test_release_during_an_open_conflict_is_rejected_and_resolution_settles_it(world, artifact_type, caplog):
+    """v2 (MAK-0004 §A3.7): releasing a candidate's key no longer resolves a
+    conflict behind the resolver's back; it is rejected and the conflict is
+    resolved explicitly, which leaves the winner unchanged."""
+    from mak4i.errors import SubjectInConflictError
+
     winner = _create(world, "use-redis", artifact_type, subject_key="session-cache", content="Use Redis")
     _create(world, "use-memcached", artifact_type, subject_key="session-cache", content="Use Memcached")
-    assert len(_current(world).conflicts) == 1
+    conflict = _current(world).conflicts[0]
+    with pytest.raises(SubjectInConflictError):
+        world["engine"].supersede_artifact(
+            principal=world["writer"], project=world["a1"], old_id="use-memcached",
+            content="x", reason="y", release_subject_key=True,
+        )
+    assert len(_history(world, "use-memcached")) == 1  # nothing written
+
+    world["control_plane"].grant(
+        actor=world["owner_a"], principal_id=world["writer"].principal_id,
+        project_id=world["a1"], permissions=["read", "write", "resolve"],
+    )
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     caplog.clear()
-
-    released = world["engine"].supersede_artifact(
-        principal=world["writer"], project=world["a1"], old_id="use-memcached",
-        content="Memcached option rejected; Redis selected for session-cache.",
-        reason="Resolved session-cache conflict in favor of Redis.",
-        release_subject_key=True,
+    record = world["engine"].resolve_conflict(
+        principal=world["writer"], project=world["a1"], conflict_id=conflict.conflict_id,
+        candidate_artifact_ids=["use-memcached", "use-redis"], action="select_winner",
+        winner_artifact_id="use-redis", reason="Redis selected for session-cache.",
     )
-
-    # The releasing version stays current in its lineage but no longer claims the subject.
-    assert released.status == "active"
-    assert released.subject_key is None
-    assert released.released_subject_key == "session-cache"
+    assert record.state == "completed"
     package = _current(world)
     assert package.conflicts == []
-    assert {a.artifact_id for a in package.artifacts} == {"use-redis", released.artifact_id}
-    # The winning lineage is untouched.
+    assert [a.artifact_id for a in package.artifacts] == ["use-redis"]
     assert world["store"].get(world["org_a"], world["a1"], "use-redis")[0] == winner
-    assert _history(world, "use-redis") == [winner]
-    # History still shows the lineage competed for the subject.
-    old, new = _history(world, "use-memcached")
-    assert old.subject_key == "session-cache" and old.status == "superseded"
-    assert new.subject_key is None and new.released_subject_key == "session-cache"
-    # Provenance: the audited SUPERSEDE records the explicit release.
-    supersede = [r for r in _records(caplog) if r["event"] == "SUPERSEDE"]
-    assert supersede and supersede[0]["released_subject_key"] == "session-cache"
-    assert supersede[0]["subject_key"] is None
-    assert supersede[0]["actor"] == world["writer"].principal_id
+    loser = _history(world, "use-memcached")
+    assert len(loser) == 1 and loser[0].status == "withdrawn"
+    assert loser[0].subject_key == "session-cache"  # its claim stays in history
+    events = {r["event"] for r in _records(caplog)}
+    assert {"RESOLUTION_STARTED", "RESOLUTION_COMPLETED"} <= events
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_release_outside_a_conflict_still_works(world, artifact_type):
+    _create(world, "solo", artifact_type, subject_key="session-cache")
+    released = world["engine"].supersede_artifact(
+        principal=world["writer"], project=world["a1"], old_id="solo",
+        content="no longer the session cache decision", reason="scope changed",
+        release_subject_key=True,
+    )
+    assert released.subject_key is None and released.released_subject_key == "session-cache"
 
 
 @pytest.mark.parametrize("artifact_type", TYPES)

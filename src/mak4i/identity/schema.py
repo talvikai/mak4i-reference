@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
     String,
     Table,
@@ -217,4 +218,31 @@ oauth_tokens = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Index("ix_oauth_tokens_authorization_id", "authorization_id"),
+)
+
+# -- conflict resolution records (MAK-0004 §A7–§A8) ------------------------------
+
+resolution_records = Table(
+    "resolution_records",
+    metadata,
+    Column("resolution_id", String, primary_key=True),
+    Column("conflict_id", String, nullable=False),
+    Column("organization_id", String, nullable=False),
+    Column("project_id", String, nullable=False),
+    Column("artifact_type", String, nullable=False),
+    Column("subject_key", String, nullable=False),
+    Column("generation", Integer, nullable=False),
+    # pending | completed | aborted
+    Column("state", String, nullable=False),
+    # "<subject digest>:<generation>" while pending/completed, NULL once
+    # aborted: the unique constraint allows at most one non-aborted
+    # resolution per subject and generation (§A8.4).
+    Column("slot", String, nullable=True, unique=True),
+    Column("idempotency_key", String, nullable=True),
+    # The full ResolutionRecord (actor provenance, parameters, effects, ...).
+    Column("record", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+    Index("ix_resolution_records_project", "organization_id", "project_id"),
+    Index("ix_resolution_records_conflict_id", "conflict_id"),
 )

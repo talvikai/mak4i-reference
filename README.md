@@ -52,9 +52,9 @@ troubleshooting and uninstalling.
 | **Lineage and supersession** | A new decision *supersedes* an old one. The old version stops being current but is never deleted; history returns the whole chain with each reason. |
 | **Discovery and resolution** | A query gathers candidates deterministically, then resolves them to the current applicable set, checking lineage, conflicts and integrity. |
 | **Tags and subjects** | Tags classify artifacts for search. An optional `subject_key` names the one logical subject an artifact decides. |
-| **Conflicts and integrity errors** | Two current artifacts of the same type with the same `subject_key` are a **conflict**: surfaced, never auto-resolved. A broken lineage is an **integrity error**, and fails closed. |
-| **Organizations, projects and grants** | The organization owns projects; the project is the context and authorization boundary; a principal's grant gives read or read/write access to a project. |
-| **Credentials** | Every client authenticates with a per-principal bearer credential. It's stored only as a hash and can be revoked instantly. |
+| **Conflicts and integrity errors** | Two or more current artifacts of the same type with the same `subject_key` are a **conflict**: surfaced with every candidate and its author, never auto-resolved, and settled only by an explicit, recorded resolution (select a winner, merge, or separate the subjects). A broken lineage is an **integrity error**, and fails closed. |
+| **Organizations, projects and grants** | The organization owns projects; the project is the context and authorization boundary; a principal's grant gives `read`, `write` and/or `resolve` on a project. Agents are principals with their own stable `agent_id`, and every write records who made it. |
+| **Credentials and OAuth** | A client authenticates with a per-principal bearer credential, or signs in through MAK4I's built-in OAuth server (for clients such as claude.ai). Secrets are stored only as hashes and revocation is immediate. |
 | **Connections** | Each MAK4I installation identifies itself to AI clients (`mak4i_whoami`). A denial on one connection is never a reason to write to another. |
 | **Audit trail** | Every authentication, authorization, read and write is logged as a structured event with the principal, organization, project and outcome. |
 

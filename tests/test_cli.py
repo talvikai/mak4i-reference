@@ -562,15 +562,37 @@ def test_subject_key_create_conflict_and_release_via_cli(world, capsys):
     err = capsys.readouterr().err
     assert err.startswith("error: ") and "Traceback" not in err
 
+    # v2: release mid-conflict is rejected; `conflict resolve` settles it
+    # (a human resolver through the operator CLI).
     assert cli.main([
         "supersede", "--principal", owner_id, "--project", project_id, "--old-id", "use-memcached",
         "--content", "Memcached rejected", "--reason", "resolved", "--release-subject-key",
+    ]) == 1
+    assert "open conflict" in capsys.readouterr().err
+
+    assert cli.main(["conflict", "list", "--principal", owner_id, "--project", project_id]) == 0
+    conflict = json.loads(capsys.readouterr().out)[0]
+    candidates = ",".join(c["artifact_id"] for c in conflict["candidates"])
+    resolve = [
+        "conflict", "resolve", "--principal", owner_id, "--project", project_id,
+        "--conflict-id", conflict["conflict_id"], "--candidates", candidates,
+        "--action", "select_winner", "--winner", "use-redis", "--reason", "Redis chosen",
+    ]
+    assert cli.main(resolve) == 1  # no `resolve` permission yet
+    assert "access denied" in capsys.readouterr().err
+    assert cli.main([
+        "grant", "create", "--actor", owner_id, "--principal-id", owner_id,
+        "--project-id", project_id, "--permissions", "read,write,resolve",
     ]) == 0
-    released = json.loads(capsys.readouterr().out)
-    assert released["subject_key"] is None and released["released_subject_key"] == "session-cache"
+    capsys.readouterr()
+    assert cli.main(resolve) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["state"] == "completed" and record["actor"]["auth_method"] == "operator"
 
     assert cli.main(["get-current", "--principal", owner_id, "--project", project_id]) == 0
     assert json.loads(capsys.readouterr().out)["conflicts"] == []
+    assert cli.main(["conflict", "list", "--principal", owner_id, "--project", project_id, "--state", "resolved"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["state"] == "resolved"
 
 
 def test_version_flag_reports_the_installed_package_version(capsys):

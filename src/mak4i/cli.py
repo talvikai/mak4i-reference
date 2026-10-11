@@ -50,6 +50,7 @@ from mak4i.identity import (
     IdentityError,
     Principal,
 )
+from mak4i.errors import MAK4IError
 from mak4i.identity.authz import Authorizer
 from mak4i.identity.errors import PrincipalNotFoundError
 from mak4i.identity.models import utc_now
@@ -79,12 +80,15 @@ def _make_control_plane() -> ControlPlane:
 
 
 def _make_engine(control_plane: ControlPlane) -> MAK4IEngine:
+    from mak4i.config import build_resolution_store
+
     audit = AuditLogger()
     return MAK4IEngine(
         build_store_from_env(),
         audit=audit,
         authorizer=Authorizer(control_plane, audit),
         control_plane=control_plane,
+        resolutions=build_resolution_store(control_plane),
     )
 
 
@@ -257,6 +261,7 @@ def _cmd_supersede(args: argparse.Namespace) -> int:
         ArtifactAlreadyExistsError,
         ConcurrentModificationError,
         AccessDeniedError,
+        MAK4IError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -591,6 +596,86 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     actor = _resolve_actor(control_plane, args)
     credential = control_plane.revoke_credential(actor=actor, credential_id=args.credential_id)
     _print_json(_credential_summary(credential))
+    return 0
+
+
+# -- conflicts (MAK-0004 Part A; CLI equivalents of the MCP conflict tools) ----
+#
+#   mak4i conflict list     <->  mak4i_list_conflicts
+#   mak4i conflict show     <->  mak4i_get_conflict
+#   mak4i conflict resolve  <->  mak4i_resolve_conflict
+#
+# Like `create` / `supersede`, these act as `--principal` through the trusted
+# operator path (auth_method "operator" in provenance); authorization still
+# requires the principal's own grants (`read`, plus `resolve` to resolve).
+
+
+def _cmd_conflict_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    principal = _resolve_principal(control_plane, args.principal)
+    engine = _make_engine(control_plane)
+    try:
+        conflicts = engine.list_conflicts(
+            principal=principal,
+            project=args.project,
+            artifact_type=args.artifact_type,
+            state=args.state,
+            auth_method=OPERATOR_IMPERSONATION,
+        )
+    except (AccessDeniedError, MAK4IError) as exc:
+        raise _CliError(str(exc)) from exc
+    _print_json(conflicts)
+    return 0
+
+
+def _cmd_conflict_show(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    principal = _resolve_principal(control_plane, args.principal)
+    engine = _make_engine(control_plane)
+    try:
+        conflict = engine.get_conflict(
+            principal=principal,
+            project=args.project,
+            conflict_id=args.conflict_id,
+            auth_method=OPERATOR_IMPERSONATION,
+        )
+    except (AccessDeniedError, MAK4IError) as exc:
+        raise _CliError(str(exc)) from exc
+    _print_json(conflict)
+    return 0
+
+
+def _cmd_conflict_resolve(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    principal = _resolve_principal(control_plane, args.principal)
+    engine = _make_engine(control_plane)
+    assignments = None
+    if args.assign:
+        assignments = []
+        for item in args.assign:
+            artifact_id, sep, key = item.partition("=")
+            if not sep:
+                raise _CliError("--assign takes ARTIFACT_ID=SUBJECT_KEY")
+            assignments.append({"artifact_id": artifact_id, "subject_key": key})
+    try:
+        record = engine.resolve_conflict(
+            principal=principal,
+            project=args.project,
+            conflict_id=args.conflict_id,
+            candidate_artifact_ids=_split_tags(args.candidates) or [],
+            action=args.action,
+            reason=args.reason,
+            winner_artifact_id=args.winner,
+            into_artifact_id=args.into,
+            content=args.content,
+            title=args.title,
+            assignments=assignments,
+            idempotency_key=args.idempotency_key,
+            auth_method=OPERATOR_IMPERSONATION,
+        )
+    except (AccessDeniedError, MAK4IError, ArtifactNotFoundError) as exc:
+        raise _CliError(str(exc)) from exc
+    _print_json(record)
     return 0
 
 
@@ -1472,6 +1557,47 @@ def build_parser() -> argparse.ArgumentParser:
     ))
     credential_revoke.add_argument("--credential-id", required=True)
     credential_revoke.set_defaults(func=_cmd_credential_revoke)
+
+    conflict = subparsers.add_parser(
+        "conflict",
+        help="Subject conflicts: list, show, resolve (CLI equivalents of the MCP conflict tools).",
+    )
+    conflict_sub = conflict.add_subparsers(dest="conflict_command", required=True)
+    conflict_list = conflict_sub.add_parser("list", help="List open (default), resolved or all conflicts.")
+    conflict_list.add_argument("--principal", required=True)
+    conflict_list.add_argument("--project", required=True)
+    conflict_list.add_argument("--artifact-type")
+    conflict_list.add_argument("--state", default="open", choices=["open", "resolved", "all"])
+    conflict_list.set_defaults(func=_cmd_conflict_list)
+    conflict_show = conflict_sub.add_parser("show", help="Show one conflict with its candidates.")
+    conflict_show.add_argument("--principal", required=True)
+    conflict_show.add_argument("--project", required=True)
+    conflict_show.add_argument("--conflict-id", required=True)
+    conflict_show.set_defaults(func=_cmd_conflict_show)
+    conflict_resolve = conflict_sub.add_parser(
+        "resolve", help="Resolve a conflict: select a winner, merge, or separate the subjects."
+    )
+    conflict_resolve.add_argument("--principal", required=True)
+    conflict_resolve.add_argument("--project", required=True)
+    conflict_resolve.add_argument("--conflict-id", required=True)
+    conflict_resolve.add_argument(
+        "--candidates", required=True,
+        help="comma-separated candidate artifact ids exactly as shown by `conflict show`",
+    )
+    conflict_resolve.add_argument(
+        "--action", required=True, choices=["select_winner", "merge", "separate_subjects"]
+    )
+    conflict_resolve.add_argument("--reason", required=True)
+    conflict_resolve.add_argument("--winner", help="select_winner: the winning artifact id")
+    conflict_resolve.add_argument("--into", help="merge: the candidate whose lineage carries the merged version")
+    conflict_resolve.add_argument("--content", help="merge: the merged content")
+    conflict_resolve.add_argument("--title", help="merge: optional new title")
+    conflict_resolve.add_argument(
+        "--assign", action="append",
+        help="separate_subjects: ARTIFACT_ID=SUBJECT_KEY, once per candidate",
+    )
+    conflict_resolve.add_argument("--idempotency-key", help="makes retries safe")
+    conflict_resolve.set_defaults(func=_cmd_conflict_resolve)
 
     oauth = subparsers.add_parser(
         "oauth", help="OAuth authorization service: sign-in codes, clients, authorizations."

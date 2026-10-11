@@ -72,3 +72,15 @@ def build_oauth_from_env(control_plane: ControlPlane, *, audit=None):
         control_plane=control_plane,
         audit=audit,
     )
+
+
+def build_resolution_store(control_plane: ControlPlane):
+    """Conflict resolution records live in the control-plane database
+    (migration 0004) when it is SQL, else in memory (tests)."""
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.resolution.records import InMemoryResolutionStore, SqlResolutionStore
+
+    store = control_plane._store  # noqa: SLF001 - same database by design
+    if isinstance(store, SqlControlPlaneStore):
+        return SqlResolutionStore(store.engine)
+    return InMemoryResolutionStore()
