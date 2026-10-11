@@ -53,7 +53,11 @@ principals = Table(
     Column("status", String, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    # MAK-0006 §3.3: organization-scoped, never reused (deactivated agents
+    # keep theirs). NULL for humans and services.
+    Column("agent_id", String, nullable=True),
     Index("ix_principals_organization_id", "organization_id"),
+    UniqueConstraint("organization_id", "agent_id", name="uq_principals_org_agent_id"),
 )
 
 projects = Table(

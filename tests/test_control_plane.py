@@ -404,23 +404,65 @@ def test_alembic_upgrade_matches_metadata(tmp_path, monkeypatch):
         assert {i.name for i in table.indexes} <= migrated_indexes, name
 
 
-def test_alembic_downgrade_of_oauth_keeps_identity_data(tmp_path, monkeypatch):
-    """Migration 0002 is additive and reversible: downgrading removes only
-    the OAuth tables and leaves organizations/principals/credentials."""
+def test_alembic_downgrade_to_0001_keeps_identity_data(tmp_path, monkeypatch):
+    """Migrations 0002 (OAuth) and 0003 (agent_id) are additive and
+    reversible: downgrading to 0001 removes only their tables/column and
+    keeps every organization, principal and credential row; upgrading again
+    works."""
     from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect
+    from sqlalchemy import create_engine, inspect, text
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
 
     db = tmp_path / "migrated.db"
     monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{db}")
     cfg = Config("alembic.ini")
-    command.upgrade(cfg, "0001_initial")
-    from mak4i.identity.sql_store import SqlControlPlaneStore
-
+    command.upgrade(cfg, "head")
     cp = ControlPlane(SqlControlPlaneStore(f"sqlite:///{db}"))
     _org, owner = cp.onboard_organization(organization_name="Keep", owner_display_name="Me")
-    command.upgrade(cfg, "head")
+    cp.issue_credential(actor=owner, principal_id=owner.principal_id)
     command.downgrade(cfg, "0001_initial")
-    tables = set(inspect(create_engine(f"sqlite:///{db}")).get_table_names())
-    assert not any(t.startswith("oauth_") for t in tables)
+    engine = create_engine(f"sqlite:///{db}")
+    inspector = inspect(engine)
+    assert not any(t.startswith("oauth_") for t in inspector.get_table_names())
+    assert "agent_id" not in {c["name"] for c in inspector.get_columns("principals")}
+    with engine.connect() as conn:
+        assert conn.execute(text("select count(*) from principals")).scalar() == 1
+        assert conn.execute(text("select count(*) from credentials")).scalar() == 1
+    command.upgrade(cfg, "head")
     assert cp.get_principal(owner.principal_id) is not None
+
+
+def test_migration_0003_gives_existing_agents_a_deterministic_agent_id(tmp_path, monkeypatch):
+    """Earlier releases allowed agent principals without an agent_id; 0003
+    preserves them and assigns `agent-<12 hex>` from the principal id."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+
+    db = tmp_path / "migrated.db"
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{db}")
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "0002_oauth")
+    engine = create_engine(f"sqlite:///{db}")
+    now = "2026-10-01 00:00:00"
+    with engine.begin() as conn:
+        conn.execute(text(
+            "insert into organizations values ('org_1', 'Org', 'active', :t, :t)"), {"t": now})
+        for pid, ptype in (
+            ("prn_1234abcd-56ef-7890-aaaa-bbbbccccdddd", "agent"),
+            ("prn_99999999-0000-0000-0000-000000000000", "human"),
+        ):
+            conn.execute(text(
+                "insert into principals (principal_id, organization_id, type, role, display_name,"
+                " status, created_at, updated_at) values (:p, 'org_1', :ty, 'member', 'X', 'active', :t, :t)"),
+                {"p": pid, "ty": ptype, "t": now})
+    command.upgrade(cfg, "head")
+    cp = ControlPlane(SqlControlPlaneStore(f"sqlite:///{db}"))
+    agent = cp.get_principal("prn_1234abcd-56ef-7890-aaaa-bbbbccccdddd")
+    human = cp.get_principal("prn_99999999-0000-0000-0000-000000000000")
+    assert agent.agent_id == "agent-1234abcd56ef"
+    assert human.agent_id is None

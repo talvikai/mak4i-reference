@@ -87,3 +87,12 @@ class ProjectNotFoundError(EntityNotFoundError):
 
 class CredentialNotFoundError(EntityNotFoundError):
     entity = "credential"
+
+
+class AgentIdTakenError(IdentityError):
+    """MAK-0006 §3.3: `agent_id` is unique within an organization across all
+    agent principals, active or deactivated, and is never reused."""
+
+    def __init__(self, agent_id: str):
+        super().__init__(f"agent_id {agent_id!r} is already used in this organization")
+        self.agent_id = agent_id

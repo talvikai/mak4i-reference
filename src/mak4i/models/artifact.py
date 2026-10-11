@@ -8,6 +8,38 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 ArtifactStatus = Literal["active", "superseded"]
 
 
+class ClientMetadata(BaseModel):
+    """What the connecting client *says* it is (MCP `clientInfo`, OAuth
+    client name). Never used for authorization or authorship; always
+    `verified: false` (MAK-0006 §7.3)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str | None = None
+    version: str | None = None
+    verified: Literal[False] = False
+
+
+class Provenance(BaseModel):
+    """Authenticated provenance recorded by the server at write time
+    (MAK-0006 §7). Every field except `client` is derived from the verified
+    credential / access token and the stored principal — never from the
+    request. Immutable: renaming or deactivating the principal never
+    rewrites it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    principal_id: str
+    principal_type: Literal["human", "service", "agent"]
+    agent_id: str | None
+    display_name: str
+    auth_method: Literal["credential", "oauth", "operator"]
+    credential_id: str | None = None
+    oauth_client_id: str | None = None
+    client: ClientMetadata | None = None
+    recorded_at: datetime
+
+
 class Artifact(BaseModel):
     """A single MAK4I artifact.
 
@@ -47,6 +79,10 @@ class Artifact(BaseModel):
     # created by `supersede(..., release_subject_key=True)`, recording which
     # subject_key this lineage gave up (its `subject_key` is then None).
     released_subject_key: str | None = None
+    # MAK-0006 §7: authenticated author, agent identity and how the write was
+    # authenticated. Absent on versions written before v2.0.0-rc.1 (never
+    # back-filled — MAK-0006 §7.5); `created_by` is the legacy attribution.
+    provenance: Provenance | None = None
 
     @field_validator(
         "artifact_id", "artifact_type", "organization_id", "project", "title",
@@ -83,7 +119,7 @@ class Artifact(BaseModel):
 # that don't use them stay readable by an RC2 install (whose model rejects
 # unknown fields) — only artifacts that actually carry a subject_key are
 # RC3-only on disk.
-_OMIT_WHEN_UNSET = ("subject_key", "released_subject_key")
+_OMIT_WHEN_UNSET = ("subject_key", "released_subject_key", "provenance")
 
 
 def dump_for_storage(artifact: Artifact) -> str:
