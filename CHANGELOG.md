@@ -54,7 +54,10 @@ is independent.
   candidates they decide on (`conflict_changed` otherwise), are idempotent
   with an `idempotency_key`, record a durable resolution record (actor,
   reason, effects, resulting heads), and survive interruption (pending
-  resolutions are completed at server start).
+  resolutions are completed at server start). A resolution first reserves
+  every candidate head; writes to a reserved head fail with
+  `conflict_changed`, so an abort can only happen before any effect and
+  leaves the conflict open under the same id (MAK-0004 §A8.2–§A8.3).
 - Lifecycle status `withdrawn` (set only by a resolution), and
   `resolution_id` / `merged_from` on the versions a resolution creates or
   withdraws.
