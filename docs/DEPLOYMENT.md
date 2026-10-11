@@ -76,7 +76,8 @@ What any platform must provide to run the container image
 | `MAK4I_GCS_BUCKET`, `MAK4I_GCP_PROJECT` | for `MAK4I_STORE=gcs` |
 | `MAK4I_PUBLIC_ENDPOINT` | the client-facing MCP URL (connect instructions, `mak4i_whoami`) |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this installation names itself to AI clients |
-| `MAK4I_TOKEN` | stdio only: the one credential a local stdio session authenticates |
+| `MAK4I_TOKEN` | stdio only: the one credential a local stdio session authenticates (re-checked before every operation) |
+| `MAK4I_OAUTH_ENABLED` and `MAK4I_OAUTH_*` | the built-in OAuth authorization server for HTTP (MAK-0008); see [Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in) for every setting. Issuer and advertised URLs are derived from `MAK4I_PUBLIC_ENDPOINT` (and `MAK4I_OAUTH_ISSUER`), never from request headers. |
 | `MAK4I_CONTROL_PLANE_CREATE_TABLES` | `1` builds the schema directly (throwaway databases only; never on a database you keep) |
 
 Settings for each flavor: [Local](LOCAL_SETUP.md#13-configuration-reference),
@@ -85,6 +86,12 @@ Settings for each flavor: [Local](LOCAL_SETUP.md#13-configuration-reference),
 **Endpoints.** `GET /health` (liveness) and `GET /ready` (the control
 plane is reachable; `503` if not) are unauthenticated and return a bare
 status word only. `POST /mcp` is the only route that serves MAK4I tools.
+With OAuth enabled, the discovery documents under `/.well-known/` and the
+authorization server's `/oauth/…` endpoints and sign-in pages are also
+served (unauthenticated by design). A reverse proxy that serves MAK4I
+under a path prefix must strip the prefix for `/mcp` and `/oauth/…`, and
+must pass `/.well-known/oauth-protected-resource/<prefix>/mcp` and
+`/.well-known/oauth-authorization-server/<prefix>` through unchanged.
 
 **Schema migrations.** The control plane is migrated with Alembic
 (`alembic upgrade head`, included in the image). Run it before first
@@ -134,8 +141,13 @@ balancer must:
   Credential authentication is the boundary either way.
 - No CORS is configured: clients are server-to-server MCP clients with a
   bearer credential, not browser JavaScript.
-- OAuth isn't part of this reference implementation; the bearer
-  credential is the whole authentication surface.
+- Authentication is a per-principal bearer credential or, when enabled,
+  an OAuth access token from the built-in authorization server
+  (MAK-0008). The two are distinguished by prefix and never fall back to
+  each other. OAuth state (codes, tokens, refresh rotation, revocation)
+  is stored only as hashes in the control-plane database and survives
+  restarts; no signing keys are used. OAuth rate limits are per process,
+  which matches the single-replica deployment this release supports.
 - Vulnerability reporting and the image and dependency policy:
   [`SECURITY.md`](../SECURITY.md).
 

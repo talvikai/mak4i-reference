@@ -527,6 +527,105 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- OAuth administration (MAK-0008 §5.3, §8) --------------------------------
+
+
+def _make_oauth(control_plane: ControlPlane):
+    from mak4i.config import build_oauth_from_env
+    from mak4i.oauth import OAuthConfigError
+
+    try:
+        oauth = build_oauth_from_env(control_plane, audit=AuditLogger())
+    except (OAuthConfigError, ValueError) as exc:
+        raise _CliError(str(exc)) from exc
+    if oauth is None:
+        raise _CliError(
+            "OAuth is not enabled for this installation. Set MAK4I_OAUTH_ENABLED=1 and "
+            "MAK4I_PUBLIC_ENDPOINT (the public URL of the MCP endpoint) — see the OAuth "
+            "section of the installation guide."
+        )
+    return oauth
+
+
+def _cmd_oauth_sign_in_code(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    principal_id = args.principal_id or actor.principal_id
+    code, expires_at = oauth.issue_sign_in_code(actor=actor, principal_id=principal_id)
+    print("Sign-in code created.\n")
+    print(f"principal_id: {principal_id}")
+    print(f"sign-in code: {code}")
+    print(f"expires_at:   {expires_at.isoformat()}")
+    print(
+        "\nEnter it on the MAK4I sign-in page your AI client opens. It works once and "
+        "expires in a few minutes. It is not a bearer token. It will not be shown again."
+    )
+    return 0
+
+
+def _cmd_oauth_client_register(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    try:
+        client, secret = oauth.register_client(
+            actor=actor,
+            organization_id=args.organization_id or actor.organization_id,
+            client_name=args.name,
+            redirect_uris=args.redirect_uri,
+            confidential=args.confidential,
+        )
+    except ValueError as exc:
+        raise _CliError(str(exc)) from exc
+    print("OAuth client registered.\n")
+    print(f"client_id: {client['client_id']}")
+    if secret:
+        print(f"client_secret: {secret}")
+        print("\nSave the client secret now. It will not be shown again.")
+    return 0
+
+
+def _cmd_oauth_client_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    _print_json(oauth.list_clients(actor=actor, organization_id=args.organization_id or actor.organization_id))
+    return 0
+
+
+def _cmd_oauth_client_disable(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    _print_json(oauth.disable_client(actor=actor, client_id=args.client_id))
+    return 0
+
+
+def _cmd_oauth_authorization_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    _print_json(
+        oauth.list_authorizations(actor=actor, principal_id=args.principal_id, client_id=args.client_id)
+    )
+    return 0
+
+
+def _cmd_oauth_authorization_revoke(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    oauth = _make_oauth(control_plane)
+    actor = _resolve_actor(control_plane, args)
+    if args.authorization_id:
+        _print_json(oauth.revoke_authorization(actor=actor, authorization_id=args.authorization_id))
+        return 0
+    if not (args.principal_id or args.client_id):
+        raise _CliError("pass --authorization-id, --principal-id or --client-id")
+    count = oauth.revoke_all(actor=actor, principal_id=args.principal_id, client_id=args.client_id)
+    _print_json({"revoked": count})
+    return 0
+
+
 # -- onboarding convenience commands ---------------------------------------
 #
 # `init`, `serve`, and `access provision` add no business logic: each is a
@@ -1004,6 +1103,12 @@ def _write_access_file(path: str, *, endpoint: str, project_id: str, token: str)
         pass
 
 
+ACTOR_HELP = (
+    "owner principal id performing this action (default: derived from the authenticated "
+    "credential — MAK4I_TOKEN, or the local `mak4i init` credential; pass explicitly to override)"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mak4i", description="MAK4I operator CLI.")
     parser.add_argument("--version", action="version", version=f"mak4i {__version__}")
@@ -1279,6 +1384,65 @@ def build_parser() -> argparse.ArgumentParser:
     ))
     credential_revoke.add_argument("--credential-id", required=True)
     credential_revoke.set_defaults(func=_cmd_credential_revoke)
+
+    oauth = subparsers.add_parser(
+        "oauth", help="OAuth authorization service: sign-in codes, clients, authorizations."
+    )
+    oauth_sub = oauth.add_subparsers(dest="oauth_command", required=True)
+    actor_help = ACTOR_HELP
+
+    sign_in = oauth_sub.add_parser(
+        "sign-in-code",
+        help="Issue a one-time sign-in code for the OAuth sign-in page (prints it once).",
+    )
+    sign_in.add_argument("--actor", help=actor_help)
+    sign_in.add_argument(
+        "--principal-id",
+        help="principal who will sign in (default: yourself; an owner may issue for any principal in its organization)",
+    )
+    sign_in.set_defaults(func=_cmd_oauth_sign_in_code)
+
+    oauth_client = oauth_sub.add_parser("client", help="Pre-registered OAuth clients.")
+    oauth_client_sub = oauth_client.add_subparsers(dest="oauth_client_command", required=True)
+    client_register = oauth_client_sub.add_parser("register", help="Pre-register an OAuth client.")
+    client_register.add_argument("--actor", help=actor_help)
+    client_register.add_argument("--organization-id", help="default: the actor's organization")
+    client_register.add_argument("--name", required=True)
+    client_register.add_argument(
+        "--redirect-uri", action="append", required=True,
+        help="exact redirect URI (repeatable); https, or http on 127.0.0.1/localhost/[::1] (any port)",
+    )
+    client_register.add_argument(
+        "--confidential", action="store_true",
+        help="issue a client secret (shown once); default is a public client using PKCE only",
+    )
+    client_register.set_defaults(func=_cmd_oauth_client_register)
+    client_list = oauth_client_sub.add_parser("list", help="List pre-registered clients (never secrets).")
+    client_list.add_argument("--actor", help=actor_help)
+    client_list.add_argument("--organization-id", help="default: the actor's organization")
+    client_list.set_defaults(func=_cmd_oauth_client_list)
+    client_disable = oauth_client_sub.add_parser(
+        "disable", help="Disable a pre-registered client and revoke its authorizations."
+    )
+    client_disable.add_argument("--actor", help=actor_help)
+    client_disable.add_argument("--client-id", required=True)
+    client_disable.set_defaults(func=_cmd_oauth_client_disable)
+
+    oauth_authz = oauth_sub.add_parser("authorization", help="OAuth authorizations (consents and their tokens).")
+    oauth_authz_sub = oauth_authz.add_subparsers(dest="oauth_authorization_command", required=True)
+    authz_list = oauth_authz_sub.add_parser("list", help="List authorizations (never token values).")
+    authz_list.add_argument("--actor", help=actor_help)
+    authz_list.add_argument("--principal-id")
+    authz_list.add_argument("--client-id")
+    authz_list.set_defaults(func=_cmd_oauth_authorization_list)
+    authz_revoke = oauth_authz_sub.add_parser(
+        "revoke", help="Revoke one authorization, or all of a principal's or a client's."
+    )
+    authz_revoke.add_argument("--actor", help=actor_help)
+    authz_revoke.add_argument("--authorization-id")
+    authz_revoke.add_argument("--principal-id")
+    authz_revoke.add_argument("--client-id")
+    authz_revoke.set_defaults(func=_cmd_oauth_authorization_revoke)
 
     return parser
 

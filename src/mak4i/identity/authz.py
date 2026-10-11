@@ -8,6 +8,18 @@ from mak4i.identity.errors import AccessDeniedError
 from mak4i.identity.models import Permission, Principal
 
 
+def apply_ceiling(
+    permissions: list[Permission], ceiling: frozenset[str] | None
+) -> list[Permission]:
+    """MAK-0006 §5.3: effective permissions are the live grant intersected
+    with the authentication method's ceiling (for OAuth, the token's
+    scopes). `None` means no ceiling (a principal credential). A ceiling
+    can only remove permissions, never add one."""
+    if ceiling is None:
+        return list(permissions)
+    return [p for p in permissions if p in ceiling]
+
+
 @dataclass(frozen=True)
 class AuthorizationOutcome:
     """What a successful `require` call resolved. The engine uses
@@ -45,8 +57,11 @@ class Authorizer:
         *,
         correlation_id: str,
         auth_method: str = "credential",
+        ceiling: frozenset[str] | None = None,
     ) -> AuthorizationOutcome:
-        permissions = self._control_plane.effective_permissions(principal, project)
+        permissions = apply_ceiling(
+            self._control_plane.effective_permissions(principal, project), ceiling
+        )
         organization_id = self._control_plane.resolve_organization_id(principal, project)
         granted = permission in permissions
 

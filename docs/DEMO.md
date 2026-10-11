@@ -80,11 +80,10 @@ unrelated to the MAK4I credential.
 ChatGPT's custom-connector UI (**Settings → Apps → Advanced → Developer
 mode**) supports only OAuth or no-authentication connectors; per OpenAI's
 own docs it has *"no field to set a Bearer token (or arbitrary
-headers)."* A MAK4I server that authenticates a per-principal credential
-in a header therefore can't be configured through ChatGPT's connector UI
-as-is. This is a client capability gap, not a MAK4I limitation — the
-server would need an OAuth front end (or an OAuth-to-bearer shim) to
-accept ChatGPT.
+headers)."* Such clients need MAK4I's OAuth sign-in
+([Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)).
+Whether a given client has been verified end to end against it is
+recorded in the release notes; until then treat it as untested.
 
 ---
 

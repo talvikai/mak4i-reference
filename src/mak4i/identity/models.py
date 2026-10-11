@@ -34,10 +34,12 @@ PrincipalType = Literal["human", "service", "agent"]
 PrincipalRole = Literal["owner", "member"]
 PrincipalStatus = Literal["active", "deactivated"]
 ProjectStatus = Literal["active", "archived"]
-Permission = Literal["read", "write"]
+Permission = Literal["read", "write", "resolve"]
 CredentialStatus = Literal["active", "revoked"]
 
-_PERMISSION_ORDER = {"read": 0, "write": 1}
+_PERMISSION_ORDER = {"read": 0, "write": 1, "resolve": 2}
+"""MAK-0006 §5.1: `read`, `write` and `resolve` are independent — none
+implies another."""
 
 
 def _new_id(prefix: str) -> str:

@@ -7,7 +7,8 @@ from mak4i.audit import AuditContext, AuditLogger
 from mak4i.context import ContextBuilder, ContextPackage
 from mak4i.discovery import Discovery
 from mak4i.identity import AuthorizedProject, ControlPlane, Organization, Principal
-from mak4i.identity.authz import Authorizer
+from mak4i.identity.auth_context import AuthContext
+from mak4i.identity.authz import Authorizer, apply_ceiling
 from mak4i.models import Artifact, bump_version, normalize_subject_key, utc_now
 from mak4i.resolution import IntegrityError, Resolver
 from mak4i.store.base import ArtifactNotFoundError, ArtifactStore
@@ -109,15 +110,18 @@ class MAK4IEngine:
         tags: list[str] | None = None,
         subject_key: str | None = None,
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> Artifact:
         """Create a brand-new lineage in `project`. The principal must hold
         WRITE on it or `AccessDeniedError` is raised (and audited) before
         anything is written. `created_by` is the authenticated principal;
         any value the caller might have supplied is irrelevant."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
         correlation_id = str(uuid.uuid4())
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         subject_key = normalize_subject_key(subject_key)  # ValueError if blank
@@ -165,16 +169,19 @@ class MAK4IEngine:
         subject_key: str | None = None,
         release_subject_key: bool = False,
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> Artifact:
         """Corrected write sequence per MVP_ARCHITECTURE.md §5, now
         project-scoped. WRITE on `project` is required. `old_id` is looked
         up *within* `(organization_id, project)`, so an artifact in another
         project can never be superseded through this call (it is simply not
         found) — see tests/test_security_dev_preview.py."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
         correlation_id = str(uuid.uuid4())
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
@@ -286,14 +293,17 @@ class MAK4IEngine:
         artifact_type: str | None = None,
         tags: list[str] | None = None,
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> ContextPackage:
         """Read flow per MVP_ARCHITECTURE.md §2/§8, gated by READ on
         `project`. One correlation_id ties GET_CURRENT, DISCOVER, RESOLVE,
         INJECT (plus a CONFLICT/INTEGRITY_ERROR per anomaly) together."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
         correlation_id = str(uuid.uuid4())
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
@@ -368,6 +378,7 @@ class MAK4IEngine:
         tags: list[str] | None = None,
         status: str | None = "active",
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> list[Artifact]:
         """Raw deterministic candidate lookup in one project. READ required."""
         return self.search_authorized(
@@ -377,6 +388,7 @@ class MAK4IEngine:
             tags=tags,
             status=status,
             auth_method=auth_method,
+            auth=auth,
         )
 
     def search_authorized(
@@ -388,6 +400,7 @@ class MAK4IEngine:
         tags: list[str] | None = None,
         status: str | None = "active",
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> list[Artifact]:
         """Deterministic candidate lookup across projects.
 
@@ -397,17 +410,23 @@ class MAK4IEngine:
         nothing and are never named in an error, so no metadata leaks
         (spec §3, tests 7/8).
         """
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
         correlation_id = str(uuid.uuid4())
 
         if project is not None:
             outcome = self._authorizer.require(
                 principal, project, "read",
                 correlation_id=correlation_id, auth_method=auth_method,
+                ceiling=ceiling,
             )
             scopes = [(outcome.organization_id, project)]
             context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         else:
-            authorized = self._control_plane.list_authorized_projects(principal, "read")
+            authorized = [
+                ap
+                for ap in self._control_plane.list_authorized_projects(principal, "read")
+                if "read" in apply_ceiling(ap.permissions, ceiling)
+            ]
             scopes = [
                 (ap.project.organization_id, ap.project.project_id) for ap in authorized
             ]
@@ -438,14 +457,17 @@ class MAK4IEngine:
         project: str,
         lineage_id: str,
         auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
     ) -> list[Artifact]:
         """Every member of a lineage within `project`, oldest first by
         version — the explicit tool for history/migration/rationale
         queries (§8). READ required."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
         correlation_id = str(uuid.uuid4())
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
 
@@ -466,11 +488,20 @@ class MAK4IEngine:
             )
         return members
 
-    def list_projects(self, *, principal: Principal) -> list[AuthorizedProject]:
-        """Every project the authenticated principal may act on, with the
-        permissions each grant confers. Projects outside the principal's
-        grants are simply absent (spec §3, test 6)."""
-        return self._control_plane.list_authorized_projects(principal)
+    def list_projects(
+        self, *, principal: Principal, auth: AuthContext | None = None
+    ) -> list[AuthorizedProject]:
+        """Every project the authenticated principal may act on, with its
+        *effective* permissions (grant ∩ ceiling, MAK-0006 §5.3). Projects
+        outside the principal's grants — or left with no permission after
+        the ceiling — are simply absent (spec §3, test 6)."""
+        ceiling = auth.ceiling if auth is not None else None
+        out = []
+        for ap in self._control_plane.list_authorized_projects(principal):
+            permissions = apply_ceiling(ap.permissions, ceiling)
+            if permissions:
+                out.append(ap.model_copy(update={"permissions": permissions}))
+        return out
 
     def organization_of(self, *, principal: Principal) -> Organization | None:
         """The organization the authenticated principal belongs to — part of
@@ -496,6 +527,16 @@ class MAK4IEngine:
             if self._store.get(organization_id, project, candidate) is None:
                 return candidate
         raise RuntimeError(f"could not find an available successor id for {old_id!r}")
+
+
+def _resolve_auth(
+    auth: AuthContext | None, auth_method: str
+) -> tuple[str, frozenset[str] | None]:
+    """`auth` (set by the transport from a verified token) wins over the
+    legacy `auth_method` keyword, which the CLI and older callers pass."""
+    if auth is None:
+        return auth_method, None
+    return auth.auth_method, auth.ceiling
 
 
 def _bump_id(old_id: str, offset: int) -> str:

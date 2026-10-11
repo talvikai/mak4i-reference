@@ -68,6 +68,9 @@ class ControlPlane:
     # -- authentication (hosted path) --------------------------------------
 
     def authenticate(self, raw_token: str) -> Principal:
+        return self.authenticate_with_credential(raw_token)[0]
+
+    def authenticate_with_credential(self, raw_token: str) -> tuple[Principal, str]:
         """Resolve a bearer token to its principal, or raise
         `CredentialInvalidError` with a uniform public message. `reason`
         records the specific cause for audit only — it is never surfaced to
@@ -90,7 +93,27 @@ class ControlPlane:
         organization = self._store.get_organization(principal.organization_id)
         if organization is None or organization.status != "active":
             raise CredentialInvalidError("organization_inactive")
+        return principal, credential.credential_id
+
+    def active_principal(self, principal_id: str) -> Principal:
+        """The principal, if it may act right now (MAK-0006 §4.2): it exists,
+        is active, and its organization is active. Raises
+        `CredentialInvalidError` with an audit-only reason otherwise. Used to
+        re-check OAuth subjects on every request and token exchange."""
+        principal = self._store.get_principal(principal_id)
+        if principal is None:
+            raise CredentialInvalidError("orphaned_credential")
+        if principal.status != "active":
+            raise CredentialInvalidError("principal_inactive")
+        organization = self._store.get_organization(principal.organization_id)
+        if organization is None or organization.status != "active":
+            raise CredentialInvalidError("organization_inactive")
         return principal
+
+    def require_owner(self, actor: Principal, organization_id: str) -> None:
+        """Public form of the owner gate, for administration that lives
+        outside this class (OAuth clients and authorizations)."""
+        self._require_owner(actor, organization_id)
 
     def is_reachable(self) -> bool:
         """Cheap backend reachability check for an HTTP `/ready` probe
@@ -337,6 +360,9 @@ class ControlPlane:
         Projects the principal cannot see are simply absent — never an
         error, so nothing leaks."""
         out: list[AuthorizedProject] = []
+        current = self._store.get_principal(principal.principal_id)
+        if current is None or current.status != "active":
+            return out
         for grant in self._store.list_grants_for_principal(principal.principal_id):
             if permission is not None and permission not in grant.permissions:
                 continue
@@ -355,6 +381,12 @@ class ControlPlane:
         distinguish the causes."""
         grant = self._store.get_grant(principal.principal_id, project_id)
         if grant is None:
+            return []
+        # MAK-0006 §5.3 / §6.3: re-read the principal so a deactivation
+        # takes effect on the very next request, whatever identity object
+        # the caller is holding.
+        current = self._store.get_principal(principal.principal_id)
+        if current is None or current.status != "active":
             return []
         if self._resolve_active_project(project_id, principal) is None:
             return []

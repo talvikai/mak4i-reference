@@ -395,3 +395,32 @@ def test_alembic_upgrade_matches_metadata(tmp_path, monkeypatch):
 
     inspector = inspect(create_engine(f"sqlite:///{db}"))
     assert set(inspector.get_table_names()) == set(metadata.tables) | {"alembic_version"}
+    for name, table in metadata.tables.items():
+        migrated = {c["name"]: c for c in inspector.get_columns(name)}
+        assert set(migrated) == set(table.columns.keys()), name
+        for column in table.columns:
+            assert migrated[column.name]["nullable"] == column.nullable, (name, column.name)
+        migrated_indexes = {i["name"] for i in inspector.get_indexes(name)}
+        assert {i.name for i in table.indexes} <= migrated_indexes, name
+
+
+def test_alembic_downgrade_of_oauth_keeps_identity_data(tmp_path, monkeypatch):
+    """Migration 0002 is additive and reversible: downgrading removes only
+    the OAuth tables and leaves organizations/principals/credentials."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect
+
+    db = tmp_path / "migrated.db"
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{db}")
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "0001_initial")
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+
+    cp = ControlPlane(SqlControlPlaneStore(f"sqlite:///{db}"))
+    _org, owner = cp.onboard_organization(organization_name="Keep", owner_display_name="Me")
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0001_initial")
+    tables = set(inspect(create_engine(f"sqlite:///{db}")).get_table_names())
+    assert not any(t.startswith("oauth_") for t in tables)
+    assert cp.get_principal(owner.principal_id) is not None

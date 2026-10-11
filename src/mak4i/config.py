@@ -48,3 +48,27 @@ def build_control_plane_from_env() -> ControlPlane:
     url = os.environ.get("MAK4I_CONTROL_PLANE_DB", DEFAULT_CONTROL_PLANE_DB)
     create_tables = os.environ.get("MAK4I_CONTROL_PLANE_CREATE_TABLES") == "1"
     return ControlPlane(SqlControlPlaneStore(url, create_tables=create_tables))
+
+
+def build_oauth_from_env(control_plane: ControlPlane, *, audit=None):
+    """The OAuth authorization service (MAK-0008) when
+    `MAK4I_OAUTH_ENABLED=1`, else `None`. Its state lives in the same
+    control-plane database (migration 0002), so it needs a SQL-backed
+    control plane. Raises `OAuthConfigError` on invalid configuration, so a
+    misconfigured server refuses to start rather than advertise wrong URLs."""
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.oauth import OAuthService, OAuthSettings
+    from mak4i.oauth.store import SqlOAuthStore
+
+    settings = OAuthSettings.from_env()
+    if settings is None:
+        return None
+    store = control_plane._store  # noqa: SLF001 - same database by design
+    if not isinstance(store, SqlControlPlaneStore):
+        raise ValueError("MAK4I_OAUTH_ENABLED=1 requires a SQL control plane (MAK4I_CONTROL_PLANE_DB)")
+    return OAuthService(
+        settings=settings,
+        store=SqlOAuthStore(store.engine),
+        control_plane=control_plane,
+        audit=audit,
+    )
