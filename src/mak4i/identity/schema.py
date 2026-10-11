@@ -246,3 +246,23 @@ resolution_records = Table(
     Index("ix_resolution_records_project", "organization_id", "project_id"),
     Index("ix_resolution_records_conflict_id", "conflict_id"),
 )
+
+# -- administrative audit events (MAK-0006 §8.5) ----------------------------------
+
+admin_events = Table(
+    "admin_events",
+    metadata,
+    Column("event_id", String, primary_key=True),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    # NULL only for instance-operator actions on no particular organization.
+    Column("organization_id", String, nullable=True),
+    Column("actor_principal_id", String, nullable=False),
+    Column("actor_auth_method", String, nullable=False),
+    Column("action", String, nullable=False),
+    Column("targets", JSON, nullable=False),
+    # succeeded | denied | failed
+    Column("outcome", String, nullable=False),
+    Column("detail", String, nullable=True),
+    Column("correlation_id", String, nullable=False),
+    Index("ix_admin_events_org_time", "organization_id", "occurred_at"),
+)

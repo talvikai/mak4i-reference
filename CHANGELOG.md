@@ -60,6 +60,14 @@ prepared.
   codes such as `access_denied`, `validation_error`, `stale_head`,
   `subject_in_conflict`, `conflict_changed`, `conflict_not_open`.
 - Migration `0004_resolution_records`; reversible.
+- **Administration without a portal** (MAK-0006 §8): a durable
+  administrative audit log (`admin_events`, migration `0005`) recording every
+  administrative action — including denied attempts — with actor, how the
+  actor authenticated, targets, outcome and time, never a secret;
+  `mak4i audit list` (owners, own organization); `project archive`;
+  `org suspend|reactivate` (instance operator); `mak4i admin inventory` and
+  the bootstrap's `admin-info` for recovering organization, owner, project,
+  principal and credential metadata without querying the database (#21).
 
 ### Changed
 

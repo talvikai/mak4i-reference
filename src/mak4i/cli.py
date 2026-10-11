@@ -141,7 +141,9 @@ def _resolve_actor(control_plane: ControlPlane, args: argparse.Namespace) -> Pri
             "environment."
         )
     try:
-        return control_plane.authenticate(token)
+        actor = control_plane.authenticate(token)
+        control_plane.actor_auth_method = "credential"  # MAK-0006 §8.5 attribution
+        return actor
     except CredentialInvalidError as exc:
         # Deliberately does NOT suggest `mak4i init --force` here: it
         # does not repair or rotate a credential — it provisions a
@@ -596,6 +598,87 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     actor = _resolve_actor(control_plane, args)
     credential = control_plane.revoke_credential(actor=actor, credential_id=args.credential_id)
     _print_json(_credential_summary(credential))
+    return 0
+
+
+# -- lifecycle, audit and inventory (MAK-0006 §8) -------------------------------
+
+
+def _cmd_project_archive(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    _print_json(control_plane.archive_project(actor=actor, project_id=args.project_id))
+    return 0
+
+
+def _cmd_org_set_status(status: str):
+    def run(args: argparse.Namespace) -> int:
+        # Instance-operator action (direct database access), like `org create`.
+        control_plane = _make_control_plane()
+        _print_json(control_plane.set_organization_status(organization_id=args.organization_id, status=status))
+        return 0
+
+    return run
+
+
+def _cmd_audit_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    events = control_plane.list_admin_events(
+        actor=actor, organization_id=args.organization_id or actor.organization_id, limit=args.limit
+    )
+    _print_json(events)
+    return 0
+
+
+def _cmd_admin_inventory(args: argparse.Namespace) -> int:
+    """Issue #21: the non-secret administrative inventory of this
+    installation, for the instance operator (who already has direct
+    database access — MAK-0006 §8.1). Never prints a token, hash, sign-in
+    code or client secret; tokens can't be recovered, only reissued."""
+    control_plane = _make_control_plane()
+    store = control_plane._store  # noqa: SLF001 - operator view of the same database
+    organizations = []
+    for org in control_plane.list_organizations():
+        principals = store.list_principals(org.organization_id)
+        projects = store.list_projects(org.organization_id)
+        organizations.append(
+            {
+                "organization_id": org.organization_id,
+                "name": org.name,
+                "status": org.status,
+                "owners": [p.principal_id for p in principals if p.role == "owner" and p.status == "active"],
+                "projects": [
+                    {"project_id": p.project_id, "name": p.name, "status": p.status} for p in projects
+                ],
+                "principals": [
+                    {
+                        "principal_id": p.principal_id,
+                        "principal_type": p.type,
+                        "agent_id": p.agent_id,
+                        "display_name": p.display_name,
+                        "role": p.role,
+                        "status": p.status,
+                        "grants": [
+                            {"project_id": g.project_id, "permissions": list(g.permissions)}
+                            for g in store.list_grants_for_principal(p.principal_id)
+                        ],
+                        "credentials": [_credential_summary(c) for c in store.list_credentials(p.principal_id)],
+                    }
+                    for p in principals
+                ],
+            }
+        )
+    _print_json(
+        {
+            "instance_name": os.environ.get("MAK4I_INSTANCE_NAME") or "MAK4I",
+            "environment": os.environ.get("MAK4I_ENVIRONMENT") or "unspecified",
+            "public_endpoint": os.environ.get("MAK4I_PUBLIC_ENDPOINT") or None,
+            "version": __version__,
+            "organizations": organizations,
+            "note": "Credential tokens are stored only as hashes and can't be recovered; issue a new credential instead.",
+        }
+    )
     return 0
 
 
@@ -1557,6 +1640,38 @@ def build_parser() -> argparse.ArgumentParser:
     ))
     credential_revoke.add_argument("--credential-id", required=True)
     credential_revoke.set_defaults(func=_cmd_credential_revoke)
+
+    project_archive = project_sub.add_parser(
+        "archive", help="Archive a project: nothing is deleted; all access to it stops."
+    )
+    project_archive.add_argument("--actor", help=ACTOR_HELP)
+    project_archive.add_argument("--project-id", required=True)
+    project_archive.set_defaults(func=_cmd_project_archive)
+
+    org_suspend = org_sub.add_parser(
+        "suspend", help="Instance operator: suspend an organization (its principals can't authenticate)."
+    )
+    org_suspend.add_argument("--organization-id", required=True)
+    org_suspend.set_defaults(func=_cmd_org_set_status("suspended"))
+    org_reactivate = org_sub.add_parser("reactivate", help="Instance operator: reactivate a suspended organization.")
+    org_reactivate.add_argument("--organization-id", required=True)
+    org_reactivate.set_defaults(func=_cmd_org_set_status("active"))
+
+    audit = subparsers.add_parser("audit", help="Administrative audit history (owners, own organization).")
+    audit_sub = audit.add_subparsers(dest="audit_command", required=True)
+    audit_list = audit_sub.add_parser("list", help="Most recent administrative actions, newest first.")
+    audit_list.add_argument("--actor", help=ACTOR_HELP)
+    audit_list.add_argument("--organization-id", help="default: the actor's organization")
+    audit_list.add_argument("--limit", type=int, default=200)
+    audit_list.set_defaults(func=_cmd_audit_list)
+
+    admin = subparsers.add_parser("admin", help="Instance-operator tools.")
+    admin_sub = admin.add_subparsers(dest="admin_command", required=True)
+    admin_inventory = admin_sub.add_parser(
+        "inventory",
+        help="Non-secret inventory: organizations, owners, projects, principals, grants, credential metadata.",
+    )
+    admin_inventory.set_defaults(func=_cmd_admin_inventory)
 
     conflict = subparsers.add_parser(
         "conflict",

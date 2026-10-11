@@ -243,6 +243,17 @@ cmd_install() {
 
 # --- status -----------------------------------------------------------------
 
+# cmd_admin_info — issue #21: recover organization/owner/project/principal
+# ids and credential metadata without querying the database by hand. Runs
+# `mak4i admin inventory` inside the mak4i container (instance-operator
+# trust, the same as this script's own database access). Never prints a
+# token, hash, sign-in code or client secret.
+cmd_admin_info() {
+  require_installed
+  service_running mak4i || die "$EX_UNHEALTHY" "the mak4i service is not running. Start it with: $0 restart"
+  compose exec -T mak4i mak4i admin inventory || die "$EX_FAILURE" "could not read the administrative inventory"
+}
+
 cmd_status() {
   require_installed
   local problems=0 running counts vols

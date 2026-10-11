@@ -45,6 +45,8 @@ Commands:
   preflight   Check host, Docker, network and configuration (read-only)
   install     Create the configuration, start the stack, verify it
   status      Show containers, health, readiness, schema, data and HTTPS
+  admin-info  Non-secret inventory: organizations, owners, projects,
+              principals, grants and credential metadata (never tokens)
   restart     Restart the stack and verify health and data
   upgrade     Back up, then upgrade $UPGRADE_FROM -> $MAK4I_RELEASE
   backup      Timestamped backup of the database, artifacts and .env
@@ -111,6 +113,7 @@ _allowed_options() {
     preflight) echo "profile domain public-ip tls-issuer bind allow-public-bind http-port check-inbound" ;;
     install) echo "profile domain public-ip tls-issuer bind allow-public-bind http-port check-inbound endpoint instance-name environment cert-timeout timeout" ;;
     status) echo "" ;;
+    admin-info) echo "" ;;
     restart) echo "timeout" ;;
     upgrade) echo "profile backup-dir online use-backup from-version timeout" ;;
     backup) echo "backup-dir online timeout" ;;
@@ -211,14 +214,14 @@ main() {
   case "$1" in
     -h | --help | help) usage; exit "$EX_OK" ;;
     --version) printf 'mak4i-enterprise %s\n' "$MAK4I_RELEASE"; exit "$EX_OK" ;;
-    preflight | install | status | restart | upgrade | backup | restore | uninstall) COMMAND=$1 ;;
+    preflight | install | status | admin-info | restart | upgrade | backup | restore | uninstall) COMMAND=$1 ;;
     *) usage_error "unknown command: $1" ;;
   esac
   shift
   parse_options "$@"
   umask 077
   log_init "$COMMAND"
-  "cmd_$COMMAND"
+  "cmd_${COMMAND//-/_}"
 }
 
 main "$@"

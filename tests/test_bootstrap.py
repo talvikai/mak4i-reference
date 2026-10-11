@@ -414,6 +414,16 @@ def test_status_reports_healthy(host):
         assert text in r.output
 
 
+def test_admin_info_prints_the_non_secret_inventory(host):  # issue #21
+    assert _install_private(host).returncode == 0
+    r = host.run("admin-info")
+    assert r.returncode == 0, r.output
+    assert '"owners": ["prn_owner"]' in r.output
+    assert ["exec", "-T", "mak4i", "mak4i", "admin", "inventory"] in host.compose_calls("exec")
+    host.set_state(running=["postgres"], volumes=["mak4i_pgdata", "mak4i_artifacts"])
+    assert host.run("admin-info").returncode == 5
+
+
 def test_status_exits_5_when_mak4i_is_down(host):
     assert _install_private(host).returncode == 0
     host.set_state(running=["postgres"], volumes=["mak4i_pgdata", "mak4i_artifacts"])

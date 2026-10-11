@@ -45,9 +45,12 @@ def build_control_plane_from_env() -> ControlPlane:
     """
     from mak4i.identity.sql_store import SqlControlPlaneStore
 
+    from mak4i.identity.admin_events import SqlAdminEventSink
+
     url = os.environ.get("MAK4I_CONTROL_PLANE_DB", DEFAULT_CONTROL_PLANE_DB)
     create_tables = os.environ.get("MAK4I_CONTROL_PLANE_CREATE_TABLES") == "1"
-    return ControlPlane(SqlControlPlaneStore(url, create_tables=create_tables))
+    store = SqlControlPlaneStore(url, create_tables=create_tables)
+    return ControlPlane(store, events=SqlAdminEventSink(store.engine))
 
 
 def build_oauth_from_env(control_plane: ControlPlane, *, audit=None):
