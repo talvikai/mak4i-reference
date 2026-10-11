@@ -291,6 +291,12 @@ class MAK4IEngine:
         new_subject_key = None if release_subject_key else old.subject_key
         released_subject_key = old.subject_key if release_subject_key else None
 
+        if old.resolution_id is not None and self._is_pending_resolution(old.resolution_id):
+            # MAK-0004 §A8.3: a head reserved by a pending resolution can't be written.
+            self._reject_supersede(correlation_id, principal, old_id, context, "reserved by a pending resolution")
+            raise ConflictChangedError(
+                "this record is reserved by a conflict resolution in progress; nothing was written — re-read and retry"
+            )
         if old.subject_key is not None:
             subject = (old.artifact_type, old.subject_key)
             if subject in self._resolving_subjects(organization_id, project):
@@ -412,7 +418,11 @@ class MAK4IEngine:
         all_artifacts = self._store.all(organization_id, project)
         pending = self._pending_by_subject(organization_id, project)
         resolution = self._resolver.resolve(
-            all_artifacts, artifact_type=artifact_type, tags=tags, resolving=set(pending)
+            all_artifacts,
+            artifact_type=artifact_type,
+            tags=tags,
+            resolving=set(pending),
+            pending_resolution_ids={r.resolution_id for r in pending.values()},
         )
         conflicts = [
             self._to_conflict(organization_id, project, detected, pending)
@@ -791,6 +801,22 @@ class MAK4IEngine:
         candidates = sorted(record.candidate_artifact_ids)
         effects: list[ResolutionEffect] = []
         heads: list[ResultingHead] = []
+        # MAK-0004 §A8.2 step 2: reserve every candidate before any effect.
+        try:
+            self._reserve(org, project, candidates, record)
+        except (ConflictChangedError, ArtifactNotFoundError) as exc:
+            self._release(org, project, candidates, record)
+            aborted = record.model_copy(update={"state": "aborted", "effects": [], "completed_at": utc_now()})
+            self._resolutions.update(aborted)
+            self._log_resolution(
+                "RESOLUTION_ABORTED", correlation_id, None, context,
+                resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+                phase="reservation", applied_effects=[],
+            )
+            raise ConflictChangedError(
+                "a candidate changed before the resolution could reserve it; nothing was changed — "
+                "re-read the conflict and retry"
+            ) from exc
         try:
             if record.action == "select_winner":
                 winner = params["winner_artifact_id"]
@@ -843,6 +869,8 @@ class MAK4IEngine:
                 "a candidate changed while the resolution was being applied; it was aborted "
                 "(effects already applied are recorded) — re-read the conflict and retry"
             ) from exc
+        # §A8.2 step 4: candidates left unchanged are released again.
+        self._release(org, project, [e.artifact_id for e in effects if e.effect == "unchanged"], record)
         completed = record.model_copy(
             update={"state": "completed", "effects": effects, "resulting_heads": heads, "completed_at": utc_now()}
         )
@@ -854,6 +882,49 @@ class MAK4IEngine:
             resulting_heads=[h.model_dump() for h in heads], actor_principal_id=record.actor.principal_id,
         )
         return completed
+
+    def _is_pending_resolution(self, resolution_id: str) -> bool:
+        record = self._resolutions.get(resolution_id)
+        return record is not None and record.state == "pending"
+
+    def _reserve(self, org: str, project: str, artifact_ids: list[str], record: ResolutionRecord) -> None:
+        """Compare-and-set the resolution's id onto each candidate head
+        (nothing else changes). Idempotent for heads this resolution has
+        already reserved or already changed."""
+        for artifact_id in artifact_ids:
+            found = self._store.get(org, project, artifact_id)
+            if found is None:
+                raise ArtifactNotFoundError(artifact_id)
+            artifact, token = found
+            if artifact.resolution_id == record.resolution_id:
+                continue  # reserved (or already changed) by this resolution
+            if artifact.status != "active":
+                raise ConflictChangedError(f"{artifact_id!r} is no longer a current head")
+            if artifact.resolution_id is not None and self._is_pending_resolution(artifact.resolution_id):
+                raise ConflictChangedError(f"{artifact_id!r} is reserved by another resolution")
+            try:
+                self._store.put_if_match(
+                    artifact.model_copy(update={"resolution_id": record.resolution_id}),
+                    expected_version_token=token,
+                )
+            except ConcurrentModificationError as exc:
+                raise ConflictChangedError(f"{artifact_id!r} changed before it could be reserved") from exc
+
+    def _release(self, org: str, project: str, artifact_ids: list[str], record: ResolutionRecord) -> None:
+        """Clear this resolution's reservation from heads it didn't change
+        (best effort: a head that changed meanwhile isn't touched)."""
+        for artifact_id in artifact_ids:
+            found = self._store.get(org, project, artifact_id)
+            if found is None:
+                continue
+            artifact, token = found
+            if artifact.status == "active" and artifact.resolution_id == record.resolution_id and not artifact.merged_from:
+                try:
+                    self._store.put_if_match(
+                        artifact.model_copy(update={"resolution_id": None}), expected_version_token=token
+                    )
+                except ConcurrentModificationError:
+                    pass
 
     def _withdraw(self, org: str, project: str, artifact_id: str, record: ResolutionRecord) -> None:
         found = self._store.get(org, project, artifact_id)
@@ -891,21 +962,33 @@ class MAK4IEngine:
         if found is None:
             raise ArtifactNotFoundError(head_id)
         old, token = found
+        now = utc_now()
         if old.status == "superseded" and old.superseded_by:
             successor = self._store.get(org, project, old.superseded_by)
-            if successor is not None and successor[0].resolution_id == record.resolution_id:
-                return successor[0].artifact_id  # already applied
-        if old.status != "active":
+            if successor is not None:
+                if successor[0].resolution_id == record.resolution_id:
+                    return successor[0].artifact_id  # already applied
+                raise ConflictChangedError(f"{head_id!r} was superseded by another write")
+            if old.resolution_id != record.resolution_id:
+                raise ConflictChangedError(f"{head_id!r} is no longer a current head")
+            # Crash recovery (MAK-0004 §A8.2): this resolution marked the head
+            # superseded but died before writing the successor — finish it.
+            new_id = old.superseded_by
+        elif old.status != "active":
             raise ConflictChangedError(f"{head_id!r} is no longer a current head")
-        new_id = self._next_available_id(org, project, head_id)
-        now = utc_now()
-        try:
-            self._store.put_if_match(
-                old.model_copy(update={"status": "superseded", "superseded_by": new_id, "updated_at": now}),
-                expected_version_token=token,
-            )
-        except ConcurrentModificationError as exc:
-            raise ConflictChangedError(f"{head_id!r} changed during the resolution") from exc
+        else:
+            new_id = self._next_available_id(org, project, head_id)
+            try:
+                # The marker records which resolution owns this half-step.
+                self._store.put_if_match(
+                    old.model_copy(update={
+                        "status": "superseded", "superseded_by": new_id, "updated_at": now,
+                        "resolution_id": record.resolution_id,
+                    }),
+                    expected_version_token=token,
+                )
+            except ConcurrentModificationError as exc:
+                raise ConflictChangedError(f"{head_id!r} changed during the resolution") from exc
         successor = Artifact(
             artifact_id=new_id,
             artifact_type=old.artifact_type,
@@ -985,7 +1068,11 @@ class MAK4IEngine:
 
     def _open_conflicts(self, org: str, project: str) -> dict[str, Conflict]:
         pending = self._pending_by_subject(org, project)
-        result = self._resolver.resolve(self._store.all(org, project), resolving=set(pending))
+        result = self._resolver.resolve(
+            self._store.all(org, project),
+            resolving=set(pending),
+            pending_resolution_ids={r.resolution_id for r in pending.values()},
+        )
         conflicts = [self._to_conflict(org, project, d, pending) for d in result.conflicts]
         return {c.conflict_id: c for c in conflicts}
 

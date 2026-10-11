@@ -175,7 +175,7 @@ def test_cli_lifecycle_audit_and_inventory(tmp_path, monkeypatch, capsys):  # R4
     assert cli.main(["audit", "list"]) == 0
     events = json.loads(capsys.readouterr().out)
     archive = next(e for e in events if e["action"] == "project.archive")
-    assert archive["actor_auth_method"] == "credential" and archive["actor_principal_id"] == owner_id
+    assert archive["actor"] == {"principal_id": owner_id, "auth_method": "credential"}
 
     assert cli.main(["admin", "inventory"]) == 0
     out = capsys.readouterr().out

@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 try:
     # Single source of truth: `version` in pyproject.toml (PEP 440, e.g.
-    # "0.1.0rc5" for the v0.1.0-rc.5 release tag). Every other place that
+    # "2.0.0rc1" for the v2.0.0-rc.1 release tag). Every other place that
     # names the current release is checked against it by
     # scripts/check_release_consistency.py.
     __version__ = version("mak4i")

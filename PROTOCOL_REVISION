@@ -1,0 +1,5 @@
+# The MAK4I protocol revision this Reference implements and is tested
+# against (tests/test_protocol_conformance.py, CI). One line:
+#   <repository> <full commit SHA>
+# Update it deliberately when adopting a new protocol revision.
+https://github.com/talvikai/mak4i-protocol 62fca9387d12670f1b593420b8d6f49589986ce1

@@ -77,7 +77,13 @@ class World:
             project_id=self.project.project_id,
             permissions=["read", "write"],
         )
-        settings = dict(resource=RESOURCE, issuer=ORIGIN)
+        # The browser-session cookie's Max-Age is enforced by the client in
+        # *wall-clock* time, while these tests drive the server with a fake
+        # clock. A long TTL keeps the tests independent of wall-clock time
+        # (a machine that sleeps mid-test once expired the 15-minute cookie
+        # between two requests); expiry itself is tested deterministically
+        # on the server clock in test_browser_session_expires_on_the_server_clock.
+        settings = dict(resource=RESOURCE, issuer=ORIGIN, browser_session_ttl=86400)
         settings.update(settings_overrides)
         self.settings = OAuthSettings(**settings)
         self.oauth = self.make_service()
@@ -394,9 +400,21 @@ def test_csrf_is_enforced_on_sign_in(world):  # M10
     page = world.authorize()
     code, _ = world.oauth.issue_sign_in_code(actor=world.owner, principal_id=world.owner.principal_id)
     response = world.client.post("/oauth/sign-in", data={"code": code, "csrf": "forged"})
-    assert response.status_code == 400
-    assert "could not be verified" in response.text
+    assert response.status_code == 400, response.text
+    assert "could not be verified" in response.text, response.text
     assert page.status_code == 200
+
+
+def test_browser_session_expires_on_the_server_clock(tmp_path):  # M10 / §5.3.3
+    w = World(tmp_path, browser_session_ttl=900)
+    with w.client:
+        page = w.authorize()
+        w.clock.advance(901)  # server-side expiry, independent of the cookie's Max-Age
+        response = w.sign_in(page)
+        assert response.status_code == 400 and "session expired" in response.text
+        page = w.authorize()
+        w.clock.advance(899)
+        assert w.sign_in(page).status_code == 200
 
 
 def test_pages_forbid_framing_and_caching(world):  # M10
@@ -1021,3 +1039,41 @@ def test_cli_oauth_commands(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"revoked": 0}
     assert cli.main(["oauth", "client", "disable", "--client-id", client_id]) == 0
     assert '"status": "disabled"' in capsys.readouterr().out
+
+
+def test_token_events_distinguish_sign_in_from_refresh(world, caplog):  # M8 evidence
+    caplog.set_level(logging.INFO)
+    tokens = world.tokens()
+    world.refresh(tokens["refresh_token"])
+    events = [json.loads(r.getMessage()) for r in caplog.records if "OAUTH_TOKEN_ISSUED" in r.getMessage()]
+    assert [e["grant_type"] for e in events] == ["authorization_code", "refresh_token"]
+    assert events[0]["authorization_id"] == events[1]["authorization_id"]
+
+
+def test_restoring_an_old_database_cannot_resurrect_revoked_oauth_access(tmp_path, monkeypatch, capsys):
+    """Restoring a backup taken before a revocation brings the revoked
+    authorization back in the database; `mak4i admin revoke-oauth --all`
+    (run by the bootstrap restore) closes that hole."""
+    import shutil
+
+    from mak4i import cli
+
+    w = World(tmp_path)
+    with w.client:
+        tokens = w.tokens()
+        backup = tmp_path / "backup.db"
+        shutil.copy(tmp_path / "cp.db", backup)  # "backup" while the authorization is active
+        w.oauth.revoke_all(actor=w.owner, principal_id=w.owner.principal_id)
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 401
+        w.db.dispose()
+        shutil.copy(backup, tmp_path / "cp.db")  # "restore"
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 200  # resurrected!
+
+        monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{tmp_path / 'cp.db'}")
+        monkeypatch.setenv("MAK4I_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["admin", "revoke-oauth", "--all", "--reason", "restored_from_backup"]) == 0
+        assert json.loads(capsys.readouterr().out) == {"revoked": 1}
+        w.db.dispose()
+        assert w.mcp(tokens["access_token"], "initialize", {}).status_code == 401
+        assert w.refresh(tokens["refresh_token"]).json()["error"] == "invalid_grant"

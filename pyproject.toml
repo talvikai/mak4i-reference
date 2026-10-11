@@ -1,6 +1,6 @@
 [project]
 name = "mak4i"
-version = "0.1.0rc5"
+version = "2.0.0rc1"
 description = "MAK4I reference implementation — durable project knowledge shared across real AI clients via MCP."
 requires-python = ">=3.11"
 license = "MIT"
@@ -21,6 +21,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "google-auth>=2.30",
+    # Protocol conformance tests (tests/test_protocol_conformance.py).
+    "jsonschema>=4.23",
+    "rfc3339-validator>=0.1.4",
 ]
 
 [project.scripts]

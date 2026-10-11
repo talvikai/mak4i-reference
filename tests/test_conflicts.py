@@ -360,8 +360,8 @@ def test_candidate_change_mid_resolution_aborts_and_is_recorded(world, artifact_
     original = engine._withdraw
 
     def interfering_withdraw(org, project, artifact_id, record):
-        # A concurrent supersede of this candidate wins the race (it got past
-        # the pending-resolution check before the record was written).
+        # Out-of-band storage modification after reservation (the interfaces
+        # can't write a reserved head): the anomaly path of §A8.3.
         artifact, token = engine._store.get(org, project, artifact_id)
         engine._store.put_if_match(
             artifact.model_copy(update={"status": "superseded", "superseded_by": artifact_id + "-002"}),
@@ -381,6 +381,101 @@ def test_candidate_change_mid_resolution_aborts_and_is_recorded(world, artifact_
     assert still.conflict_id == conflict.conflict_id  # aborted resolutions don't advance the generation
     assert [c.artifact_id for c in still.candidates] == ["red", "yellow-002"]
     assert _resolve(world, still, action="select_winner", winner_artifact_id="red").state == "completed"
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+@pytest.mark.parametrize("action", ["select_winner", "merge", "separate_subjects"])
+def test_reservation_failure_aborts_with_no_semantic_effects(world, artifact_type, action, monkeypatch):  # §A8.2, C16
+    # A write that committed between the conflict read and the reservation
+    # (e.g. a supersede that passed its checks before the pending record
+    # existed) makes reservation fail: nothing may have changed.
+    conflict = _red_yellow(world, artifact_type)
+    engine = world["engine"]
+    original = engine._reserve
+
+    def racing_reserve(org, project, artifact_ids, record):
+        artifact, token = engine._store.get(org, project, "yellow")
+        engine._store.put_if_match(
+            artifact.model_copy(update={"status": "superseded", "superseded_by": "yellow-002"}),
+            expected_version_token=token,
+        )
+        engine._store.put_new(artifact.model_copy(update={
+            "artifact_id": "yellow-002", "version": "2.0", "supersedes": "yellow", "content": "Use YELLOW v2"}))
+        return original(org, project, artifact_ids, record)
+
+    kwargs = {
+        "select_winner": {"winner_artifact_id": "red"},
+        "merge": {"into_artifact_id": "red", "content": "merged"},
+        "separate_subjects": {"assignments": [{"artifact_id": "red", "subject_key": "primary"},
+                                              {"artifact_id": "yellow", "subject_key": "session"}]},
+    }[action]
+    monkeypatch.setattr(engine, "_reserve", racing_reserve)
+    with pytest.raises(ConflictChangedError):
+        _resolve(world, conflict, action=action, **kwargs)
+    monkeypatch.setattr(engine, "_reserve", original)
+
+    (record,) = world["resolutions"].for_project(world["org"], world["project"])
+    assert record.state == "aborted" and record.effects == []
+    red = world["store"].get(world["org"], world["project"], "red")[0]
+    assert red.status == "active" and red.resolution_id is None  # reservation released, content untouched
+    assert red.content == "Use RED"
+    (still,) = _current(world).conflicts  # still open, same id: aborts don't advance the generation
+    assert still.conflict_id == conflict.conflict_id and still.state == "open"
+    assert [c.artifact_id for c in still.candidates] == ["red", "yellow-002"]
+    assert _current(world).integrity_errors == []
+    assert _resolve(world, still, action="select_winner", winner_artifact_id="red").state == "completed"
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_writes_to_reserved_heads_are_rejected(world, artifact_type, monkeypatch):  # §A8.3, C16
+    # The flagged case: separate_subjects has applied red's assignment when a
+    # writer tries to change yellow. Reservation makes that write fail instead
+    # of aborting the resolution half-way.
+    conflict = _red_yellow(world, artifact_type)
+    engine = world["engine"]
+    original = engine._resolution_successor
+    rejected = []
+
+    def writer_races(*args, **kwargs):
+        for target in ("red", "yellow"):
+            with pytest.raises(ConflictChangedError) as exc:
+                engine.supersede_artifact(principal=world["yellow_bot"], project=world["project"],
+                                          old_id=target, content="sneaky", reason="race")
+            rejected.append(str(exc.value))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_resolution_successor", writer_races)
+    record = _resolve(
+        world, conflict, action="separate_subjects",
+        assignments=[{"artifact_id": "red", "subject_key": "primary"},
+                     {"artifact_id": "yellow", "subject_key": "session"}],
+    )
+    assert record.state == "completed" and rejected and all("reserved" in m for m in rejected)
+    package = _current(world)
+    assert package.conflicts == [] and package.integrity_errors == []
+    assert all(a.content != "sneaky" for a in package.artifacts)
+    red = world["store"].get(world["org"], world["project"], "red")[0]
+    assert red.status == "active" and red.resolution_id is None  # unchanged candidate released
+    v2 = engine.supersede_artifact(principal=world["red_bot"], project=world["project"],
+                                   old_id="red", content="Use RED v2", reason="later edit")
+    assert v2.status == "active"
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_discovery_defaults(world, artifact_type):  # MAK-0008 §10.6, M17
+    conflict = _red_yellow(world, artifact_type)
+    engine, who, project = world["engine"], world["human"], world["project"]
+    assert [c.state for c in engine.list_conflicts(principal=who, project=project)] == ["open"]
+    _resolve(world, conflict, action="select_winner", winner_artifact_id="red")
+    assert [a.artifact_id for a in _current(world).artifacts] == ["red"]  # never withdrawn as current
+    assert [a.artifact_id for a in engine.search(principal=who, project=project)] == ["red"]  # default active
+    assert [a.artifact_id for a in engine.search(principal=who, project=project, status="withdrawn")] == ["yellow"]
+    assert [v.status for v in engine.get_history(principal=who, project=project, lineage_id="yellow")] == ["withdrawn"]
+    assert engine.list_conflicts(principal=who, project=project) == []  # default open
+    resolved = engine.get_conflict(principal=who, project=project, conflict_id=conflict.conflict_id)
+    assert resolved.state == "resolved"
+    assert sorted(c.artifact_id for c in resolved.candidates) == ["red", "yellow"]  # withdrawn one included
+    assert world["store"].get(world["org"], project, "yellow")[0].status == "withdrawn"
 
 
 @pytest.mark.parametrize("artifact_type", TYPES)

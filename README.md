@@ -12,7 +12,7 @@ and specification are maintained separately at
 <https://github.com/talvikai/mak4i-protocol>; this is one implementation
 of it, and others are possible.
 
-**Current release: [`v0.1.0-rc.5`](https://github.com/talvikai/mak4i-reference/releases/tag/v0.1.0-rc.5)**
+**Current release: [`v2.0.0-rc.1`](https://github.com/talvikai/mak4i-reference/releases/tag/v2.0.0-rc.1)**
 (what changed: [`CHANGELOG.md`](CHANGELOG.md)).
 
 > **Developer Preview: not a production-supported release.** MAK4I

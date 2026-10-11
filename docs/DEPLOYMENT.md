@@ -9,7 +9,7 @@ guide; installation and operation have exactly two canonical guides:
 | **Local Developer Setup** | one developer on their own machine; stdio or local HTTP; nothing shared | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) |
 | **Enterprise Self-Hosted** | a shared server on one Linux VM for a team and remote AI clients, over HTTPS | [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md) |
 
-> **Developer Preview.** `v0.1.0-rc.5` is a release candidate, not a
+> **Developer Preview.** `v2.0.0-rc.1` is a release candidate, not a
 > production-supported release.
 
 ## Architecture
