@@ -1,46 +1,63 @@
 """Reference outputs validated against the MAK4I protocol's canonical JSON
-Schemas (talvikai/mak4i-protocol, `schemas/`).
+Schemas at the revision pinned in `PROTOCOL_REVISION`.
 
-Runs when a protocol checkout is available — `MAK4I_PROTOCOL_DIR`, or a
-sibling `../mak4i-protocol`, or `~/dev/mak4i-protocol` — and `jsonschema`
-is installed; skipped otherwise. Every instance comes from a real interface
-path (MCP over HTTP with a credential and with OAuth, the OAuth metadata
-endpoints, the admin event log), not hand-built fixtures.
+Mandatory: these tests FAIL (never skip) when the pinned schemas are not
+available. Get them with `scripts/fetch_protocol.sh` (CI does), or point
+`MAK4I_PROTOCOL_DIR` at a checkout of exactly that revision. Every instance
+comes from a real interface path (MCP over HTTP with a credential and with
+OAuth, the OAuth metadata endpoints, the admin event log), not hand-built
+fixtures.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
+import jsonschema
 import pytest
 
-jsonschema = pytest.importorskip("jsonschema")
-referencing = pytest.importorskip("referencing")
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def _protocol_schemas() -> Path | None:
-    candidates = [
-        os.environ.get("MAK4I_PROTOCOL_DIR"),
-        str(Path(__file__).resolve().parents[2] / "mak4i-protocol"),
-        str(Path.home() / "dev" / "mak4i-protocol"),
-    ]
-    for candidate in candidates:
-        if candidate and (Path(candidate) / "schemas" / "common.schema.json").exists():
-            return Path(candidate) / "schemas"
-    return None
+def _pinned() -> tuple[str, str]:
+    for line in (ROOT / "PROTOCOL_REVISION").read_text().splitlines():
+        if line.strip() and not line.startswith("#"):
+            repo, sha = line.split()
+            return repo, sha
+    raise AssertionError("PROTOCOL_REVISION has no pin")
 
 
-SCHEMAS = _protocol_schemas()
-pytestmark = pytest.mark.skipif(SCHEMAS is None, reason="mak4i-protocol checkout not found")
+def _protocol_schemas() -> Path:
+    _repo, sha = _pinned()
+    root = Path(os.environ.get("MAK4I_PROTOCOL_DIR") or ROOT / ".protocol")
+    schemas = root / "schemas"
+    if not (schemas / "common.schema.json").exists():
+        pytest.fail(
+            f"protocol schemas not found at {schemas}. Run scripts/fetch_protocol.sh "
+            "(or set MAK4I_PROTOCOL_DIR to a checkout of the pinned revision)."
+        )
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
+    if head.returncode != 0 or head.stdout.strip() != sha:
+        pytest.fail(
+            f"protocol checkout at {root} is {head.stdout.strip() or 'not a git checkout'}, "
+            f"but PROTOCOL_REVISION pins {sha}. Run scripts/fetch_protocol.sh."
+        )
+    return schemas
+
+
+def test_protocol_revision_is_pinned():
+    _repo, sha = _pinned()
+    assert len(sha) == 40 and all(c in "0123456789abcdef" for c in sha)
 
 
 @pytest.fixture(scope="module")
 def validate():
     from referencing import Registry, Resource
 
-    docs = {p.name: json.loads(p.read_text()) for p in SCHEMAS.glob("*.schema.json")}
+    docs = {p.name: json.loads(p.read_text()) for p in _protocol_schemas().glob("*.schema.json")}
     registry = Registry().with_resources((d["$id"], Resource.from_contents(d)) for d in docs.values())
 
     def check(schema_name: str, instance, fragment: str = ""):

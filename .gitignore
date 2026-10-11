@@ -25,6 +25,8 @@ build/
 # `mak4i serve` — control-plane DB, artifact store, and the local config
 # holding a raw credential token. Never commit any of this.
 .mak4i/
+# Pinned protocol checkout for conformance tests (scripts/fetch_protocol.sh).
+/.protocol/
 /mak4i-control-plane.db
 /artifacts/local/
 

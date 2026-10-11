@@ -20,6 +20,8 @@ jobs:
           version: "0.11.32"
       - name: Install
         run: uv sync --frozen --extra dev --no-editable
+      - name: Fetch the pinned protocol revision (conformance schemas)
+        run: scripts/fetch_protocol.sh
       - name: Test suite
         run: uv run --no-sync pytest -q
       - name: Release consistency
