@@ -11,8 +11,10 @@ from mak4i.store.base import (
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
     ConcurrentModificationError,
+    InvalidArtifactIdError,
     Scope,
     VersionToken,
+    is_safe_artifact_id,
 )
 
 
@@ -42,6 +44,8 @@ class LocalJSONStore:
     def get(
         self, organization_id: str, project: str, artifact_id: str
     ) -> tuple[Artifact, VersionToken] | None:
+        if not is_safe_artifact_id(artifact_id):
+            return None  # can't name a record in this scope
         record = self._read_record(organization_id, project, artifact_id)
         if record is None:
             return None
@@ -117,18 +121,28 @@ class LocalJSONStore:
         return self._root / organization_id / project
 
     def _path_for(self, artifact: Artifact) -> Path:
-        return (
-            self._dir_for(artifact.organization_id, artifact.project)
-            / f"{artifact.artifact_id}.json"
-        )
+        return self._path(artifact.organization_id, artifact.project, artifact.artifact_id)
 
     def _path(self, organization_id: str, project: str, artifact_id: str) -> Path:
-        return self._dir_for(organization_id, project) / f"{artifact_id}.json"
+        return self._contained(organization_id, project, artifact_id, ".json")
+
+    def _contained(self, organization_id: str, project: str, artifact_id: str, suffix: str) -> Path:
+        """`<scope dir>/<artifact_id><suffix>`, refusing any id that would
+        name a file outside the scope directory."""
+        scope_dir = self._dir_for(organization_id, project)
+        path = scope_dir / f"{artifact_id}{suffix}"
+        if not is_safe_artifact_id(artifact_id) or path.parent != scope_dir:
+            raise InvalidArtifactIdError(artifact_id)
+        if not path.resolve().is_relative_to(self._root.resolve()):
+            raise InvalidArtifactIdError(artifact_id)
+        return path
 
     def _locked(self, artifact: Artifact):
-        lock_dir = self._dir_for(artifact.organization_id, artifact.project)
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        return _FileLock(lock_dir / f"{artifact.artifact_id}.lock")
+        lock_path = self._contained(
+            artifact.organization_id, artifact.project, artifact.artifact_id, ".lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        return _FileLock(lock_path)
 
     def _read_record(
         self, organization_id: str, project: str, artifact_id: str

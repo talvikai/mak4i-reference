@@ -21,6 +21,26 @@ class ArtifactStoreError(Exception):
     """Base class for all ArtifactStore errors."""
 
 
+def is_safe_artifact_id(artifact_id: str) -> bool:
+    """True if `artifact_id` can't address anything outside its own
+    `(organization_id, project)` scope when used as a storage name: it is
+    non-empty, isn't `.` or `..`, and contains no path separator or control
+    character. New lineages must satisfy this; stores use it as a backstop."""
+    return (
+        isinstance(artifact_id, str)
+        and artifact_id not in ("", ".", "..")
+        and "/" not in artifact_id
+        and "\\" not in artifact_id
+        and not any(ord(ch) < 32 or ord(ch) == 127 for ch in artifact_id)
+    )
+
+
+class InvalidArtifactIdError(ArtifactStoreError):
+    def __init__(self, artifact_id: str):
+        super().__init__("artifact id is not a valid storage name")
+        self.artifact_id = artifact_id
+
+
 class ArtifactAlreadyExistsError(ArtifactStoreError):
     def __init__(self, artifact_id: str):
         super().__init__(f"artifact already exists: {artifact_id}")
