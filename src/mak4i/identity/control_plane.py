@@ -90,9 +90,9 @@ class ControlPlane:
             raise CredentialInvalidError("unknown")
         now = self._now()
         if credential.status == "revoked" or credential.revoked_at is not None:
-            raise CredentialInvalidError("revoked")
+            raise CredentialInvalidError("revoked", credential_id=credential.credential_id)
         if not credential.is_usable(now):
-            raise CredentialInvalidError("expired")
+            raise CredentialInvalidError("expired", credential_id=credential.credential_id)
 
         principal = self._store.get_principal(credential.principal_id)
         if principal is None:

@@ -1,5 +1,7 @@
 import pytest
 
+from mak4i.errors import ArtifactExistsError
+
 from mak4i.api import ArtifactNotActiveError, MAK4IEngine
 from mak4i.identity import AccessDeniedError, Authorizer, ControlPlane
 from mak4i.identity.memory_store import InMemoryControlPlaneStore
@@ -150,8 +152,9 @@ def test_create_artifact_rejects_duplicate_id(world):
         content="Use Redis for application caching.",
     )
     engine.create_artifact(**kwargs)
-    with pytest.raises(ArtifactAlreadyExistsError):
+    with pytest.raises(ArtifactExistsError) as exc:  # MAK-0008 §9 `artifact_exists`
         engine.create_artifact(**kwargs)
+    assert exc.value.code == "artifact_exists"
 
 
 def test_create_artifact_defaults_tags_to_empty_list(world):

@@ -214,7 +214,7 @@ def test_log_create_threads_identity_context(audit, caplog):
     record = _records(caplog)[0]
     assert record["organization_id"] == "org_1"
     assert record["project_id"] == "prj_1"
-    assert record["auth_method"] == "operator_impersonation"
+    assert record["auth_method"] == "operator"  # MAK-0006 §7.1 vocabulary
 
 
 def test_log_authenticate_success_and_failure(audit, caplog):

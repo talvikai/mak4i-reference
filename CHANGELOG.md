@@ -38,7 +38,7 @@ is independent.
   author principal, `principal_type`, `agent_id`, display name at write
   time, authentication method, credential or OAuth client, and the MCP
   client's self-reported name marked `verified: false`. Identity arguments
-  in tool calls are ignored and never change authorship or access.
+  never change authorship or access (see "Protocol alignment" below).
   Versions written earlier have no `provenance` and are not rewritten.
 - `principal rename` and `principal deactivate` (deactivation also revokes
   the principal's OAuth authorizations).
@@ -90,6 +90,55 @@ is independent.
 - Docs: stdio vs HTTP authentication, OAuth state across restarts (no
   signing keys), custom authentication adapter trust boundary, and an
   explicit single-replica statement.
+
+### Protocol alignment (talvikai/mak4i-protocol#7)
+
+Aligns with the protocol revision merged in mak4i-protocol#7
+(`PROTOCOL_REVISION` → `4a69026`). MAK-0009 (organization knowledge,
+rules, resource groups) is architecture-defined and **not** implemented.
+
+- `mak4i_whoami` reports `protocol: {version, profiles}` and always carries
+  the `scopes` key (`null` for credential sessions) (MAK-0008 §10.5). The
+  Reference claims `server-project-records` plus its transport profile
+  (`transport-stdio` or `transport-http-credential`); `transport-http-oauth`
+  is not claimed until real-client interoperability (M16) is verified.
+- **Breaking: closed tool inputs** (MAK-0008 §10.2). Unknown arguments,
+  wrong types and out-of-range values fail `validation_error`; an identity
+  claim (`agent_id`, `principal_id`, `created_by`, `author`, `actor`,
+  `provenance`) that differs from the authenticated caller fails
+  `identity_mismatch`. Advertised input schemas are closed and carry the
+  enums and patterns the server enforces. `mak4i_search` rejects unknown
+  `status` values (absent = `active`); so does `mak4i search --status`.
+- **Breaking:** creating an `artifact_id` that already exists fails
+  `artifact_exists` (was `validation_error`); nothing is written.
+- Error results carry `error.correlation_id`, the same id as the audit
+  events of that call (MAK-0008 §9.4).
+- A stdio session whose credential was revoked or expired gets
+  `access_denied` (MAK-0006 §6.4).
+- **Refused-write security events** (MAK-0006 §8.6): every refused create,
+  supersede or conflict resolution — validation, identity mismatch,
+  authorization, scope, `artifact_exists`, stale head, conflict changes —
+  logs `WRITE_REFUSED` with principal, agent id, authentication method,
+  credential or OAuth client, organization, project, operation, error code
+  and correlation id. A 403 `insufficient_scope` is logged as an
+  attributed `ACCESS_DENIED` (tool, required scopes) instead of an
+  anonymous authentication failure. `AUTHENTICATE_FAILURE` for a revoked
+  or expired credential names the `credential_id`.
+- Aborted conflict resolutions are audited with the resolving principal as
+  `actor` (was `system`) (MAK-0004 §A9).
+- With `MAK4I_TRUSTED_PROXIES` unset, forwarded headers are ignored from
+  every peer, including loopback (uvicorn trusted loopback by default)
+  (MAK-0008 §3.3). A reverse proxy on the same host must now be listed.
+- CLI writes are audited too: `MAK4I_AUDIT_LOG` = `off` | `stderr` | a
+  path; the default is `.mak4i/audit.log` in an initialized local
+  environment, otherwise stderr.
+- Audit and administrative events use the protocol vocabulary
+  `auth_method: "operator"` for CLI operator actions; instance-operator
+  administrative events have a `null` actor principal (MAK-0006 §7.6).
+- New dependency: `jsonschema` (tool input validation).
+- Docs: MCP tool ↔ CLI command mapping and the SDK boundary
+  (`docs/MVP_ARCHITECTURE.md` §10); `docs/CONFORMANCE_EVIDENCE.md` maps
+  the protocol's acceptance criteria to tests and limitations.
 
 ### Upgrade
 

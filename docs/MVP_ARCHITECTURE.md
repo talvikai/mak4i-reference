@@ -337,6 +337,35 @@ Event types unchanged from Revision 2 (`CREATE`, `SUPERSEDE`, `SUPERSEDE_REJECTE
 
 **[PROTOCOL]**: one MAK4I Engine, callable identically by tests, the CLI, and the MCP server — the requirements doc is explicit that "the internal engine should remain callable by tests/CLI without MCP so later REST, SDK, CLI, or other transports can reuse the same behavior."
 
+**SDK boundary.** `MAK4IEngine` (`src/mak4i/api.py`) is the *server's*
+library surface: it runs inside a MAK4I server process, next to the store
+and control plane, and trusts the `Principal` it is handed. It is not a
+client API, and a client SDK must not import it. A client SDK talks to a
+MAK4I server over a protocol binding (today MCP, MAK-0008) and follows
+the client requirements in MAK-0008 §13; the server authenticates the
+caller and authorizes every call. Server-side transports (MCP, the CLI,
+a future REST binding) reuse the engine; client SDKs do not.
+
+**Tool ↔ CLI mapping** (MAK-0008 §10.3). The CLI calls the same engine
+methods as the MCP tools, so it applies the same authorization and
+produces the same records and error codes. It is an operator interface:
+`--principal` names the principal the operator acts as, and provenance
+records `auth_method: "operator"`.
+
+| MCP tool | CLI command | Notes |
+|---|---|---|
+| `mak4i_whoami` | — | Identity comes from the credential; the CLI has no caller credential. `mak4i principal show` shows a principal. |
+| `mak4i_list_projects` | `mak4i project list` | The CLI lists every project in an organization (owner-only); the tool lists the caller's granted projects. |
+| `mak4i_create` | `mak4i create` | |
+| `mak4i_supersede` | `mak4i supersede` | |
+| `mak4i_search` | `mak4i search` | `--status` defaults to `active`; same allowed values. |
+| `mak4i_get_current` | `mak4i get-current` | |
+| `mak4i_history` | `mak4i history` | |
+| `mak4i_list_conflicts` | `mak4i conflict list` | |
+| `mak4i_get_conflict` | `mak4i conflict show` | |
+| `mak4i_resolve_conflict` | `mak4i conflict resolve` | `--winner` / `--into` / `--content` map to the per-action parameters. |
+| — | `mak4i doctor` | Integrity check; operator-only, not model-callable. |
+
 **[MVP CHOICE]**, per v0.3.1 §15/§15.1: the MCP server (`src/mak4i/mcp_server.py`) deploys as a single **Cloud Run** service, Streamable HTTP over HTTPS. This replaces Revision 2's demo-time ngrok tunnel entirely — Cloud Run gives a stable HTTPS URL for the life of the deployment, not just the life of a demo session.
 
 **Hosting details:**

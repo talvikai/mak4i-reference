@@ -14,6 +14,8 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
+    # MAK-0008 §10.2: tool arguments are validated against the advertised input schema.
+    "jsonschema>=4.23",
 ]
 
 [project.optional-dependencies]
