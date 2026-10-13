@@ -1219,6 +1219,11 @@ def configure_audit_logging(level: str = "INFO") -> None:
     actually work). format="%(message)s" keeps each line pure JSON, as
     AuditLogger emits it."""
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(message)s")
+    # MAK-0006 §8.6: security events are always emitted. MAK4I_LOG_LEVEL
+    # tunes diagnostic logging only; it never silences the audit stream.
+    from mak4i.audit import LOGGER_NAME
+
+    logging.getLogger(LOGGER_NAME).setLevel(logging.INFO)
 
 
 def _stdio_authenticate(control_plane: ControlPlane, audit: AuditLogger, token: str, *, quiet: bool = False):

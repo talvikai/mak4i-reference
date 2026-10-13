@@ -155,18 +155,44 @@ def test_cli_subprocess_attributes_successful_refused_and_denied_writes(installa
         _assert_no_secrets(result.stderr, inst["token"], hash_token(inst["token"]))
 
 
-def test_cli_audit_log_can_be_redirected_or_disabled(installation, tmp_path):
+def test_cli_audit_log_can_be_redirected_but_not_disabled(installation, tmp_path):  # MAK-0006 §8.6
     inst = installation
     args = ["get-current", "--project", inst["project"], "--principal", inst["owner"].principal_id]
     path = tmp_path / "audit.jsonl"
     inst["env"]["MAK4I_AUDIT_LOG"] = str(path)
     to_file = _cli(inst, *args)
     assert to_file.returncode == 0 and not _events(to_file.stderr)
+    json.loads(to_file.stdout)
     assert any(e["event"] == "GET_CURRENT" for e in _events(path.read_text()))
-    inst["env"]["MAK4I_AUDIT_LOG"] = "off"
-    silent = _cli(inst, *args)
-    assert silent.returncode == 0 and not _events(silent.stderr)
-    json.loads(silent.stdout)
+    for value in ("off", "OFF", "none", "0"):
+        inst["env"]["MAK4I_AUDIT_LOG"] = value
+        refused = _cli(inst, *args)
+        assert refused.returncode != 0 and "can't disable audit events" in refused.stderr
+        assert not refused.stdout.strip()
+
+
+def test_server_log_level_never_silences_security_events(capfd):  # MAK-0006 §8.6
+    import logging as _logging
+
+    from mak4i.audit import AuditLogger
+    from mak4i.mcp_server import configure_audit_logging
+
+    root = _logging.getLogger()
+    saved = (list(root.handlers), root.level)
+    try:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+        configure_audit_logging("ERROR")
+        AuditLogger().log("WRITE_REFUSED", correlation_id="c-1", actor="prn_x", error_code="access_denied")
+        _logging.getLogger("mak4i.diagnostics").info("diagnostic noise")
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+        for handler in saved[0]:
+            root.addHandler(handler)
+        root.setLevel(saved[1])
+    err = capfd.readouterr().err
+    assert '"event": "WRITE_REFUSED"' in err and "diagnostic noise" not in err
 
 
 # -- a real stdio server process ------------------------------------------------

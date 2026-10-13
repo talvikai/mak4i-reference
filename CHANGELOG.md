@@ -134,7 +134,10 @@ rules, resource groups) is architecture-defined and **not** implemented.
   (MAK-0008 §3.3). A reverse proxy on the same host must now be listed.
 - CLI commands emit the same audit and security events as the server, as
   JSON lines on **stderr** (stdout stays machine-readable);
-  `MAK4I_AUDIT_LOG` = `stderr` (default) | a file path | `off`.
+  `MAK4I_AUDIT_LOG` = `stderr` (default) or a file path. Security events
+  can't be switched off: `MAK4I_AUDIT_LOG=off` is refused, and
+  `MAK4I_LOG_LEVEL` (now diagnostic logging only) no longer silences them
+  (it did at `WARNING` or above).
 - Unexpected failures of a write are logged as `WRITE_FAILED` (not as a
   refusal); recovered resolutions as `RESOLUTION_RECOVERED` with the
   original actor and outcome. A stdio server logs its startup
@@ -156,6 +159,18 @@ rules, resource groups) is architecture-defined and **not** implemented.
   `MAK4I_TLS_TERMINATED_UPSTREAM=1` declares a TLS-terminating proxy or
   platform in front of it. The Compose stack sets it; set it yourself for
   any other container or `mak4i serve --host <non-loopback>` deployment.
+- `docs/ADMIN_CLI.md`: inventory of every administrative command (who may
+  run it, what it records, its output), with acceptance tests that run the
+  real `mak4i` executable for provisioning, disabling, grants, credential
+  and OAuth revocation, and permission boundaries.
+- **Fixed:** `mak4i admin revoke-oauth --all` (after a restore) now records
+  its administrative event in every affected organization, so their owners
+  see it in `mak4i audit list` (it was recorded without an organization).
+- **Fixed:** `mak4i credential issue --expires-at <invalid>` prints an error
+  line instead of a traceback.
+- CIMD transport security is tested with the real TLS handshake (untrusted,
+  wrong-host and expired certificates refused) and address pinning (no DNS
+  rebinding; non-public addresses refused before connecting).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).

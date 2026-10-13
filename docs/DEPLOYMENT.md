@@ -229,6 +229,12 @@ deployment:
   driver by default). Cloud Run: Cloud Logging. systemd: the journal. The
   CLI writes to the terminal's stderr, or to the file named by
   `MAK4I_AUDIT_LOG`.
+- **Always on.** MAK4I has no setting that disables these events:
+  `MAK4I_LOG_LEVEL` affects diagnostic logging only, and the CLI's
+  `MAK4I_AUDIT_LOG` chooses stderr or a file. Discarding stderr (or sending
+  the file to the null device) is a deployment decision that forfeits the
+  MAK-0006 §8.6 evidence; the implementation's conformance covers emitting
+  the events, the deployment's covers keeping them.
 - **Rotation and retention.** Configure them in your logging driver or
   pipeline (for example Docker's `max-size`/`max-file` options, or a Cloud
   Logging bucket retention period). MAK4I neither rotates nor deletes logs.

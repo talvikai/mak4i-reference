@@ -667,6 +667,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "google-auth" },
     { name = "jsonschema" },
     { name = "pytest" },
@@ -677,6 +678,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
+    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=43" },
     { name = "google-auth", marker = "extra == 'dev'", specifier = ">=2.30" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "jsonschema", specifier = ">=4.23" },

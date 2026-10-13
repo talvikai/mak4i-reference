@@ -387,6 +387,9 @@ Once you hold the owner's token you can stop passing `--actor`: pass the
 token in the environment (`docker compose exec -e MAK4I_TOKEN mak4i …`,
 with `MAK4I_TOKEN` exported in your shell) and the CLI authenticates it.
 
+Every administrative command, who may run it, what it records and what it
+prints is listed in the [administrative CLI reference](ADMIN_CLI.md).
+
 ## 7. Connect AI clients
 
 There are two ways to authenticate a client: a static bearer credential

@@ -166,19 +166,31 @@ class SqlOAuthStore:
             )
         return changed == 1
 
-    def revoke_all_active(self, reason: str, now: datetime) -> int:
+    def revoke_all_active(self, reason: str, now: datetime) -> dict[str, int]:
         """Revoke every active authorization and its tokens (instance-wide).
         Used after restoring a backup, which can bring back authorizations
-        that were revoked after the backup was taken."""
-        a, tok = schema.oauth_authorizations, schema.oauth_tokens
+        that were revoked after the backup was taken. Returns how many were
+        revoked per organization (of the authorization's principal)."""
+        from sqlalchemy import func, select
+
+        a, tok, p = schema.oauth_authorizations, schema.oauth_tokens, schema.principals
         with self._engine.begin() as conn:
-            count = conn.execute(
+            per_org = {
+                org: n
+                for org, n in conn.execute(
+                    select(p.c.organization_id, func.count())
+                    .select_from(a.join(p, a.c.principal_id == p.c.principal_id))
+                    .where(a.c.status == "active")
+                    .group_by(p.c.organization_id)
+                )
+            }
+            conn.execute(
                 a.update()
                 .where(a.c.status == "active")
                 .values(status="revoked", revoked_reason=reason, revoked_at=_utc(now))
-            ).rowcount
+            )
             conn.execute(tok.update().where(tok.c.status != "revoked").values(status="revoked"))
-        return count
+        return per_org
 
     def list_authorizations(
         self,
