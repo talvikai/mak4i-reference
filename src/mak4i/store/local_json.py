@@ -118,6 +118,11 @@ class LocalJSONStore:
     # -- internals --------------------------------------------------------
 
     def _dir_for(self, organization_id: str, project: str) -> Path:
+        # The scope segments are storage names too: neither may step into
+        # another organization's or project's directory.
+        for segment in (organization_id, project):
+            if not is_safe_artifact_id(segment):
+                raise InvalidArtifactIdError(segment)
         return self._root / organization_id / project
 
     def _path_for(self, artifact: Artifact) -> Path:
@@ -167,6 +172,9 @@ class LocalJSONStore:
     def _iter_all(
         self, organization_id: str | None = None, project: str | None = None
     ):
+        for segment in (organization_id, project):
+            if segment is not None and not is_safe_artifact_id(segment):
+                raise InvalidArtifactIdError(segment)
         if organization_id is not None and project is not None:
             glob = f"{organization_id}/{project}/*.json"
         elif organization_id is not None:

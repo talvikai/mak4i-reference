@@ -155,3 +155,44 @@ def test_mcp_create_reports_validation_error(world, artifact_type):
     assert result.structured_content["error"]["code"] == "validation_error"
     assert not (world["tmp"] / "escaped.json").exists()
     assert not any(p.name == "escaped.json" for p in world["tmp"].rglob("*"))
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_direct_store_calls_stay_inside_their_tenant(world, artifact_type):
+    # A record is addressed by (organization, project, id); the same safe id
+    # in another organization or project is a different, unreachable record.
+    store = world["store"]
+    mine = _create(world, "shared-name", artifact_type)
+    theirs = _create(world, "shared-name", artifact_type, who="other_writer", project=world["other_project"])
+    assert store.get(world["org"], world["project"], "shared-name")[0].content == mine.content
+    assert store.get(world["org"], world["other_project"], "shared-name") is None
+    assert store.get(world["other_org"], world["project"], "shared-name") is None
+    assert store.get(world["other_org"], world["other_project"], "shared-name")[0].organization_id == theirs.organization_id
+    # Scope segments are storage names too: a traversal into the other
+    # tenant's directory (which stays inside the store root) is refused.
+    escapes = [
+        (world["org"], f"../../{world['other_org']}/{world['other_project']}"),
+        (f"{world['org']}/../{world['other_org']}", world["other_project"]),
+        ("..", world["other_project"]),
+    ]
+    for org, project in escapes:
+        with pytest.raises(InvalidArtifactIdError):
+            store.get(org, project, "shared-name")
+        with pytest.raises(InvalidArtifactIdError):
+            store.query(org, project)
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_unsafe_id_is_a_refused_write_event(world, artifact_type, caplog):
+    import json
+    import logging
+
+    from mak4i.audit import LOGGER_NAME
+
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    with pytest.raises(ValidationFailedError):
+        _create(world, "../escaped", artifact_type)
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == LOGGER_NAME]
+    (refused,) = [e for e in events if e["event"] == "WRITE_REFUSED"]
+    assert refused["error_code"] == "validation_error" and refused["principal_id"] == world["writer"].principal_id
+    assert "../escaped" not in json.dumps(refused)  # the requested id is not echoed into the security log
