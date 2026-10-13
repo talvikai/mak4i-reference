@@ -10,7 +10,7 @@ from mak4i.identity import AuthorizedProject, ControlPlane, Organization, Princi
 from mak4i.identity.authz import Authorizer
 from mak4i.models import Artifact, bump_version, normalize_subject_key, utc_now
 from mak4i.resolution import IntegrityError, Resolver
-from mak4i.store.base import ArtifactNotFoundError, ArtifactStore
+from mak4i.store.base import ArtifactNotFoundError, ArtifactStore, is_safe_artifact_id
 
 _MAX_SUCCESSOR_ID_ATTEMPTS = 1000
 
@@ -120,6 +120,10 @@ class MAK4IEngine:
             correlation_id=correlation_id, auth_method=auth_method,
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
+        if not is_safe_artifact_id(artifact_id):
+            raise ValueError(
+                "artifact_id must not be '.' or '..' and must not contain '/', '\\' or control characters"
+            )
         subject_key = normalize_subject_key(subject_key)  # ValueError if blank
 
         now = utc_now()
