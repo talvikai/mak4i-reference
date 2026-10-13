@@ -1866,9 +1866,9 @@ def _configure_audit_log() -> None:
     """MAK-0006 §8.6: CLI operations, including operator writes and refusals,
     emit the same structured audit events as the server, as JSON lines.
 
-    `MAK4I_AUDIT_LOG` chooses the destination: `off`, `stderr`, or a file
-    path. Unset, events go to `.mak4i/audit.log` when a local environment
-    exists, else to stderr. Nothing is configured if the process already
+    `MAK4I_AUDIT_LOG` chooses the destination: `stderr` (the default), a
+    file path, or `off`. stdout stays reserved for the command's own
+    (machine-readable) output. Nothing is configured if the process already
     attached a handler to the audit logger."""
     import logging
 
@@ -1880,8 +1880,6 @@ def _configure_audit_log() -> None:
     target = os.environ.get("MAK4I_AUDIT_LOG", "").strip()
     if target.lower() == "off":
         return
-    if not target and localconfig.exists():
-        target = str(localconfig.home_dir() / "audit.log")
     if target and target.lower() != "stderr":
         handler: logging.Handler = logging.FileHandler(target, encoding="utf-8")
     else:

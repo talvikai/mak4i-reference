@@ -50,9 +50,31 @@ EventType = Literal[
     "RESOLUTION_COMPLETED",
     "RESOLUTION_ABORTED",
     "RESOLUTION_REJECTED",
+    "RESOLUTION_RECOVERED",
     # MAK-0006 §8.6: a write refused for an authenticated principal.
     "WRITE_REFUSED",
+    # A write that failed unexpectedly (not a refusal): `internal_error`.
+    "WRITE_FAILED",
 ]
+
+# Untrusted free text (client names, reasons) is logged without control
+# characters and at most this long; every string value is treated alike.
+MAX_LOGGED_STRING = 512
+
+
+def sanitize(value: Any) -> Any:
+    """Strip control characters (incl. newlines and ANSI escapes) from every
+    string in a log record and cap its length, recursively."""
+    if isinstance(value, str):
+        cleaned = "".join(ch for ch in value if ch.isprintable())
+        if len(cleaned) > MAX_LOGGED_STRING:
+            cleaned = cleaned[: MAX_LOGGED_STRING - 1] + "…"
+        return cleaned
+    if isinstance(value, dict):
+        return {sanitize(k): sanitize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize(v) for v in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -139,7 +161,8 @@ class AuditLogger:
             if scope.get(key) and key not in record:
                 record[key] = scope[key]
         record.update(fields)
-        self._logger.info(json.dumps(record, default=str))
+        record = sanitize(json.loads(json.dumps(record, default=str)))
+        self._logger.info(json.dumps(record))
         return record
 
     # -- authentication / authorization (Developer Preview) --------------
@@ -172,6 +195,7 @@ class AuditLogger:
     def log_write_refused(
         self,
         *,
+        event: EventType = "WRITE_REFUSED",
         correlation_id: str,
         principal_id: str,
         agent_id: str | None,
@@ -197,7 +221,7 @@ class AuditLogger:
             fields["credential_id"] = credential_id
         if oauth_client_id:
             fields["oauth_client_id"] = oauth_client_id
-        return self.log("WRITE_REFUSED", correlation_id=correlation_id, actor=principal_id, **fields)
+        return self.log(event, correlation_id=correlation_id, actor=principal_id, **fields)
 
     def log_access_granted(
         self, *, correlation_id: str, context: AuditContext, permission: str

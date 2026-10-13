@@ -576,7 +576,7 @@ from `.mak4i/`, so you normally set none of them.
 | `MAK4I_HOST` | HTTP bind address (default `127.0.0.1`); `--host` wins. See the [security warning](#43-network-http-and-tunnels) before using anything else. |
 | `MAK4I_PORT` | HTTP port for one run; `--port` wins; otherwise the saved port, then 9090 |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this server names itself to AI clients (default `MAK4I local (<organization>)` / `local`) |
-| `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `off`, `stderr`, or a file path (default: `.mak4i/audit.log` when a local environment exists, otherwise stderr) |
+| `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `stderr` (default; stdout stays machine-readable), a file path, or `off` |
 | `MAK4I_TOKEN` | the credential for `python -m mak4i.mcp_server` over stdio (manual setup); ignored by `mak4i serve` |
 | `MAK4I_CONTROL_PLANE_DB`, `MAK4I_STORE`, `MAK4I_LOCAL_STORE_DIR`, `MAK4I_CONTROL_PLANE_CREATE_TABLES` | backends for the manual setup (section 12); ignored by `mak4i serve` |
 

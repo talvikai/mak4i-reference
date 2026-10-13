@@ -132,9 +132,21 @@ rules, resource groups) is architecture-defined and **not** implemented.
 - With `MAK4I_TRUSTED_PROXIES` unset, forwarded headers are ignored from
   every peer, including loopback (uvicorn trusted loopback by default)
   (MAK-0008 §3.3). A reverse proxy on the same host must now be listed.
-- CLI writes are audited too: `MAK4I_AUDIT_LOG` = `off` | `stderr` | a
-  path; the default is `.mak4i/audit.log` in an initialized local
-  environment, otherwise stderr.
+- CLI commands emit the same audit and security events as the server, as
+  JSON lines on **stderr** (stdout stays machine-readable);
+  `MAK4I_AUDIT_LOG` = `stderr` (default) | a file path | `off`.
+- Unexpected failures of a write are logged as `WRITE_FAILED` (not as a
+  refusal); recovered resolutions as `RESOLUTION_RECOVERED` with the
+  original actor and outcome. A stdio server logs its startup
+  authentication and any later credential failure (revoked or expired, with
+  the `credential_id`).
+- Every string in an audit event is stripped of control characters and
+  capped at 512 characters, so untrusted client names and reasons can't
+  forge or flood log lines.
+- `docs/DEPLOYMENT.md` → "Operational logs": durable provenance vs
+  operational security events, and the deployment's ownership of their
+  collection, rotation, retention and access. Audit lines go to stderr (the
+  docs said stdout).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).
