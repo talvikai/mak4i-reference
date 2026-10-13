@@ -147,6 +147,10 @@ rules, resource groups) is architecture-defined and **not** implemented.
   operational security events, and the deployment's ownership of their
   collection, rotation, retention and access. Audit lines go to stderr (the
   docs said stdout).
+- **Fixed:** a denied OAuth administrative action (client register or
+  disable, sign-in code for another principal, revoking one or all
+  authorizations) now leaves a durable `denied` administrative event like
+  every other administrative action (MAK-0006 §8.5).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).

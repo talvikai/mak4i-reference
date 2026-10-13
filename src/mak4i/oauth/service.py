@@ -281,7 +281,7 @@ class OAuthService:
     ) -> tuple[dict, str | None]:
         """Pre-register a client for one organization (§8.2). Returns
         `(client, secret_or_None)`; the secret is shown once only."""
-        self._cp.require_owner(actor, organization_id)
+        self._cp.require_owner(actor, organization_id, action="oauth_client.register", targets={})
         if not redirect_uris or not all(valid_redirect_uri(u) for u in redirect_uris):
             raise ValueError("redirect URIs must be https, or http on a loopback host")
         secret = _random_token(CLIENT_SECRET_PREFIX) if confidential else None
@@ -376,7 +376,8 @@ class OAuthService:
         client = self._store.get_client(client_id)
         if client is None or client["organization_id"] is None:
             raise AccessDeniedError(principal_id=actor.principal_id, permission="administer")
-        self._cp.require_owner(actor, client["organization_id"])
+        self._cp.require_owner(actor, client["organization_id"], action="oauth_client.disable",
+                               targets={"client_id": client_id})
         now = self._now()
         self._store.put_client({**client, "status": "disabled", "updated_at": now})
         for authorization in self._store.list_authorizations(
@@ -399,7 +400,8 @@ class OAuthService:
         if target is None:
             raise PrincipalNotFoundError(principal_id)
         if actor.principal_id != target.principal_id:
-            self._cp.require_owner(actor, target.organization_id)
+            self._cp.require_owner(actor, target.organization_id, action="oauth_sign_in_code.issue",
+                                   targets={"principal_id": principal_id})
         self._cp.active_principal(principal_id)  # deactivated principals get none
         raw = "".join(secrets.choice(_SIGN_IN_ALPHABET) for _ in range(_SIGN_IN_LENGTH))
         now = self._now()
@@ -712,7 +714,8 @@ class OAuthService:
         if target is None:
             raise AccessDeniedError(principal_id=actor.principal_id, permission="administer")
         if actor.principal_id != target.principal_id:
-            self._cp.require_owner(actor, target.organization_id)
+            self._cp.require_owner(actor, target.organization_id, action="oauth_authorization.revoke",
+                                   targets={"authorization_id": authorization_id})
         self._store.revoke_authorization(authorization_id, "revoked_by_admin", self._now())
         self._cp.record_admin_event(
             action="oauth_authorization.revoke", actor=actor, organization_id=target.organization_id,
@@ -733,7 +736,17 @@ class OAuthService:
         within the actor's organization. Returns how many were revoked."""
         revoked = 0
         now = self._now()
-        for row in self.list_authorizations(actor=actor, principal_id=principal_id, client_id=client_id):
+        try:
+            rows = self.list_authorizations(actor=actor, principal_id=principal_id, client_id=client_id)
+        except AccessDeniedError:
+            target = self._cp.get_principal(principal_id) if principal_id else None
+            self._cp.record_admin_event(
+                action="oauth_authorization.revoke_all", actor=actor,
+                organization_id=target.organization_id if target else actor.organization_id,
+                targets={"principal_id": principal_id, "client_id": client_id}, outcome="denied",
+            )
+            raise
+        for row in rows:
             if row["status"] == "active" and self._store.revoke_authorization(
                 row["authorization_id"], reason, now
             ):

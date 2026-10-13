@@ -120,10 +120,20 @@ class ControlPlane:
             raise CredentialInvalidError("organization_inactive")
         return principal
 
-    def require_owner(self, actor: Principal, organization_id: str) -> None:
+    def require_owner(
+        self, actor: Principal, organization_id: str, *, action: str | None = None, targets: dict | None = None
+    ) -> None:
         """Public form of the owner gate, for administration that lives
-        outside this class (OAuth clients and authorizations)."""
-        self._require_owner(actor, organization_id)
+        outside this class (OAuth clients and authorizations). With
+        `action`, a refusal is recorded as a durable `denied` administrative
+        event under the target organization (MAK-0006 §8.5)."""
+        try:
+            self._require_owner(actor, organization_id)
+        except AccessDeniedError:
+            if action is not None:
+                self._record(action=action, actor_id=actor.principal_id, organization_id=organization_id,
+                             targets=targets or {}, outcome="denied")
+            raise
 
     def is_reachable(self) -> bool:
         """Cheap backend reachability check for an HTTP `/ready` probe
