@@ -311,6 +311,8 @@ class MAK4IEngine:
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
+        if not (reason or "").strip():
+            raise ValidationFailedError("reason is required: a supersession without a reason is not explainable")
 
         record = self._store.get(organization_id, project, old_id)
         if record is None:

@@ -112,6 +112,8 @@ rules, resource groups) is architecture-defined and **not** implemented.
   `status` values (absent = `active`); so does `mak4i search --status`.
 - **Breaking:** creating an `artifact_id` that already exists fails
   `artifact_exists` (was `validation_error`); nothing is written.
+- A supersession with a blank `reason` is rejected (`validation_error`) on
+  every interface, including the CLI.
 - Error results carry `error.correlation_id`, the same id as the audit
   events of that call (MAK-0008 §9.4).
 - A stdio session whose credential was revoked or expired gets
@@ -158,6 +160,16 @@ rules, resource groups) is architecture-defined and **not** implemented.
 - Skills are planned/deferred and not part of this release.
 - A general writer-initiated withdraw/retire operation is not provided
   (protocol issue #4); `withdrawn` is set only by conflict resolution.
+- Supported protocol profiles: `server-project-records` with
+  `transport-stdio` or `transport-http-credential` (reported by
+  `mak4i_whoami.protocol`). `transport-http-oauth` is not claimed until
+  real-client acceptance. MAK-0009 (organization knowledge, rules,
+  resource groups, `govern`) and the Draft (In Progress) MAK-0002, MAK-0003
+  and MAK-0007 are not implemented. Evidence and gaps:
+  `docs/CONFORMANCE_EVIDENCE.md`.
+- The server does not itself refuse plain HTTP on a non-loopback address;
+  remote deployments must terminate TLS in front of it (the bootstrap TLS
+  profile does) (MAK-0008 §1.2).
 
 ### Changed
 
