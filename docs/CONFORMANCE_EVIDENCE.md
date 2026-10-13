@@ -133,7 +133,7 @@ Test paths are relative to `tests/` and use `file.py::test_name`.
 | M7 | Expired/revoked token → 401 `invalid_token`, no fallback | `test_mcp_http_transport.py::test_mcp_endpoint_rejects_a_revoked_credential`; `test_oauth.py::test_invalid_token_of_either_kind_never_falls_back`, `::test_invalid_token_challenge_says_invalid_token`, `::test_expired_access_token_is_rejected_without_fallback`; `test_control_plane.py::test_authenticate_rejects_expired_credential`; `test_protocol_alignment.py::test_revoked_credential_failure_names_the_credential` | Met |
 | M11 | Credentials work; malformed/duplicate/query-string authorization rejected | `test_oauth.py::test_principal_credentials_keep_working_with_oauth_enabled`, `::test_duplicate_authorization_headers_or_query_tokens_are_rejected`, `::test_bearer_scheme_is_case_insensitive`; `test_mcp_http_transport.py::test_mcp_endpoint_rejects_wrong_auth` | Met |
 | M14 | No secret in logs or error messages | `test_oauth.py::test_no_secret_reaches_the_logs`, `::test_secrets_are_stored_only_as_hashes`; `test_audit_logger.py::test_log_authenticate_never_carries_token_material`; `test_settings.py::test_secrets_by_file_reference_and_never_printed`; `test_cli_init.py::test_init_does_not_log_the_raw_token` | Met |
-| M18 | Plain HTTP only on loopback; remote requires HTTPS | The default bind is loopback (`test_cli_init.py::test_serve_http_defaults_to_loopback_host_and_shows_the_endpoint`). OAuth URLs must be HTTPS off loopback (`test_oauth.py::test_settings_validation`). The TLS bootstrap profile binds MAK4I to loopback (`test_bootstrap.py::test_tls_install_binds_mak4i_to_loopback_only`). However, the server does not refuse plain HTTP on a non-loopback bind in credential mode (`MAK4I_HOST=0.0.0.0` is allowed), and the `private-http` bootstrap profile allows a private-network bind with a warning (`test_bootstrap.py::test_private_http_bind_safety`). HTTPS is left to the deployment. | Partial |
+| M18 | Plain HTTP only on loopback; remote requires HTTPS | `test_protocol_alignment.py::test_plain_http_is_refused_off_loopback_unless_tls_is_terminated_upstream` (the server refuses to start on a non-loopback bind unless `MAK4I_TLS_TERMINATED_UPSTREAM=1`), `::test_server_process_refuses_a_non_loopback_plain_http_bind` (real process); the Compose stack declares upstream TLS (Caddy or the operator's proxy); OAuth URLs must be HTTPS off loopback (`test_oauth.py::test_settings_validation`); `test_bootstrap.py::test_tls_install_binds_mak4i_to_loopback_only`. The declaration is the operator's assertion; a `private-http` installation serving plain HTTP on a private network is a documented deployment limitation. | Met |
 | M21 | Foreign tokens rejected, never forwarded | `test_oauth.py::test_invalid_token_of_either_kind_never_falls_back` (JWT-shaped token → 401), `::test_token_for_another_resource_is_rejected_at_the_mcp_endpoint`. The server never forwards tokens to anything upstream. | Met |
 | M22 | Advertised URLs from configuration; forwarded headers only from trusted proxies | Configured URLs: `test_oauth.py::test_metadata_urls_follow_a_configured_path_prefix`; `test_cli.py::test_credential_issue_uses_public_endpoint_and_omits_stdio_guidance`. Proxy trust: `test_protocol_alignment.py::test_forwarded_headers_are_trusted_only_from_configured_proxies` — with `MAK4I_TRUSTED_PROXIES` unset, forwarded headers are off for every peer (uvicorn's implicit loopback trust is disabled); otherwise only the listed proxies. `test_settings.py::test_self_hosted_http_with_oauth` validates the setting. | Met |
 | M38 | Token/revocation/registration endpoints rate-limited; signing keys persisted and rotatable | With OAuth disabled, these endpoints do not exist. Tokens are opaque and stored hashed, so there are no signing keys. With OAuth enabled, `oauth/web.py` rate-limits `token`, `revoke` and `register`, but only the sign-in limiter has a test (`test_oauth.py::test_sign_in_is_rate_limited`). | Met (no dedicated test) |
@@ -192,9 +192,6 @@ first, and `mak4i_whoami` does not report it
 
 These items are Partial or Not met:
 
-- **M18 (claimed profile):** in credential mode the server accepts plain
-  HTTP on a non-loopback bind. HTTPS for remote deployments depends on the
-  deployment (TLS proxy or platform), not on the server.
 - **M16 (OAuth, not claimed):** there is no evidence from two real clients
   against an HTTPS deployment. This is why `transport-http-oauth` is not
   claimed.
@@ -204,7 +201,7 @@ These items are Partial or Not met:
 
 Criteria marked Met (no dedicated test) in the claimed profiles still lack a
 direct assertion: P14, C26, I23 (conditional; no external identity adapter
-exists) and M38 (OAuth endpoint rate limits). M18 is the one Partial criterion
-in the claimed profiles, so the `transport-http-credential` claim in
-`src/mak4i/protocol.py` holds only for deployments that terminate TLS in
-front of the server (as the bootstrap TLS profile does) or bind to loopback.
+exists) and M38 (OAuth endpoint rate limits). Every criterion of the claimed
+profiles is Met. `MAK4I_TLS_TERMINATED_UPSTREAM=1` is the operator's
+declaration that TLS is terminated in front of the server; the server can't
+verify it.

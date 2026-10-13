@@ -574,6 +574,7 @@ from `.mak4i/`, so you normally set none of them.
 | `MAK4I_HOME` | where `.mak4i/` lives (default: `./.mak4i`) |
 | `MAK4I_TRANSPORT` | `stdio` (default) or `http` / `streamable-http`; `--transport` wins |
 | `MAK4I_HOST` | HTTP bind address (default `127.0.0.1`); `--host` wins. See the [security warning](#43-network-http-and-tunnels) before using anything else. |
+| `MAK4I_TLS_TERMINATED_UPSTREAM` | `1` only when a TLS-terminating proxy sits in front of MAK4I. Without it, MAK4I refuses to serve HTTP on any non-loopback address (MAK-0008 §1.2). |
 | `MAK4I_PORT` | HTTP port for one run; `--port` wins; otherwise the saved port, then 9090 |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this server names itself to AI clients (default `MAK4I local (<organization>)` / `local`) |
 | `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `stderr` (default; stdout stays machine-readable), a file path, or `off` |

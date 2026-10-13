@@ -252,3 +252,41 @@ def test_forwarded_headers_are_trusted_only_from_configured_proxies():  # M22, M
     assert uvicorn_proxy_options(["10.0.0.5", "10.1.0.0/16"]) == {
         "proxy_headers": True, "forwarded_allow_ips": "10.0.0.5,10.1.0.0/16"
     }
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "::1", "[::1]"])
+@pytest.mark.parametrize("declared", [None, "0", "1"])
+def test_loopback_binds_never_need_a_declaration(host, declared):  # M18
+    from mak4i.mcp_server import plain_http_problem
+
+    env = {} if declared is None else {"MAK4I_TLS_TERMINATED_UPSTREAM": declared}
+    assert plain_http_problem(host, env) is None
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "10.0.0.12", "192.168.1.5", "mak4i.example.com"])
+def test_plain_http_is_refused_off_loopback_unless_tls_is_terminated_upstream(host):  # M18, MAK-0008 §1.2
+    from mak4i.mcp_server import plain_http_problem
+
+    assert "MAK-0008 §1.2" in plain_http_problem(host, {})
+    assert "MAK-0008 §1.2" in plain_http_problem(host, {"MAK4I_TLS_TERMINATED_UPSTREAM": "0"})
+    assert plain_http_problem(host, {"MAK4I_TLS_TERMINATED_UPSTREAM": "yes"}) == "MAK4I_TLS_TERMINATED_UPSTREAM must be 1 or 0"
+    assert plain_http_problem(host, {"MAK4I_TLS_TERMINATED_UPSTREAM": "1"}) is None
+
+
+def test_server_process_refuses_a_non_loopback_plain_http_bind(tmp_path):  # M18 (real process)
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MAK4I_")}
+    env.update(
+        MAK4I_TRANSPORT="http", MAK4I_HOST="0.0.0.0", MAK4I_PORT="59871",  # refused before binding MAK4I_STORE="local",
+        MAK4I_LOCAL_STORE_DIR=str(tmp_path / "a"), MAK4I_CONTROL_PLANE_DB=f"sqlite:///{tmp_path / 'cp.db'}",
+        MAK4I_CONTROL_PLANE_CREATE_TABLES="1",
+        PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+    )
+    result = subprocess.run([sys.executable, "-m", "mak4i.mcp_server"], env=env, capture_output=True, text=True,
+                            timeout=60)
+    assert result.returncode == 2
+    assert "refusing plain HTTP on non-loopback address '0.0.0.0'" in result.stderr

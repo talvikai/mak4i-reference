@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -1244,6 +1245,37 @@ def _stdio_authenticate(control_plane: ControlPlane, audit: AuditLogger, token: 
     return principal, credential_id
 
 
+def is_loopback_host(host: str) -> bool:
+    """True for `localhost` and any loopback IP (127.0.0.0/8, ::1)."""
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def plain_http_problem(host: str, env) -> str | None:
+    """MAK-0008 §1.2: MAK4I serves plain HTTP; off loopback that is only
+    allowed when the deployment declares TLS is terminated in front of it
+    (`MAK4I_TLS_TERMINATED_UPSTREAM=1`, set by the Compose stack, where
+    Caddy or the operator's proxy terminates TLS). Returns the reason to
+    refuse, or None."""
+    if is_loopback_host(host):
+        return None
+    flag = (env.get("MAK4I_TLS_TERMINATED_UPSTREAM") or "").strip()
+    if flag == "1":
+        return None
+    if flag not in ("", "0"):
+        return "MAK4I_TLS_TERMINATED_UPSTREAM must be 1 or 0"
+    return (
+        f"refusing plain HTTP on non-loopback address {host!r} (MAK-0008 §1.2). Put a TLS-terminating "
+        "reverse proxy or load balancer in front and set MAK4I_TLS_TERMINATED_UPSTREAM=1, or bind to 127.0.0.1"
+    )
+
+
 def uvicorn_proxy_options(trusted_proxies: list[str] | tuple[str, ...]) -> dict:
     """MAK-0008 §3.3: forwarded headers are honored only from configured
     proxies (for the client address in rate limits and logs); advertised
@@ -1270,8 +1302,6 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         settings = load_settings()
     except ConfigError as exc:
         # MAK-0008 §12: refuse to start rather than run misconfigured.
-        import sys
-
         print(f"MAK4I could not start: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
     configure_audit_logging(settings.logging.level)
@@ -1311,6 +1341,12 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         from mak4i.config import build_oauth_from_env
 
         host = resolve_host()
+        problem = plain_http_problem(host, os.environ)
+        if problem:
+            # MAK-0008 §1.2: plain HTTP only on loopback, unless TLS is
+            # terminated in front of this process.
+            print(f"MAK4I could not start: {problem}", file=sys.stderr)
+            raise SystemExit(2)
         port = resolve_port()
         oauth = build_oauth_from_env(control_plane, audit=audit)
         app = build_http_app(server, control_plane=control_plane, audit=audit, host=host, oauth=oauth)

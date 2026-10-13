@@ -110,6 +110,7 @@ What any platform must provide to run the container image
 |---|---|
 | `MAK4I_TRANSPORT` | `http` (or `streamable-http`) to serve MCP over HTTP; `stdio` (default) for one local session |
 | `MAK4I_HOST` | bind address, default `127.0.0.1`. A container must set `0.0.0.0` to be reachable from outside **the container**; host or network exposure must then be restricted by port publishing, a private network or a firewall, with TLS in front. `0.0.0.0` provides no security by itself. |
+| `MAK4I_TLS_TERMINATED_UPSTREAM` | `1` declares that TLS is terminated in front of MAK4I (reverse proxy, load balancer, or a platform such as Cloud Run). MAK4I serves plain HTTP, so it **refuses to start on a non-loopback bind without this** (MAK-0008 §1.2). The Compose stack sets it. |
 | `MAK4I_PORT` (or `PORT`) | bind port, default `8080` |
 | `MAK4I_CONTROL_PLANE_DB` | SQLAlchemy URL of the control plane, e.g. `postgresql+psycopg://…`. **A secret**: it contains the database password. |
 | `MAK4I_STORE` | `local` (`LocalJSONStore`) or `gcs` |
