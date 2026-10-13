@@ -3,7 +3,7 @@
 This page maps the MAK4I Reference implementation to the acceptance criteria
 in the protocol's `CONFORMANCE.md`, at the revision pinned in
 [`PROTOCOL_REVISION`](../PROTOCOL_REVISION) (`talvikai/mak4i-protocol` commit
-`4a690268f5aca6a4321f3598c21c391b62f15a37`, protocol version 0.2). The
+`201afde0c179b7bfca1fc6659bd6173c4341a564`, protocol version 0.2). The
 Reference claims the profiles reported by `mak4i_whoami.protocol.profiles`
 (`src/mak4i/protocol.py`): **`server-project-records`** plus
 **`transport-stdio`** (stdio) or **`transport-http-credential`** (HTTP). It

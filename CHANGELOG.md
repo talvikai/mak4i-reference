@@ -93,8 +93,9 @@ is independent.
 
 ### Protocol alignment (talvikai/mak4i-protocol#7)
 
-Aligns with the protocol revision merged in mak4i-protocol#7
-(`PROTOCOL_REVISION` → `4a69026`). MAK-0009 (organization knowledge,
+Aligns with the protocol revision merged in mak4i-protocol#7, pinned at
+`201afde` (`PROTOCOL_REVISION`; #9 added only the Draft (In Progress)
+MAK-0002/0003/0007 documents, no schema or criteria changes). MAK-0009 (organization knowledge,
 rules, resource groups) is architecture-defined and **not** implemented.
 
 - `mak4i_whoami` reports `protocol: {version, profiles}` and always carries
