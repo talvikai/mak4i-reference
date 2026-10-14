@@ -133,7 +133,7 @@ Test paths are relative to `tests/` and use `file.py::test_name`.
 | M7 | Expired/revoked token → 401 `invalid_token`, no fallback | `test_mcp_http_transport.py::test_mcp_endpoint_rejects_a_revoked_credential`; `test_oauth.py::test_invalid_token_of_either_kind_never_falls_back`, `::test_invalid_token_challenge_says_invalid_token`, `::test_expired_access_token_is_rejected_without_fallback`; `test_control_plane.py::test_authenticate_rejects_expired_credential`; `test_protocol_alignment.py::test_revoked_credential_failure_names_the_credential` | Met |
 | M11 | Credentials work; malformed/duplicate/query-string authorization rejected | `test_oauth.py::test_principal_credentials_keep_working_with_oauth_enabled`, `::test_duplicate_authorization_headers_or_query_tokens_are_rejected`, `::test_bearer_scheme_is_case_insensitive`; `test_mcp_http_transport.py::test_mcp_endpoint_rejects_wrong_auth` | Met |
 | M14 | No secret in logs or error messages | `test_oauth.py::test_no_secret_reaches_the_logs`, `::test_secrets_are_stored_only_as_hashes`; `test_audit_logger.py::test_log_authenticate_never_carries_token_material`; `test_settings.py::test_secrets_by_file_reference_and_never_printed`; `test_cli_init.py::test_init_does_not_log_the_raw_token` | Met |
-| M18 | Plain HTTP only on loopback; remote requires HTTPS | The default bind is loopback (`test_cli_init.py::test_serve_http_defaults_to_loopback_host_and_shows_the_endpoint`). OAuth URLs must be HTTPS off loopback (`test_oauth.py::test_settings_validation`). The TLS bootstrap profile binds MAK4I to loopback (`test_bootstrap.py::test_tls_install_binds_mak4i_to_loopback_only`). However, the server does not refuse plain HTTP on a non-loopback bind in credential mode (`MAK4I_HOST=0.0.0.0` is allowed), and the `private-http` bootstrap profile allows a private-network bind with a warning (`test_bootstrap.py::test_private_http_bind_safety`). HTTPS is left to the deployment. | Partial |
+| M18 | Plain HTTP only on loopback; remote requires HTTPS | `test_protocol_alignment.py::test_plain_http_is_refused_off_loopback_unless_tls_is_terminated_upstream` (the server refuses to start on a non-loopback bind unless `MAK4I_TLS_TERMINATED_UPSTREAM=1`), `::test_server_process_refuses_a_non_loopback_plain_http_bind` (real process); the Compose stack declares upstream TLS (Caddy or the operator's proxy); OAuth URLs must be HTTPS off loopback (`test_oauth.py::test_settings_validation`); `test_bootstrap.py::test_tls_install_binds_mak4i_to_loopback_only`. The declaration is the operator's assertion; a `private-http` installation serving plain HTTP on a private network is a documented deployment limitation. | Met |
 | M21 | Foreign tokens rejected, never forwarded | `test_oauth.py::test_invalid_token_of_either_kind_never_falls_back` (JWT-shaped token → 401), `::test_token_for_another_resource_is_rejected_at_the_mcp_endpoint`. The server never forwards tokens to anything upstream. | Met |
 | M22 | Advertised URLs from configuration; forwarded headers only from trusted proxies | Configured URLs: `test_oauth.py::test_metadata_urls_follow_a_configured_path_prefix`; `test_cli.py::test_credential_issue_uses_public_endpoint_and_omits_stdio_guidance`. Proxy trust: `test_protocol_alignment.py::test_forwarded_headers_are_trusted_only_from_configured_proxies` — with `MAK4I_TRUSTED_PROXIES` unset, forwarded headers are off for every peer (uvicorn's implicit loopback trust is disabled); otherwise only the listed proxies. `test_settings.py::test_self_hosted_http_with_oauth` validates the setting. | Met |
 | M38 | Token/revocation/registration endpoints rate-limited; signing keys persisted and rotatable | With OAuth disabled, these endpoints do not exist. Tokens are opaque and stored hashed, so there are no signing keys. With OAuth enabled, `oauth/web.py` rate-limits `token`, `revoke` and `register`, but only the sign-in limiter has a test (`test_oauth.py::test_sign_in_is_rate_limited`). | Met (no dedicated test) |
@@ -156,25 +156,25 @@ first, and `mak4i_whoami` does not report it
 | M8 | Refresh rotates; replay revokes | `test_oauth.py::test_refresh_rotates_and_replay_revokes_the_authorization`, `::test_token_events_distinguish_sign_in_from_refresh` | Met |
 | M9 | Sign-in codes single use, expire, rate-limited, never bearer | `test_oauth.py::test_sign_in_code_is_single_use`, `::test_sign_in_code_expires`, `::test_sign_in_is_rate_limited`, `::test_sign_in_code_is_never_a_bearer_token` | Met |
 | M10 | Consent page content; CSRF | `test_oauth.py::test_consent_page_names_principal_client_host_and_scopes`, `::test_consent_denied_redirects_with_access_denied`, `::test_csrf_is_enforced_on_sign_in` | Met |
-| M13 | OAuth state survives restart | `test_oauth.py::test_oauth_state_survives_a_restart` | Met |
+| M13 | OAuth state survives restart | `test_oauth.py::test_oauth_state_survives_a_restart`; `test_oauth_acceptance.py::test_oauth_state_survives_a_full_restart` (new engine, control plane, OAuth service and app over the same database: access and refresh tokens, replay detection, pending codes, clients, browser session) | Met |
 | M16 | Two independent real OAuth clients against reachable HTTPS | `test_oauth_sdk_client_e2e.py` is an in-process MCP Python SDK smoke test. By its own docstring it is not interoperability evidence. No recorded runs with real clients exist. | Not met |
-| M23 | Sign-in codes local-only, ≥128 bits, hashed; no password exchange | `test_oauth.py::test_cli_oauth_commands` and `test_administration.py::test_no_remote_administration_endpoint` cover local-only issuance. The 140-bit codes and hashed storage come from `oauth/service.py` (`_SIGN_IN_LENGTH`, `code_hash`) and are not asserted by a test. | Partial |
+| M23 | Sign-in codes local-only, ≥128 bits, hashed; no password exchange | `test_oauth_acceptance.py::test_cli_sign_in_code_has_at_least_128_bits_and_is_stored_only_hashed` (real CLI; 140 bits; hash only in the database; single use; expiry), `::test_no_password_or_credential_for_token_exchange_exists`; `test_administration.py::test_no_remote_administration_endpoint` | Met |
 | M24 | Browser session ≤ 15 min; agent can be resource owner | `test_oauth.py::test_browser_session_expires_on_the_server_clock`; `test_agent_identity.py::test_agents_can_write_through_oauth_and_are_still_the_author`. The default is 900 s and is not configurable through the environment. The settings constructor does not cap it (tests override it). | Met |
 | M25 | Remembered consent limited to pre-registered clients | Consent is never remembered (`oauth/service.py`), so the restriction holds trivially. | Met (no dedicated test) |
 | M26 | Cookie flags, `no-store`, `frame-ancestors 'none'` | `test_oauth.py::test_pages_forbid_framing_and_caching` | Met |
 | M27 | Authorization response carries `iss` | `test_oauth.py::test_full_authorization_code_flow_reaches_mcp_tools`, `::test_pkce_is_required_and_s256_only` | Met |
 | M28 | ≥128-bit hashed codes/tokens; access TTL 1 h default, max 24 h | `test_oauth.py::test_secrets_are_stored_only_as_hashes`, `::test_full_authorization_code_flow_reaches_mcp_tools` (`expires_in == 3600`), `::test_settings_validation` (TTL over the maximum rejected) | Met |
-| M29 | Idle 7 d / absolute 30 d; refresh may narrow, never widen; principal re-checked | `test_oauth.py::test_idle_and_absolute_refresh_lifetimes_force_sign_in`, `::test_refresh_may_narrow_but_not_widen_scope` (widening only), `::test_deactivated_principal_loses_access_immediately`. No test exercises a successful narrowing refresh. | Partial |
-| M30 | Revocation accepts access and refresh tokens; 200 for unknown | `test_oauth.py::test_revocation_endpoint` covers an unknown token and a refresh token. No test revokes an access token at the endpoint. | Partial |
-| M31 | No `scope` → `mak4i:read mak4i:write`; credentials have no ceiling | `test_oauth.py::test_principal_credentials_keep_working_with_oauth_enabled` (`scopes` null). The default scope is set in `oauth/service.py` (`DEFAULT_SCOPES`), but every test passes `scope` explicitly. | Partial |
-| M33 | Owners list/disable clients, revoke one/principal/client authorizations, each audited | `test_oauth.py::test_admin_revocation_by_principal_and_client`, `::test_cli_oauth_commands`, `::test_other_organizations_owner_cannot_administer`. No test revokes a single authorization, and no test asserts the audit events. | Partial |
+| M29 | Idle 7 d / absolute 30 d; refresh may narrow, never widen; principal re-checked | `test_oauth.py::test_idle_and_absolute_refresh_lifetimes_force_sign_in`, `::test_refresh_may_narrow_but_not_widen_scope`, `::test_deactivated_principal_loses_access_immediately`; `test_oauth_acceptance.py::test_refresh_narrowing_scope_yields_a_narrower_access_token` | Met |
+| M30 | Revocation accepts access and refresh tokens; 200 for unknown | `test_oauth.py::test_revocation_endpoint`; `test_oauth_acceptance.py::test_revoking_an_access_token_makes_it_unusable_immediately` | Met |
+| M31 | No `scope` → `mak4i:read mak4i:write`; credentials have no ceiling | `test_oauth_acceptance.py::test_authorization_without_scope_grants_read_write_only`; `test_oauth.py::test_principal_credentials_keep_working_with_oauth_enabled` | Met |
+| M33 | Owners list/disable clients, revoke one/principal/client authorizations, each audited | `test_oauth_acceptance.py::test_revoking_one_authorization_leaves_the_principals_others_working` (real CLI), `::test_every_oauth_admin_action_is_durably_audited`, `::test_denied_oauth_admin_actions_are_durably_audited`; `test_oauth.py::test_admin_revocation_by_principal_and_client` | Met |
 
 ## OAuth options: CIMD (`oauth-cimd`) and DCR (`oauth-dcr`), not claimed
 
 | ID | Criterion (short) | Evidence | Status |
 |---|---|---|---|
 | M12 | Only enabled modes advertised; CIMD refuses non-public addresses | `test_oauth.py::test_dcr_is_off_by_default`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_disabled_is_not_advertised_and_refused`, `::test_cimd_refuses_non_public_addresses`, `::test_cimd_url_rules` | Met |
-| M32 | Pre-registered clients org-bound; CIMD fetch limits; DCR public only | `test_oauth.py::test_pre_registered_client_is_limited_to_its_organization`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_document_validation`. The CIMD fetch timeout, size limit, no-redirect rule and cache are in `oauth/cimd.py` but are not tested, because the tests use a fake fetcher. | Partial |
+| M32 | Pre-registered clients org-bound; CIMD fetch limits; DCR public only | `test_oauth.py::test_pre_registered_client_is_limited_to_its_organization`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_document_validation`, `::test_cimd_refuses_non_public_addresses`; fetch limits against a real local HTTP server: `test_oauth_acceptance.py::test_cimd_fetch_never_follows_redirects`, `::test_cimd_fetch_enforces_the_size_limit`, `::test_cimd_fetch_times_out`, `::test_cimd_documents_are_cached_within_their_lifetime`, `::test_cimd_cache_applies_through_the_authorization_endpoint`. TLS verification and IP pinning over real HTTPS are not exercised (the tests replace the HTTPS connection). | Met |
 
 ## Not applicable or not implemented
 
@@ -192,22 +192,16 @@ first, and `mak4i_whoami` does not report it
 
 These items are Partial or Not met:
 
-- **M18 (claimed profile):** in credential mode the server accepts plain
-  HTTP on a non-loopback bind. HTTPS for remote deployments depends on the
-  deployment (TLS proxy or platform), not on the server.
 - **M16 (OAuth, not claimed):** there is no evidence from two real clients
   against an HTTPS deployment. This is why `transport-http-oauth` is not
   claimed.
-- **M23, M29, M30, M31, M33 (OAuth, not claimed):** each has a sub-behavior
-  that is implemented but not tested: sign-in code entropy and hashing,
-  narrowing refresh, revoking an access token, the default scope, and
-  single-authorization revocation with audit.
-- **M32 (CIMD/DCR option, not claimed):** the CIMD fetch timeout, size,
-  no-redirect and cache limits are not tested.
+- **M32 (CIMD option, not claimed):** the fetch limits are tested over plain
+  HTTP to a local server; TLS verification and IP pinning against real hosts
+  are left to the real-client acceptance run.
 
 Criteria marked Met (no dedicated test) in the claimed profiles still lack a
 direct assertion: P14, C26, I23 (conditional; no external identity adapter
-exists) and M38 (OAuth endpoint rate limits). M18 is the one Partial criterion
-in the claimed profiles, so the `transport-http-credential` claim in
-`src/mak4i/protocol.py` holds only for deployments that terminate TLS in
-front of the server (as the bootstrap TLS profile does) or bind to loopback.
+exists) and M38 (OAuth endpoint rate limits). Every criterion of the claimed
+profiles is Met. `MAK4I_TLS_TERMINATED_UPSTREAM=1` is the operator's
+declaration that TLS is terminated in front of the server; the server can't
+verify it.

@@ -832,7 +832,7 @@ The one table of Enterprise Self-Hosted settings. The bootstrap writes
 Check the configuration the way the server will (no secrets printed):
 `docker compose exec mak4i mak4i config check`.
 | `MAK4I_BOOTSTRAP_PROFILE`, `MAK4I_INSTALL_STATE`, `MAK4I_INSTALLED_RELEASE` | `.env` | Bootstrap bookkeeping. Don't edit. |
-| `MAK4I_TRANSPORT=http`, `MAK4I_HOST=0.0.0.0`, `MAK4I_PORT=8080`, `MAK4I_STORE=local`, `MAK4I_LOCAL_STORE_DIR=/data/artifacts`, `MAK4I_CONTROL_PLANE_DB` | `compose.yaml` (fixed) | The container runtime settings. `MAK4I_HOST=0.0.0.0` applies **inside** the container only; host exposure is `MAK4I_HTTP_BIND`. |
+| `MAK4I_TRANSPORT=http`, `MAK4I_HOST=0.0.0.0`, `MAK4I_TLS_TERMINATED_UPSTREAM=1`, `MAK4I_PORT=8080`, `MAK4I_STORE=local`, `MAK4I_LOCAL_STORE_DIR=/data/artifacts`, `MAK4I_CONTROL_PLANE_DB` | `compose.yaml` (fixed) | The container runtime settings. `MAK4I_HOST=0.0.0.0` applies **inside** the container only; host exposure is `MAK4I_HTTP_BIND`. |
 
 The full runtime contract for running the container on another platform is
 in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).

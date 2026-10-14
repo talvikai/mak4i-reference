@@ -147,6 +147,15 @@ rules, resource groups) is architecture-defined and **not** implemented.
   operational security events, and the deployment's ownership of their
   collection, rotation, retention and access. Audit lines go to stderr (the
   docs said stdout).
+- **Fixed:** a denied OAuth administrative action (client register or
+  disable, sign-in code for another principal, revoking one or all
+  authorizations) now leaves a durable `denied` administrative event like
+  every other administrative action (MAK-0006 §8.5).
+- **Breaking: plain HTTP only on loopback** (MAK-0008 §1.2). MAK4I refuses
+  to serve HTTP on a non-loopback address unless
+  `MAK4I_TLS_TERMINATED_UPSTREAM=1` declares a TLS-terminating proxy or
+  platform in front of it. The Compose stack sets it; set it yourself for
+  any other container or `mak4i serve --host <non-loopback>` deployment.
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).
@@ -179,9 +188,9 @@ rules, resource groups) is architecture-defined and **not** implemented.
   resource groups, `govern`) and the Draft (In Progress) MAK-0002, MAK-0003
   and MAK-0007 are not implemented. Evidence and gaps:
   `docs/CONFORMANCE_EVIDENCE.md`.
-- The server does not itself refuse plain HTTP on a non-loopback address;
-  remote deployments must terminate TLS in front of it (the bootstrap TLS
-  profile does) (MAK-0008 §1.2).
+- A `private-http` installation that serves clients over plain HTTP on a
+  private network (no TLS-terminating proxy) is outside MAK-0008 §1.2; use
+  the `tls` profile or your own TLS proxy for remote clients.
 
 ### Changed
 

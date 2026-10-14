@@ -81,6 +81,10 @@ services:
       # which is unreachable from outside the container. Host exposure is
       # controlled by `ports:` below, not by this bind address.
       MAK4I_HOST: 0.0.0.0
+      # MAK-0008 §1.2: MAK4I itself serves plain HTTP. Inside this stack it is
+      # reached only through Caddy (tls profile) or your own TLS-terminating
+      # proxy/load balancer (private-http profile); this declares that.
+      MAK4I_TLS_TERMINATED_UPSTREAM: "1"
       MAK4I_PORT: "8080"
       MAK4I_STORE: local
       MAK4I_LOCAL_STORE_DIR: /data/artifacts
