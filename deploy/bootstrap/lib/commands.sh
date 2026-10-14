@@ -552,6 +552,8 @@ EOF
     'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE \"$POSTGRES_DB\" WITH (FORCE)" -c "CREATE DATABASE \"$POSTGRES_DB\" OWNER \"$POSTGRES_USER\""' ||
     die "$EX_FAILURE" "could not empty the database"
   [[ "$DRY_RUN" == 1 ]] && { say "Dry run complete: nothing was changed."; return; }
+  # The installation is the previous release from here on.
+  env_set "$ENV_FILE" "MAK4I_INSTALLED_RELEASE=$UPGRADE_FROM"
   say ""
   say "Database emptied and MAK4I stopped. Finish the rollback with $UPGRADE_FROM:"
   say "  1. git -C $REPO_ROOT fetch --depth 1 origin tag $UPGRADE_FROM && git -C $REPO_ROOT checkout $UPGRADE_FROM"
@@ -579,7 +581,16 @@ cmd_upgrade() {
   TLS_ISSUER=${TLS_ISSUER:-acme}
 
   from=${STORED_RELEASE:-}
-  if [[ -z "$from" ]] && service_running mak4i; then from=$(running_version); fi
+  if service_running mak4i; then
+    # The running server is the truth: a rollback (restored by the previous
+    # release) leaves the recorded release behind.
+    local running
+    running=$(running_version)
+    if [[ -n "$running" && "$running" != "$from" ]]; then
+      [[ -z "$from" ]] || warn "recorded release $from differs from the running $running; using $running"
+      from=$running
+    fi
+  fi
   from=${from:-$FROM_VERSION}
   [[ -n "$from" ]] || die "$EX_UNSUPPORTED" "can't determine the installed version: start the stack, or pass --from-version $UPGRADE_FROM"
   if [[ -n "$FROM_VERSION" && "$FROM_VERSION" != "$from" ]]; then

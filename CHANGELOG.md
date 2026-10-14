@@ -176,8 +176,10 @@ rules, resource groups) is architecture-defined and **not** implemented.
   (`v0.1.0-rc.5`), so that release's `restore` accepts it (it was labeled
   `v2.0.0-rc.1` and refused). New `mak4i-enterprise rollback --from <backup>`
   stops MAK4I and empties the database, because v0.1.0-rc.5 can neither
-  start on the upgraded schema nor drop its new tables; `upgrade` prints the
-  complete, tested rollback sequence.
+  start on the upgraded schema nor drop its new tables; it also records
+  v0.1.0-rc.5 as the installed release. `upgrade` prints the complete,
+  tested rollback sequence, and trusts the running server's version over a
+  stale recorded release (warning about the mismatch).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).

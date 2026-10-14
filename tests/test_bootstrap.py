@@ -595,6 +595,20 @@ def test_rollback_empties_the_database_for_the_previous_release(host):
     assert f"restore --from {dest}" in r.output
     # Rollback never restores with this release's code.
     assert not [c for c in host.compose_calls("exec") if any("pg_restore -U" in a for a in c)]
+    # From here on the installation is rc.5 (rc.5's restore keeps .env, so the
+    # next upgrade must not believe it is still v2; found on a real host).
+    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.5" in host.env_file.read_text()
+
+
+def test_upgrade_trusts_the_running_version_over_a_stale_record(host):
+    host.env_file.write_text("POSTGRES_PASSWORD=abc\nMAK4I_INSTALLED_RELEASE=v2.0.0-rc.1\nMAK4I_INSTALL_STATE=complete\n")
+    host.env_file.chmod(0o600)
+    host.set_state(running=["postgres", "mak4i"], volumes=["mak4i_pgdata", "mak4i_artifacts"], version="0.1.0rc5")
+    r = host.run("upgrade", "--backup-dir", str(host.backups))
+    assert "recorded release v2.0.0-rc.1 differs from the running v0.1.0-rc.5" in r.output
+    assert "upgrading to v2.0.0-rc.1" in r.output
+    (backup,) = host.backups.glob("mak4i-backup-*")
+    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.5" in (backup / "manifest.env").read_text()
 
 
 def test_rollback_requires_confirmation_and_a_previous_release_backup(host):
