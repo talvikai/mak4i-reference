@@ -13,6 +13,19 @@ feedback, not for production use. The version jumps from 0.1 to 2.0
 because of the breaking changes below; the protocol's own version (v0.2)
 is independent.
 
+### Security
+
+- **Artifact identifiers are validated as storage names**
+  (GHSA-j5p4-4j9q-6q8g, also fixed in `v0.1.0-rc.6`). With the local
+  artifact store, an authenticated principal with `write` on a project
+  could choose an `artifact_id` that addressed a file outside that
+  project's directory. New lineages now need an `artifact_id` that isn't
+  `.` or `..` and has no path separator or control character
+  (`validation_error`), and the local store keeps every read, write and
+  lock, including the organization and project path segments, inside the
+  record's own scope. Existing records remain readable. The GCS store is
+  not affected.
+
 ### Added
 
 - **Built-in OAuth 2.1 authorization server for MCP over HTTP** (MAK-0008
