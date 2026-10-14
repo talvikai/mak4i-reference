@@ -463,18 +463,70 @@ metadata documents only for public clients (MAK-0008 §8.3). Use
 pre-registration for ChatGPT. Any other client: try CIMD first, then
 pre-registration; treat it as untested.
 
+Register the two pre-registered clients once per installation (the
+command prints the `client_id`; there is no secret). A fresh install, or
+an uninstall that destroys the data, needs this again; a restore keeps
+registered clients.
+
 ```bash
 docker compose exec mak4i mak4i oauth client register --actor "$OWNER" \
   --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback
+docker compose exec mak4i mak4i oauth client register --actor "$OWNER" \
+  --name "ChatGPT" --redirect-uri https://chatgpt.com/connector_platform_oauth_redirect
 ```
+
+Client notes (verified for this release):
+
+- **URL:** always the full MCP endpoint, including `/mcp`
+  (`https://mak4i.example.com/mcp`). Without the path, ChatGPT signs in
+  and then reports *action discovery failed*.
+- **claude.ai:** Settings → Connectors → **Add custom connector** →
+  **Advanced settings** → OAuth Client ID. The sign-in page opens in a
+  pop-up; allow pop-ups for claude.ai if nothing appears. Changing the
+  client ID of an existing connector can leave a second, unauthorized
+  connector behind; remove it.
+- **ChatGPT:** Settings → Apps & Connectors → **Advanced settings** →
+  turn on **Developer mode**, then **Create** a connector with OAuth →
+  **user-defined OAuth**: Client ID, no secret, scopes
+  `mak4i:read mak4i:write` (add `mak4i:resolve` only if this connection
+  should resolve conflicts).
+- **Claude Code:** `claude mcp add --transport http mak4i https://mak4i.example.com/mcp`,
+  then `/mcp` → the server → **Authenticate**; the browser opens the
+  sign-in page. Claude Code requests every advertised scope (only grants
+  limit it).
 
 **Sign in.** When the client opens the MAK4I sign-in page, get a code
 (for yourself, or as an owner for anyone in your organization) and enter
 it, then review and approve the consent page:
 
 ```bash
+# for yourself (an owner signing in as themselves):
+docker compose exec mak4i mak4i oauth sign-in-code --actor "$OWNER" --principal-id "$OWNER"
+# as an owner, for another principal of the organization:
 docker compose exec mak4i mak4i oauth sign-in-code --actor "$OWNER" --principal-id "$PRINCIPAL"
 ```
+
+`$OWNER` is the owner's `principal_id` printed by `mak4i org create`;
+recover ids with `./deploy/bootstrap/mak4i-enterprise admin-info`. A
+sign-in code works **once** and for **10 minutes**, and it is consumed
+by the first successful sign-in: issue a new one for every sign-in. It
+is never a bearer token.
+
+**After sign-in.** New conversations in the same client reuse the
+connection without another code, and access tokens (1 hour by default)
+are refreshed silently. A person has to sign in again only when:
+
+- the authorization was revoked, the client disabled, or the principal
+  deactivated;
+- the refresh token expired (7 days unused, or 30 days in total, by
+  default; see [Configuration reference](#12-configuration-reference));
+- a backup was restored (restore revokes every OAuth authorization);
+- the client asks for a scope it doesn't hold. For example, calling
+  `mak4i_resolve_conflict` from a connection approved for read and write
+  returns `403 insufficient_scope`, and claude.ai then opens the sign-in
+  page again to request `mak4i:resolve` (issue a new code; the consent
+  page shows the wider scope; it's granted only if the principal holds
+  `resolve`).
 
 **Revoke.** `mak4i oauth authorization list|revoke` (by authorization,
 principal or client) and `mak4i oauth client disable`. Deactivating a
@@ -906,6 +958,10 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `401` | Missing, wrong, revoked or expired token. The server deliberately doesn't say which. With OAuth enabled the response's `WWW-Authenticate` header tells OAuth clients where to sign in. |
 | `403 insufficient_scope` | An OAuth token without the scope a tool needs (for example a read-only connection calling a write tool). Reconnect and approve the wider scope; scopes never exceed the principal's grants anyway. |
 | The OAuth sign-in page says the code is invalid | Codes work once and expire after 10 minutes; issue a new one with `mak4i oauth sign-in-code`. |
+| claude.ai: "Connect" shows no MAK4I sign-in page | Allow pop-ups for claude.ai. If the server log shows only discovery requests and no `/oauth/authorize`, register claude.ai and enter its client ID under the connector's Advanced settings (§7.1). |
+| ChatGPT: "client metadata documents are accepted only for public clients" | ChatGPT's metadata document declares `private_key_jwt`. Use pre-registration with **user-defined OAuth** (§7.1). |
+| ChatGPT: signs in, then "action discovery failed" | The connector URL lacks `/mcp`. Use `https://<domain>/mcp`. |
+| A client asks to sign in again in the middle of a task | Usually a scope step-up (a tool needs a scope this connection doesn't hold, e.g. `mak4i:resolve`), or the authorization was revoked or restored. Issue a new code. |
 | `404` | The URL doesn't end in `/mcp`. |
 | `421 Misdirected Request` | Your own proxy reaches MAK4I on a loopback bind. Keep `MAK4I_HOST=0.0.0.0` inside the container (as `compose.yaml` sets); control exposure with `MAK4I_HTTP_BIND`. |
 | Sessions drop or responses stall behind your own proxy | It buffers or times out streamed responses; see [`DEPLOYMENT.md` → Reverse proxy requirements](DEPLOYMENT.md#reverse-proxy-requirements). |
