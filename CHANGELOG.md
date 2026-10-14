@@ -3,6 +3,30 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
+## v0.1.0-rc.6 — Developer Preview (unreleased)
+
+Security release candidate for the v0.1.0 line: `v0.1.0-rc.5` plus one
+fix, same schema and interfaces. Everyone on `v0.1.0-rc.5` (or earlier)
+using the local artifact store should upgrade; `v2.0.0-rc.1` contains the
+same fix.
+
+### Security
+
+- **Artifact identifiers are validated as storage names**
+  (GHSA-j5p4-4j9q-6q8g). With the local artifact store, an authenticated
+  principal with `write` on a project could choose an `artifact_id` that
+  addressed a file outside that project's directory. New lineages now
+  need an `artifact_id` that isn't `.` or `..` and has no path separator or
+  control character (`validation_error` otherwise), and the local store
+  keeps every read, write and lock inside the record's own organization
+  and project. Existing records remain readable. The GCS store is not
+  affected.
+
+### Upgrade
+
+- `v0.1.0-rc.5` → `v0.1.0-rc.6` with the bootstrap `upgrade` (no schema
+  change). Restore accepts `v0.1.0-rc.6` and `v0.1.0-rc.5` backups.
+
 ## v0.1.0-rc.5 — Developer Preview (2026-10-10)
 
 Security and maintenance release candidate. Developer Preview: for
