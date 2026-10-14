@@ -116,4 +116,4 @@ def test_operator_impersonation_is_recorded_in_context(world, caplog):
         correlation_id="c",
         auth_method="operator_impersonation",
     )
-    assert _records(caplog)[-1]["auth_method"] == "operator_impersonation"
+    assert _records(caplog)[-1]["auth_method"] == "operator"  # MAK-0006 §7.1 vocabulary

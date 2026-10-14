@@ -30,6 +30,7 @@ class AuthorizationOutcome:
     organization_id: str
     project_id: str
     permission: Permission
+    agent_id: str | None = None
 
 
 class Authorizer:
@@ -70,6 +71,7 @@ class Authorizer:
             organization_id=organization_id,
             project_id=project,
             auth_method=auth_method,
+            agent_id=principal.agent_id,
         )
 
         if not granted:
@@ -93,6 +95,7 @@ class Authorizer:
             organization_id=organization_id,
             project_id=project,
             permission=permission,
+            agent_id=principal.agent_id,
         )
 
     def audit_context(
@@ -103,4 +106,5 @@ class Authorizer:
             organization_id=outcome.organization_id,
             project_id=outcome.project_id,
             auth_method=auth_method,
+            agent_id=outcome.agent_id,
         )

@@ -648,3 +648,73 @@ def test_audit_records_resolution_lifecycle(world, caplog):  # §A9
     assert "ACCESS_DENIED" in names and "RESOLUTION_STARTED" in names and "RESOLUTION_COMPLETED" in names
     completed = next(e for e in events if e["event"] == "RESOLUTION_COMPLETED")
     assert completed["conflict_id"] == conflict.conflict_id
+
+
+def test_conflict_id_matches_the_protocol_example():  # C18
+    # The protocol's own conflict examples carry an id derived from known
+    # inputs, so a second implementation must arrive at the same value.
+    import json
+    from pathlib import Path
+
+    from mak4i.resolution.types import conflict_id_for
+
+    example = json.loads(
+        (Path(__file__).resolve().parents[1] / ".protocol/schemas/examples/conflict/valid-open-two.json").read_text()
+    )
+    assert conflict_id_for(
+        example["organization_id"], example["project"], example["artifact_type"],
+        example["subject_key"], example["generation"],
+    ) == example["conflict_id"] == "cfl_fad03ef607726c7b27dbbf36be8af997"
+    assert conflict_id_for("org_1", "prj_1", "caching_decision", "primary-cache", 1) != example["conflict_id"]
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
+def test_every_resolution_event_names_the_actor_and_correlation_id(world, artifact_type, caplog, monkeypatch):  # C27
+    import json
+    import logging
+
+    from mak4i.audit.logger import LOGGER_NAME
+
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    alice = world["human"].principal_id
+    conflict = _red_yellow(world, artifact_type)
+    engine = world["engine"]
+
+    # Rejected: stale candidate set.
+    _create(world, "green_bot", "green", artifact_type)
+    with pytest.raises(ConflictChangedError):
+        _resolve(world, conflict, action="select_winner", winner_artifact_id="red")
+    (conflict,) = _current(world).conflicts
+
+    # Aborted: a candidate changes after the resolution started.
+    original = engine._reserve
+
+    def racing_reserve(org, project, artifact_ids, record):
+        artifact, token = engine._store.get(org, project, "green")
+        engine._store.put_if_match(
+            artifact.model_copy(update={"status": "superseded", "superseded_by": "green-002"}),
+            expected_version_token=token,
+        )
+        engine._store.put_new(artifact.model_copy(update={"artifact_id": "green-002", "version": "2.0", "supersedes": "green"}))
+        return original(org, project, artifact_ids, record)
+
+    monkeypatch.setattr(engine, "_reserve", racing_reserve)
+    with pytest.raises(ConflictChangedError):
+        _resolve(world, conflict, action="select_winner", winner_artifact_id="red")
+    monkeypatch.setattr(engine, "_reserve", original)
+
+    # Started and completed.
+    (conflict,) = _current(world).conflicts
+    _resolve(world, conflict, action="select_winner", winner_artifact_id="red")
+
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == LOGGER_NAME]
+    lifecycle = [e for e in events if e["event"].startswith("RESOLUTION_")]
+    assert {e["event"] for e in lifecycle} == {
+        "RESOLUTION_REJECTED", "RESOLUTION_STARTED", "RESOLUTION_ABORTED", "RESOLUTION_COMPLETED"
+    }
+    for event in lifecycle:
+        assert event["actor"] == alice, event
+        assert event["correlation_id"], event
+    started = [e for e in lifecycle if e["event"] == "RESOLUTION_STARTED"]
+    ended = [e for e in lifecycle if e["event"] in ("RESOLUTION_ABORTED", "RESOLUTION_COMPLETED")]
+    assert [e["correlation_id"] for e in started] == [e["correlation_id"] for e in ended]

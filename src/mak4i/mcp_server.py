@@ -13,6 +13,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.shared.exceptions import MCPError
 from pydantic import ValidationError as PydanticValidationError
+from jsonschema import Draft202012Validator
 from mcp_types import CallToolResult, TextContent
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
@@ -22,6 +23,9 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from mak4i import __version__
+from mak4i.protocol import PROTOCOL_VERSION, claimed_profiles
+from mak4i.audit import request_scope
+from mak4i.api import error_code as _engine_error_code
 from mak4i.api import MAK4IEngine
 from mak4i.errors import MAK4IError
 from mak4i.resolution import Conflict, ResolutionRecord
@@ -107,6 +111,14 @@ class PrincipalRef(BaseModel):
     services (MAK-0006 §3). Always taken from the stored principal."""
 
 
+class ProtocolInfo(BaseModel):
+    """The protocol release targeted and the conformance profiles claimed
+    (MAK-0008 §10.5)."""
+
+    version: str
+    profiles: list[str]
+
+
 class WhoAmI(BaseModel):
     """`mak4i_whoami`'s result: which installation, which organization,
     which principal — everything a user needs to confirm a destination."""
@@ -118,6 +130,7 @@ class WhoAmI(BaseModel):
     scopes: list[str] | None = None
     """OAuth scopes of the presented access token; `None` for a principal
     credential, which has no scope ceiling (MAK-0008 §7.4)."""
+    protocol: ProtocolInfo
 
 
 def resolve_connection_identity() -> ConnectionIdentity:
@@ -148,16 +161,7 @@ def _coded(exc: Exception, *, connection: ConnectionIdentity, write: bool) -> Co
     no secrets and never reveal whether an unreadable project exists."""
     if isinstance(exc, AccessDeniedError):
         return CodedToolError("access_denied", str(_denied(exc, connection=connection)))
-    code = getattr(exc, "code", None)
-    if code is None:
-        if isinstance(exc, ArtifactNotFoundError):
-            code = "not_found"
-        elif isinstance(exc, ConcurrentModificationError):
-            code = "stale_head"
-        elif isinstance(exc, (ArtifactAlreadyExistsError, ValueError)):
-            code = "validation_error"
-        else:
-            code = "internal_error"
+    code = _engine_error_code(exc)
     message = getattr(exc, "message", None) or str(exc)
     if write:
         message = str(_write_failed(message, connection=connection))
@@ -188,31 +192,99 @@ class _MAK4IServer(MCPServer):
         context = Context(
             request_context=ctx, mcp_server=self, input_params=params, subscriptions=self._subscriptions
         )
-        try:
-            return await self.call_tool(params.name, params.arguments or {}, context)
-        except MCPError:
-            raise
-        except Exception as exc:
-            coded = _find_coded(exc)
-            if coded is None:
-                if isinstance(exc, ToolError) and not isinstance(exc, UnexpectedToolError):
-                    is_validation = isinstance(exc.__cause__, PydanticValidationError) or "Unknown tool" in str(exc)
-                    coded = CodedToolError(
-                        "validation_error" if is_validation else "internal_error", str(exc)
-                    )
-                    logging.getLogger(__name__).info("Tool %r failed: %r", params.name, str(exc))
-                else:
-                    logging.getLogger(__name__).exception("Tool %r raised an unexpected exception", params.name)
-                    coded = CodedToolError(
-                        "internal_error", f"Error executing tool {params.name}", retryable=True
-                    )
+        arguments = params.arguments or {}
+        principal = current_principal.get()
+        auth = current_auth.get()
+        with request_scope.request_scope(
+            tool=params.name,
+            agent_id=getattr(principal, "agent_id", None),
+            credential_id=getattr(auth, "credential_id", None),
+            oauth_client_id=getattr(auth, "oauth_client_id", None),
+        ) as scope:
+            coded = self._check_arguments(params.name, arguments, principal)
+            if coded is not None:
+                self._refused(params.name, arguments, principal, auth, coded.code)
+            else:
+                try:
+                    return await self.call_tool(params.name, arguments, context)
+                except MCPError:
+                    raise
+                except Exception as exc:
+                    coded = _find_coded(exc)
+                    if coded is None:
+                        if isinstance(exc, ToolError) and not isinstance(exc, UnexpectedToolError):
+                            is_validation = isinstance(exc.__cause__, PydanticValidationError) or "Unknown tool" in str(exc)
+                            coded = CodedToolError(
+                                "validation_error" if is_validation else "internal_error", str(exc)
+                            )
+                            logging.getLogger(__name__).info("Tool %r failed: %r", params.name, str(exc))
+                        else:
+                            logging.getLogger(__name__).exception("Tool %r raised an unexpected exception", params.name)
+                            coded = CodedToolError(
+                                "internal_error", f"Error executing tool {params.name}", retryable=True
+                            )
             return CallToolResult(
                 content=[TextContent(type="text", text=coded.message)],
                 structured_content={
-                    "error": {"code": coded.code, "message": coded.message, "retryable": coded.retryable}
+                    "error": {
+                        "code": coded.code,
+                        "message": coded.message,
+                        "retryable": coded.retryable,
+                        "correlation_id": scope["correlation_id"],
+                    }
                 },
                 is_error=True,
             )
+
+    def _check_arguments(self, name: str, arguments: dict, principal) -> CodedToolError | None:
+        """MAK-0008 §10.2 before anything runs: a differing identity claim is
+        `identity_mismatch`; an undefined argument or a value outside the
+        advertised input schema is `validation_error`."""
+        tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            return None  # the SDK reports unknown tools
+        claims = {k: v for k, v in arguments.items() if k in _IDENTITY_CLAIMS}
+        if claims and principal is not None:
+            own = {
+                "agent_id": principal.agent_id,
+                "principal_id": principal.principal_id,
+                "created_by": principal.principal_id,
+            }
+            if any(own.get(k, object()) != v for k, v in claims.items()):
+                return CodedToolError(
+                    "identity_mismatch",
+                    "identity_mismatch: identity is taken from the authenticated credential; "
+                    "the request claimed a different identity, so nothing was done",
+                )
+        errors = sorted(
+            Draft202012Validator(tool.parameters).iter_errors(arguments), key=lambda e: list(e.absolute_path)
+        )
+        if errors:
+            first = errors[0]
+            where = "/".join(str(p) for p in first.absolute_path) or "arguments"
+            return CodedToolError("validation_error", f"invalid arguments ({where}): {first.message}")
+        return None
+
+    def _refused(self, name, arguments, principal, auth, code) -> None:
+        audit = getattr(self, "_mak4i_audit", None)
+        if audit is None or principal is None or name not in _WRITE_TOOLS:
+            return
+        audit.log_write_refused(
+            correlation_id=request_scope.correlation_id(),
+            principal_id=principal.principal_id,
+            agent_id=principal.agent_id,
+            auth_method=getattr(auth, "auth_method", "credential"),
+            organization_id=principal.organization_id,
+            project=arguments.get("project") if isinstance(arguments.get("project"), str) else None,
+            operation=_WRITE_TOOLS[name],
+            error_code=code,
+            credential_id=getattr(auth, "credential_id", None),
+            oauth_client_id=getattr(auth, "oauth_client_id", None),
+        )
+
+
+_IDENTITY_CLAIMS = frozenset({"agent_id", "principal_id", "created_by", "author", "actor", "provenance"})
+_WRITE_TOOLS = {"mak4i_create": "create", "mak4i_supersede": "supersede", "mak4i_resolve_conflict": "resolve_conflict"}
 
 
 def _find_coded(exc: BaseException | None) -> CodedToolError | None:
@@ -277,7 +349,10 @@ def _require_principal() -> Principal:
         try:
             current_principal.set(reauthenticate())
         except CredentialInvalidError as exc:
-            raise ToolError("not authenticated: the MAK4I credential is no longer valid") from exc
+            # MAK-0006 §6.4 / MAK-0008 §9: refused by the per-operation check.
+            raise CodedToolError(
+                "access_denied", "access denied: the MAK4I credential of this session is no longer valid"
+            ) from exc
     principal = current_principal.get()
     if principal is None:
         raise ToolError("not authenticated")
@@ -364,11 +439,54 @@ def resolve_port() -> int:
     return 8080
 
 
+_NON_EMPTY = {"type": "string", "minLength": 1, "pattern": "\\S"}
+_FIELD_CONSTRAINTS = {
+    "project": _NON_EMPTY,
+    "artifact_id": _NON_EMPTY,
+    "artifact_type": _NON_EMPTY,
+    "title": _NON_EMPTY,
+    "content": _NON_EMPTY,
+    "reason": _NON_EMPTY,
+    "old_id": _NON_EMPTY,
+    "lineage_id": _NON_EMPTY,
+    "winner_artifact_id": _NON_EMPTY,
+    "into_artifact_id": _NON_EMPTY,
+    "subject_key": {"type": "string", "minLength": 1, "maxLength": 512},
+    "conflict_id": {"type": "string", "pattern": "^cfl_[0-9a-f]{32}$"},
+    "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 200},
+    "status": {"enum": ["active", "superseded", "withdrawn"]},
+    "state": {"enum": ["open", "resolved", "all"]},
+    "action": {"enum": ["select_winner", "merge", "separate_subjects"]},
+    "tags": {"type": "array", "items": _NON_EMPTY},
+}
+
+
+def _tighten_input_schemas(server: MCPServer) -> None:
+    """Advertise (and, in `_check_arguments`, enforce) the closed tool inputs
+    of `mcp-tools.schema.json` (MAK-0008 §10.2): no undefined arguments, and
+    the protocol's enums, patterns and non-empty strings. Optional
+    arguments may still be `null`, meaning "not given"."""
+    for tool in server._tool_manager.list_tools():
+        schema = tool.parameters
+        schema["additionalProperties"] = False
+        for name, prop in schema.get("properties", {}).items():
+            constraint = _FIELD_CONSTRAINTS.get(name)
+            if constraint is None:
+                continue
+            if "anyOf" in prop:
+                prop["anyOf"] = [constraint if alt.get("type") != "null" else alt for alt in prop["anyOf"]]
+            else:
+                for key in ("type", "items", "pattern", "minLength", "maxLength", "enum"):
+                    prop.pop(key, None)
+                prop.update(constraint)
+
+
 def build_server(
     engine: MAK4IEngine,
     *,
     name: str = "mak4i",
     connection: ConnectionIdentity | None = None,
+    profiles: list[str] | None = None,
 ) -> MCPServer:
     """Expose the MAK4I tool contract over MCP. This is a thin adapter —
     every tool function below is a couple of lines translating arguments
@@ -393,7 +511,12 @@ def build_server(
     denial — see issues #8/#9 and `_NO_CROSS_CONNECTION_FALLBACK`.
     """
     connection = connection or resolve_connection_identity()
+    protocol_info = ProtocolInfo(
+        version=PROTOCOL_VERSION,
+        profiles=profiles if profiles is not None else claimed_profiles(resolve_transport()),
+    )
     server = _MAK4IServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
+    server._mak4i_audit = getattr(engine, "_audit", None)
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> PlainTextResponse:
@@ -431,6 +554,7 @@ def build_server(
             ),
             auth_method=auth.auth_method,
             scopes=list(auth.scopes) if auth.auth_method == "oauth" else None,
+            protocol=protocol_info,
         )
 
     @server.tool(
@@ -477,7 +601,7 @@ def build_server(
         project: str,
         artifact_type: str | None = None,
         tags: list[str] | None = None,
-        status: str | None = "active",
+        status: str = "active",
     ) -> list[Artifact]:
         principal, auth = _require_auth()
         try:
@@ -709,6 +833,7 @@ def build_server(
         except _HANDLED as exc:
             raise _coded(exc, connection=connection, write=True) from exc
 
+    _tighten_input_schemas(server)
     return server
 
 
@@ -745,6 +870,21 @@ def _replaying_receive(body: bytes, original_receive):
         return await original_receive()
 
     return receive
+
+
+def _called_tools(body: bytes) -> list[tuple[str, dict]]:
+    """(tool name, arguments) of every tools/call message in an MCP POST body."""
+    try:
+        payload = json.loads(body) if body else None
+    except (ValueError, UnicodeDecodeError):
+        return []
+    messages = payload if isinstance(payload, list) else [payload]
+    calls = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("method") == "tools/call" and isinstance(message.get("params"), dict):
+            arguments = message["params"].get("arguments")
+            calls.append((str(message["params"].get("name")), arguments if isinstance(arguments, dict) else {}))
+    return calls
 
 
 def _required_scopes(body: bytes) -> set[str]:
@@ -834,10 +974,48 @@ class _AuthMiddleware:
             headers["WWW-Authenticate"] = self._challenge(error)
         await JSONResponse(body, status_code=status, headers=headers)(scope, receive, send)
 
-    def _log_failure(self, correlation_id: str, reason: str, auth_method: str) -> None:
+    def _log_scope_denial(self, correlation_id, principal, auth, body: bytes, missing: set[str]) -> None:
+        """MAK-0006 §8.6 / MAK-0008 §4.2: a 403 `insufficient_scope` is an
+        access denial attributed to the authenticated principal and its OAuth
+        client, not an authentication failure."""
+        if self._audit is None:
+            return
+        for tool, arguments in _called_tools(body):
+            project = arguments.get("project") if isinstance(arguments.get("project"), str) else None
+            self._audit.log(
+                "ACCESS_DENIED",
+                correlation_id=correlation_id,
+                actor=principal.principal_id,
+                principal_id=principal.principal_id,
+                agent_id=principal.agent_id,
+                organization_id=principal.organization_id,
+                project_id=project,
+                auth_method="oauth",
+                oauth_client_id=auth.oauth_client_id,
+                tool=tool,
+                reason="insufficient_scope",
+                required_scopes=sorted(missing),
+            )
+            if tool in _WRITE_TOOLS:
+                self._audit.log_write_refused(
+                    correlation_id=correlation_id,
+                    principal_id=principal.principal_id,
+                    agent_id=principal.agent_id,
+                    auth_method="oauth",
+                    organization_id=principal.organization_id,
+                    project=project,
+                    operation=_WRITE_TOOLS[tool],
+                    error_code="insufficient_scope",
+                    oauth_client_id=auth.oauth_client_id,
+                )
+
+    def _log_failure(
+        self, correlation_id: str, reason: str, auth_method: str, *, credential_id: str | None = None
+    ) -> None:
         if self._audit is not None:
             self._audit.log_authenticate(
-                correlation_id=correlation_id, success=False, reason=reason, auth_method=auth_method
+                correlation_id=correlation_id, success=False, reason=reason, auth_method=auth_method,
+                credential_id=credential_id,
             )
 
     # -- ASGI --------------------------------------------------------------------
@@ -871,7 +1049,7 @@ class _AuthMiddleware:
             try:
                 principal, credential_id = self._control_plane.authenticate_with_credential(token)
             except CredentialInvalidError as exc:
-                self._log_failure(correlation_id, exc.reason, CREDENTIAL)
+                self._log_failure(correlation_id, exc.reason, CREDENTIAL, credential_id=exc.credential_id)
                 await self._reject(scope, receive, send, 401, "invalid_token")
                 return
             auth = AuthContext(auth_method=CREDENTIAL, credential_id=credential_id)
@@ -917,7 +1095,7 @@ class _AuthMiddleware:
                     return
             missing = _required_scopes(body) - set(auth.scopes)
             if missing:
-                self._log_failure(correlation_id, "insufficient_scope", "oauth")
+                self._log_scope_denial(correlation_id, principal, auth, body, missing)
                 needed = sorted(_required_scopes(body) | set(auth.scopes))
                 await JSONResponse(
                     {"error": "insufficient_scope"},
@@ -1042,6 +1220,16 @@ def configure_audit_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(message)s")
 
 
+def uvicorn_proxy_options(trusted_proxies: list[str] | tuple[str, ...]) -> dict:
+    """MAK-0008 §3.3: forwarded headers are honored only from configured
+    proxies (for the client address in rate limits and logs); advertised
+    URLs never use them. With none configured, no peer is trusted — not
+    even loopback, which uvicorn would otherwise trust by default."""
+    if trusted_proxies:
+        return {"proxy_headers": True, "forwarded_allow_ips": ",".join(trusted_proxies)}
+    return {"proxy_headers": False}
+
+
 def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     """One entry point for both transports — the container's CMD and a
     developer's local `python -m mak4i.mcp_server` are the same command;
@@ -1102,13 +1290,7 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         port = resolve_port()
         oauth = build_oauth_from_env(control_plane, audit=audit)
         app = build_http_app(server, control_plane=control_plane, audit=audit, host=host, oauth=oauth)
-        # Forwarded headers are honored only from configured proxies (for the
-        # client address in rate limits/logs); advertised URLs never use them.
-        proxy_options = (
-            {"proxy_headers": True, "forwarded_allow_ips": ",".join(settings.proxy.trusted_proxies)}
-            if settings.proxy.trusted_proxies
-            else {}  # uvicorn's default: only loopback may set forwarded headers
-        )
+        proxy_options = uvicorn_proxy_options(settings.proxy.trusted_proxies)
         if on_http_started is None:
             uvicorn.run(app, host=host, port=port, **proxy_options)
             return

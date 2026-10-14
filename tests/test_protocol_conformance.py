@@ -151,14 +151,21 @@ def test_reference_interfaces_conform_to_the_protocol_schemas(tmp_path, validate
         for args, tool in (
             ({"project": project, "old_id": "yellow", "content": "x", "reason": "y"}, "mak4i_supersede"),
             ({"project": "prj_nope"}, "mak4i_get_current"),
+            ({**create, "content": "again"}, "mak4i_create"),  # artifact_exists
+            ({**create, "artifact_id": "x", "x_unknown": 1}, "mak4i_create"),  # validation_error (closed inputs)
+            ({**create, "artifact_id": "x", "agent_id": "not-me"}, "mak4i_create"),  # identity_mismatch
+            ({"project": project, "status": "deleted"}, "mak4i_search"),  # validation_error (enum)
         ):
             result = call(agent_token, tool, args)
             assert result["isError"] is True
             validate("error", result["structuredContent"])
+            assert result["structuredContent"]["error"]["correlation_id"]
 
-        # Administrative events (MAK-0006 §8.5) and identity objects.
-        for event in w.cp.list_admin_events(actor=w.owner, organization_id=w.org.organization_id):
-            validate("admin-event", event.to_protocol())
+        # Administrative events (MAK-0006 §8.5), including instance-operator events, and identity objects.
+        events = [e.to_protocol() for e in w.cp.list_admin_events(actor=w.owner, organization_id=w.org.organization_id)]
+        for event in events:
+            validate("admin-event", event)
+        assert any(e["actor"]["auth_method"] == "operator" and e["actor"]["principal_id"] is None for e in events)
         from mak4i.cli import _to_json_safe
 
         validate("principal", _to_json_safe(agent))

@@ -466,3 +466,46 @@ def test_migration_0003_gives_existing_agents_a_deterministic_agent_id(tmp_path,
     human = cp.get_principal("prn_99999999-0000-0000-0000-000000000000")
     assert agent.agent_id == "agent-1234abcd56ef"
     assert human.agent_id is None
+
+
+def test_upgrade_from_0001_preserves_identity_data_and_existing_credentials_still_work(tmp_path, monkeypatch):
+    """An rc.5-era database (schema 0001) with an organization, owner, agent,
+    project, grant and credential keeps every row through `upgrade head`;
+    the existing credential still authenticates to the same principal with
+    the same grant, and the agent gets its deterministic `agent_id`."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.identity.tokens import hash_token
+
+    db = tmp_path / "rc5.db"
+    monkeypatch.setenv("MAK4I_CONTROL_PLANE_DB", f"sqlite:///{db}")
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "0001_initial")
+    t = "2026-10-01 00:00:00"
+    with create_engine(f"sqlite:///{db}").begin() as conn:
+        conn.execute(text("INSERT INTO organizations VALUES ('org_1', 'Acme', 'active', :t, :t)"), {"t": t})
+        conn.execute(text("INSERT INTO principals VALUES ('prn_owner', 'org_1', 'human', 'owner', 'Owner', 'active', :t, :t)"), {"t": t})
+        conn.execute(text("INSERT INTO principals VALUES ('prn_aaaabbbb-cccc', 'org_1', 'agent', 'member', 'Bot', 'active', :t, :t)"), {"t": t})
+        conn.execute(text("INSERT INTO projects VALUES ('prj_1', 'org_1', 'P', 'active', :t, :t)"), {"t": t})
+        conn.execute(text("""INSERT INTO grants VALUES ('grt_1', 'prn_aaaabbbb-cccc', 'prj_1', '["read", "write"]', :t)"""), {"t": t})
+        conn.execute(
+            text("INSERT INTO credentials VALUES ('crd_1', 'prn_aaaabbbb-cccc', :h, 'active', 'bot key', :t, NULL, NULL)"),
+            {"h": hash_token("mak4i_rc5-era-token"), "t": t},
+        )
+
+    command.upgrade(cfg, "head")
+
+    cp = ControlPlane(SqlControlPlaneStore(f"sqlite:///{db}"))
+    principal, credential_id = cp.authenticate_with_credential("mak4i_rc5-era-token")
+    assert (principal.principal_id, credential_id) == ("prn_aaaabbbb-cccc", "crd_1")
+    assert principal.agent_id == "agent-aaaabbbbcccc"
+    owner = cp.get_principal("prn_owner")
+    (grant,) = cp.list_grants(actor=owner, principal_id=principal.principal_id)
+    assert grant.project_id == "prj_1" and set(grant.permissions) == {"read", "write"}
+    with create_engine(f"sqlite:///{db}").connect() as conn:
+        counts = {t: conn.execute(text(f"select count(*) from {t}")).scalar()
+                  for t in ("organizations", "principals", "projects", "grants", "credentials")}
+    assert counts == {"organizations": 1, "principals": 2, "projects": 1, "grants": 1, "credentials": 1}

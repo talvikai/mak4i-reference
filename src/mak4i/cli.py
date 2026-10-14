@@ -231,7 +231,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             subject_key=args.subject_key,
             auth_method=OPERATOR_IMPERSONATION,
         )
-    except (ArtifactAlreadyExistsError, AccessDeniedError, ValueError) as exc:
+    except (ArtifactAlreadyExistsError, AccessDeniedError, MAK4IError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     _print_json(artifact)
@@ -1522,7 +1522,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--project", required=True)
     search.add_argument("--artifact-type")
     search.add_argument("--tags", help="comma-separated")
-    search.add_argument("--status", default="active")
+    search.add_argument("--status", default="active", choices=["active", "superseded", "withdrawn"])
     search.set_defaults(func=_cmd_search)
 
     get_current = subparsers.add_parser(
@@ -1862,9 +1862,46 @@ def _redact_db_url(url: str) -> str:
     return urlunsplit(parts)
 
 
+def _configure_audit_log() -> None:
+    """MAK-0006 §8.6: CLI operations, including operator writes and refusals,
+    emit the same structured audit events as the server, as JSON lines.
+
+    `MAK4I_AUDIT_LOG` chooses the destination: `off`, `stderr`, or a file
+    path. Unset, events go to `.mak4i/audit.log` when a local environment
+    exists, else to stderr. Nothing is configured if the process already
+    attached a handler to the audit logger."""
+    import logging
+
+    from mak4i.audit import LOGGER_NAME
+
+    logger = logging.getLogger(LOGGER_NAME)
+    if logger.handlers:
+        return
+    target = os.environ.get("MAK4I_AUDIT_LOG", "").strip()
+    if target.lower() == "off":
+        return
+    if not target and localconfig.exists():
+        target = str(localconfig.home_dir() / "audit.log")
+    if target and target.lower() != "stderr":
+        handler: logging.Handler = logging.FileHandler(target, encoding="utf-8")
+    else:
+
+        class _CurrentStderr(logging.StreamHandler):
+            # Resolve sys.stderr at emit time, so redirected or replaced streams work.
+            def emit(self, record):
+                self.stream = sys.stderr
+                super().emit(record)
+
+        handler = _CurrentStderr()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_audit_log()
     try:
         # No blanket local-environment resolution here: `serve` and
         # `init` each apply their own (see their functions), and every

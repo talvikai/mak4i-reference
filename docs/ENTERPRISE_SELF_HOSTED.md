@@ -571,7 +571,9 @@ and records are kept unchanged; existing agent principals get an
 `agent_id` of the form `agent-<12 hex digits>`. Read the **breaking
 changes** in [`CHANGELOG.md`](../CHANGELOG.md) (conflict object shape,
 filters no longer hide one side of a conflict, releasing a subject key
-during a conflict is refused) before upgrading clients that rely on them.
+during a conflict is refused, tool calls with arguments a tool doesn't
+define are rejected with `validation_error`, a duplicate `artifact_id` is
+`artifact_exists`) before upgrading clients that rely on them.
 
 ```bash
 git fetch --depth 1 origin tag v2.0.0-rc.1

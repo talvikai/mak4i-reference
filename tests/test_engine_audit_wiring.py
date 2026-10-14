@@ -141,7 +141,12 @@ def test_supersede_rejected_logs_supersede_rejected_event(audited_engine, world,
         )
 
     records = _records(caplog)
-    assert [r["event"] for r in records] == ["SUPERSEDE_REJECTED"]
+    # The specific rejection, then the uniform MAK-0006 §8.6 refused-write event.
+    assert [r["event"] for r in records] == ["SUPERSEDE_REJECTED", "WRITE_REFUSED"]
+    refused = records[-1]
+    assert refused["error_code"] == "artifact_not_active" and refused["operation"] == "supersede"
+    assert refused["principal_id"] == world["principal"].principal_id
+    assert refused["correlation_id"] == records[0]["correlation_id"]
 
 
 def test_get_current_logs_get_current_discover_resolve_inject_with_shared_correlation_id(

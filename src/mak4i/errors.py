@@ -49,5 +49,12 @@ class SubjectCollisionError(MAK4IError):
     code = "subject_collision"
 
 
+class ArtifactExistsError(MAK4IError):
+    """MAK-0008 §9: a create named an `artifact_id` that already exists in
+    the project. Nothing was written."""
+
+    code = "artifact_exists"
+
+
 class IdentityMismatchError(MAK4IError):
     code = "identity_mismatch"

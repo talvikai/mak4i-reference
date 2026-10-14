@@ -162,11 +162,24 @@ def test_forged_identity_arguments_change_nothing(world):  # I3 / R2 acceptance
     # A read-only agent claiming to be the writer gains no write access.
     denied = _create(world, reader_token, "spoof-1", **forged)
     assert denied["isError"] is True
+    assert denied["structuredContent"]["error"]["code"] == "identity_mismatch"
 
-    # A writer claiming to be someone else is still recorded as itself.
+    # A writer claiming to be someone else is rejected with identity_mismatch
+    # (MAK-0006 §3.7, MAK-0008 §10.2); nothing is written.
     victim, _ = _agent(world, "victim-bot")
     forged = {"agent_id": "victim-bot", "created_by": victim.principal_id, "principal_id": victim.principal_id}
-    record = _create(world, writer_token, "spoof-2", **forged)["structuredContent"]
+    rejected = _create(world, writer_token, "spoof-2", **forged)
+    assert rejected["isError"] is True
+    assert rejected["structuredContent"]["error"]["code"] == "identity_mismatch"
+    assert rejected["structuredContent"]["error"]["correlation_id"]
+
+    # Restating one's own identity is not a mismatch, but the argument is not
+    # defined for the tool, so it is a validation error (closed inputs).
+    restated = _create(world, writer_token, "spoof-3", agent_id="writer-bot")
+    assert restated["structuredContent"]["error"]["code"] == "validation_error"
+
+    # Without identity arguments the writer is recorded as itself.
+    record = _create(world, writer_token, "spoof-4")["structuredContent"]
     assert record["created_by"] == writer.principal_id
     assert record["provenance"]["agent_id"] == "writer-bot"
     assert record["provenance"]["principal_id"] == writer.principal_id

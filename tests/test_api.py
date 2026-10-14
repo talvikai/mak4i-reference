@@ -1,5 +1,7 @@
 import pytest
 
+from mak4i.errors import ArtifactExistsError
+
 from mak4i.api import ArtifactNotActiveError, MAK4IEngine
 from mak4i.identity import AccessDeniedError, Authorizer, ControlPlane
 from mak4i.identity.memory_store import InMemoryControlPlaneStore
@@ -150,8 +152,9 @@ def test_create_artifact_rejects_duplicate_id(world):
         content="Use Redis for application caching.",
     )
     engine.create_artifact(**kwargs)
-    with pytest.raises(ArtifactAlreadyExistsError):
+    with pytest.raises(ArtifactExistsError) as exc:  # MAK-0008 §9 `artifact_exists`
         engine.create_artifact(**kwargs)
+    assert exc.value.code == "artifact_exists"
 
 
 def test_create_artifact_defaults_tags_to_empty_list(world):
@@ -435,3 +438,16 @@ def test_generic_create_and_supersede_path_for_any_scenario(
     )
     assert new.supersedes == artifact_id
     assert new.status == "active"
+
+
+@pytest.mark.parametrize("artifact_type", ["caching_decision", "database_decision"])
+@pytest.mark.parametrize("reason", ["", "   ", "\n\t"])
+def test_supersede_requires_a_non_blank_reason(world, store, artifact_type, reason):  # MAK-0008 §10, CLI parity
+    from mak4i.errors import ValidationFailedError
+
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    engine.create_artifact(principal=principal, project=project, artifact_id="d-001",
+                           artifact_type=artifact_type, title="T", content="v1")
+    with pytest.raises(ValidationFailedError):
+        engine.supersede_artifact(principal=principal, project=project, old_id="d-001", content="v2", reason=reason)
+    assert [a.artifact_id for a in engine.get_history(principal=principal, project=project, lineage_id="d-001")] == ["d-001"]

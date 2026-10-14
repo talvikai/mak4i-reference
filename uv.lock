@@ -656,6 +656,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "google-cloud-storage" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -678,6 +679,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "google-auth", marker = "extra == 'dev'", specifier = ">=2.30" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
+    { name = "jsonschema", specifier = ">=4.23" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },

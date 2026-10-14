@@ -462,7 +462,7 @@ def test_container_entry_point_ignores_the_local_http_port(tmp_path, monkeypatch
     monkeypatch.setenv("MAK4I_STORE", "local")
     monkeypatch.setenv("MAK4I_LOCAL_STORE_DIR", str(tmp_path / "deploy-artifacts"))
     calls = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: calls.append((host, port)))
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port, **_options: calls.append((host, port)))
 
     mcp_server.main()
     assert calls == [("127.0.0.1", 8080)]

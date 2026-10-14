@@ -14,9 +14,12 @@ class CredentialInvalidError(IdentityError):
     for audit/logging only.
     """
 
-    def __init__(self, reason: str = "unknown"):
+    def __init__(self, reason: str = "unknown", *, credential_id: str | None = None):
         super().__init__("invalid or expired credential")
         self.reason = reason
+        self.credential_id = credential_id
+        """Set when the token maps to a known (revoked/expired/unusable)
+        credential; for audit only (MAK-0006 §8.6), never surfaced."""
 
 
 class AccessDeniedError(IdentityError):

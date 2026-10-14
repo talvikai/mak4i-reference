@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 import uuid
 
@@ -17,7 +18,9 @@ from mak4i.models import (
     normalize_subject_key,
     utc_now,
 )
+from mak4i.audit import request_scope
 from mak4i.errors import (
+    ArtifactExistsError,
     ConflictChangedError,
     ConflictNotOpenError,
     MAK4IError,
@@ -37,12 +40,74 @@ from mak4i.resolution.types import (
     ResultingHead,
     conflict_id_for,
 )
-from mak4i.store.base import ArtifactNotFoundError, ArtifactStore, ConcurrentModificationError
+from mak4i.identity.errors import AccessDeniedError
+from mak4i.store.base import (
+    ArtifactAlreadyExistsError,
+    ArtifactNotFoundError,
+    ArtifactStore,
+    ConcurrentModificationError,
+)
 
 _MAX_SUCCESSOR_ID_ATTEMPTS = 1000
 
 CREDENTIAL = "credential"
 OPERATOR_IMPERSONATION = "operator_impersonation"
+
+
+def error_code(exc: BaseException) -> str:
+    """The MAK-0008 §9 code of an engine or store exception."""
+    if isinstance(exc, AccessDeniedError):
+        return "access_denied"
+    code = getattr(exc, "code", None)
+    if code:
+        return code
+    if isinstance(exc, ArtifactNotFoundError):
+        return "not_found"
+    if isinstance(exc, ConcurrentModificationError):
+        return "stale_head"
+    if isinstance(exc, ArtifactAlreadyExistsError):
+        return "artifact_exists"
+    if isinstance(exc, ValueError):
+        return "validation_error"
+    return "internal_error"
+
+
+def _audited_write(operation: str):
+    """MAK-0006 §8.6: every write refused for an authenticated principal
+    emits one attributable, secret-free `WRITE_REFUSED` event (in addition to
+    any more specific event the engine logged on the way)."""
+
+    def decorate(method):
+        @functools.wraps(method)
+        def wrapper(self, *args, **kwargs):
+            with request_scope.request_scope():
+                return _call(self, *args, **kwargs)
+
+        def _call(self, *args, **kwargs):
+            try:
+                return method(self, *args, **kwargs)
+            except Exception as exc:
+                principal = kwargs.get("principal")
+                if self._audit is not None and principal is not None:
+                    auth = kwargs.get("auth")
+                    auth_method = auth.auth_method if auth is not None else kwargs.get("auth_method", CREDENTIAL)
+                    self._audit.log_write_refused(
+                        correlation_id=request_scope.correlation_id(),
+                        principal_id=principal.principal_id,
+                        agent_id=principal.agent_id,
+                        auth_method=auth_method,
+                        organization_id=principal.organization_id,
+                        project=kwargs.get("project"),
+                        operation=operation,
+                        error_code=error_code(exc),
+                        credential_id=getattr(auth, "credential_id", None),
+                        oauth_client_id=getattr(auth, "oauth_client_id", None),
+                    )
+                raise
+
+        return wrapper
+
+    return decorate
 
 
 class ArtifactNotActiveError(MAK4IError):
@@ -148,6 +213,7 @@ class MAK4IEngine:
 
     # -- writes ------------------------------------------------------------
 
+    @_audited_write("create")
     def create_artifact(
         self,
         *,
@@ -169,7 +235,7 @@ class MAK4IEngine:
         anything is written. `created_by` is the authenticated principal;
         any value the caller might have supplied is irrelevant."""
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -199,7 +265,12 @@ class MAK4IEngine:
             subject_key=subject_key,
             provenance=_provenance(principal, auth, auth_method, client, now),
         )
-        self._store.put_new(artifact)
+        try:
+            self._store.put_new(artifact)
+        except ArtifactAlreadyExistsError as exc:
+            raise ArtifactExistsError(
+                f"artifact_id {artifact_id!r} already exists in this project; nothing was written"
+            ) from exc
         if self._audit is not None:
             self._audit.log_create(
                 correlation_id=correlation_id,
@@ -209,6 +280,7 @@ class MAK4IEngine:
             )
         return artifact
 
+    @_audited_write("supersede")
     def supersede_artifact(
         self,
         *,
@@ -231,7 +303,7 @@ class MAK4IEngine:
         project can never be superseded through this call (it is simply not
         found) — see tests/test_security_dev_preview.py."""
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -239,6 +311,8 @@ class MAK4IEngine:
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
+        if not (reason or "").strip():
+            raise ValidationFailedError("reason is required: a supersession without a reason is not explainable")
 
         record = self._store.get(organization_id, project, old_id)
         if record is None:
@@ -381,7 +455,7 @@ class MAK4IEngine:
         `project`. One correlation_id ties GET_CURRENT, DISCOVER, RESOLVE,
         INJECT (plus a CONFLICT/INTEGRITY_ERROR per anomaly) together."""
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -504,7 +578,7 @@ class MAK4IEngine:
         (spec §3, tests 7/8).
         """
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
 
         if project is not None:
             outcome = self._authorizer.require(
@@ -556,7 +630,7 @@ class MAK4IEngine:
         version — the explicit tool for history/migration/rationale
         queries (§8). READ required."""
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -629,7 +703,7 @@ class MAK4IEngine:
         if state not in ("open", "resolved", "all"):
             raise ValidationFailedError("state must be 'open', 'resolved' or 'all'")
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -658,7 +732,7 @@ class MAK4IEngine:
         auth: AuthContext | None = None,
     ) -> Conflict:
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -673,6 +747,7 @@ class MAK4IEngine:
                 return self._resolved_view(record)
         raise NotFoundError("no conflict with this id in this project")
 
+    @_audited_write("resolve_conflict")
     def resolve_conflict(
         self,
         *,
@@ -699,7 +774,7 @@ class MAK4IEngine:
         of this generation exists, and is idempotent for an identical retry
         with the same `idempotency_key`."""
         auth_method, ceiling = _resolve_auth(auth, auth_method)
-        correlation_id = str(uuid.uuid4())
+        correlation_id = request_scope.correlation_id()
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
@@ -811,7 +886,7 @@ class MAK4IEngine:
             self._log_resolution(
                 "RESOLUTION_ABORTED", correlation_id, None, context,
                 resolution_id=record.resolution_id, conflict_id=record.conflict_id,
-                phase="reservation", applied_effects=[],
+                phase="reservation", applied_effects=[], actor_principal_id=record.actor.principal_id,
             )
             raise ConflictChangedError(
                 "a candidate changed before the resolution could reserve it; nothing was changed — "
@@ -863,7 +938,7 @@ class MAK4IEngine:
             self._log_resolution(
                 "RESOLUTION_ABORTED", correlation_id, None, context,
                 resolution_id=record.resolution_id, conflict_id=record.conflict_id,
-                applied_effects=[e.model_dump() for e in effects],
+                applied_effects=[e.model_dump() for e in effects], actor_principal_id=record.actor.principal_id,
             )
             raise ConflictChangedError(
                 "a candidate changed while the resolution was being applied; it was aborted "

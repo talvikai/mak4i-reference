@@ -43,7 +43,11 @@ class AdminEvent(BaseModel):
             "event_id": self.event_id,
             "occurred_at": self.occurred_at.isoformat(),
             "organization_id": self.organization_id,
-            "actor": {"principal_id": self.actor_principal_id, "auth_method": self.actor_auth_method},
+            "actor": {
+                # MAK-0006 §7.6: instance-operator actions with no principal acted for.
+                "principal_id": None if self.actor_principal_id == "operator" else self.actor_principal_id,
+                "auth_method": self.actor_auth_method,
+            },
             "action": self.action,
             "targets": dict(self.targets),
             "outcome": self.outcome,

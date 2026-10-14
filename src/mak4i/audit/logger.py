@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from mak4i.models import Artifact
     from mak4i.resolution import Conflict, IntegrityError, ResolutionResult
 
+from mak4i.audit import request_scope as _request_scope
+
 LOGGER_NAME = "mak4i.audit"
 
 EventType = Literal[
@@ -48,6 +50,8 @@ EventType = Literal[
     "RESOLUTION_COMPLETED",
     "RESOLUTION_ABORTED",
     "RESOLUTION_REJECTED",
+    # MAK-0006 §8.6: a write refused for an authenticated principal.
+    "WRITE_REFUSED",
 ]
 
 
@@ -68,15 +72,23 @@ class AuditContext:
     organization_id: str | None = None
     project_id: str | None = None
     auth_method: str | None = None
+    agent_id: str | None = None
 
     def fields(self) -> dict[str, str]:
         pairs = {
             "principal_id": self.principal_id,
             "organization_id": self.organization_id,
             "project_id": self.project_id,
-            "auth_method": self.auth_method,
+            "auth_method": protocol_auth_method(self.auth_method),
+            "agent_id": self.agent_id,
         }
         return {k: v for k, v in pairs.items() if v is not None}
+
+
+def protocol_auth_method(auth_method: str | None) -> str | None:
+    """One vocabulary across provenance and the audit trail (MAK-0006 §7.1):
+    `credential`, `oauth` or `operator`."""
+    return "operator" if auth_method == "operator_impersonation" else auth_method
 
 
 def estimate_tokens(text: str) -> int:
@@ -122,6 +134,10 @@ class AuditLogger:
         }
         if context is not None:
             record.update(context.fields())
+        scope = _request_scope.current()
+        for key in _request_scope.SCOPED_FIELDS:
+            if scope.get(key) and key not in record:
+                record[key] = scope[key]
         record.update(fields)
         self._logger.info(json.dumps(record, default=str))
         return record
@@ -136,12 +152,15 @@ class AuditLogger:
         principal_id: str | None = None,
         reason: str | None = None,
         auth_method: str = "credential",
+        credential_id: str | None = None,
     ) -> dict[str, Any]:
         """Never receives or logs the raw token or its hash — only the
         outcome, the resolved `principal_id` on success, and an internal
         `reason` string on failure (`unknown` / `revoked` / `expired` / …).
         """
         extra = {"reason": reason} if reason is not None else {}
+        if credential_id is not None:
+            extra["credential_id"] = credential_id
         return self.log(
             "AUTHENTICATE_SUCCESS" if success else "AUTHENTICATE_FAILURE",
             correlation_id=correlation_id,
@@ -149,6 +168,36 @@ class AuditLogger:
             context=AuditContext(principal_id=principal_id, auth_method=auth_method),
             **extra,
         )
+
+    def log_write_refused(
+        self,
+        *,
+        correlation_id: str,
+        principal_id: str,
+        agent_id: str | None,
+        auth_method: str | None,
+        organization_id: str | None,
+        project: str | None,
+        operation: str,
+        error_code: str,
+        credential_id: str | None = None,
+        oauth_client_id: str | None = None,
+    ) -> dict[str, Any]:
+        """MAK-0006 §8.6: attributable, secret-free, no record content."""
+        fields = {
+            "principal_id": principal_id,
+            "agent_id": agent_id,
+            "auth_method": protocol_auth_method(auth_method),
+            "organization_id": organization_id,
+            "project_id": project,
+            "operation": operation,
+            "error_code": error_code,
+        }
+        if credential_id:
+            fields["credential_id"] = credential_id
+        if oauth_client_id:
+            fields["oauth_client_id"] = oauth_client_id
+        return self.log("WRITE_REFUSED", correlation_id=correlation_id, actor=principal_id, **fields)
 
     def log_access_granted(
         self, *, correlation_id: str, context: AuditContext, permission: str
