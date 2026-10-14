@@ -626,10 +626,21 @@ Keep the backup's `.env` (it holds the database password), and export
 anything you need from the post-upgrade period first (for example
 `mak4i audit list`, `mak4i_history`).
 
+v0.1.0-rc.5 can't start on the upgraded database, and its `restore`
+can't remove the tables v2.0.0-rc.1 added, so the rollback starts with
+**this** release's bootstrap, which stops MAK4I and empties the database.
+v0.1.0-rc.5's own `restore` then loads the pre-upgrade backup (labeled
+`v0.1.0-rc.5` by `upgrade`), runs its migrations and starts:
+
 ```bash
+B=/srv/mak4i-backups/mak4i-backup-<timestamp>                    # printed by upgrade
+./deploy/bootstrap/mak4i-enterprise rollback --from "$B"          # 1. with v2.0.0-rc.1: stop MAK4I, empty the database
 git fetch --depth 1 origin tag v0.1.0-rc.5 && git checkout v0.1.0-rc.5   # rollback to the previous release
-./deploy/bootstrap/mak4i-enterprise restore --from /srv/mak4i-backups/mak4i-backup-<timestamp>
+(cd deploy/compose && docker compose --profile tls build mak4i)   # 2. rc.5 image (omit --profile tls for private-http)
+./deploy/bootstrap/mak4i-enterprise restore --from "$B"           # 3. with v0.1.0-rc.5: restore, migrate, start
 ```
+
+`upgrade` prints these exact commands with your paths.
 
 If PostgreSQL reports a **collation version change** after the upgrade
 (`upgrade` warns and prints the command), rebuild the indexes once. This
@@ -897,6 +908,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `upgrade` | Back up, then `v0.1.0-rc.5` → `v2.0.0-rc.1` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
+| `rollback` | Prepare a rollback to `v0.1.0-rc.5`: stop MAK4I and empty the database (then restore with v0.1.0-rc.5) | Yes (confirmation required) |
 | `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
 
 Options that never take secrets; `--non-interactive` never prompts (a

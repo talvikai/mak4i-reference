@@ -171,6 +171,13 @@ rules, resource groups) is architecture-defined and **not** implemented.
 - CIMD transport security is tested with the real TLS handshake (untrusted,
   wrong-host and expired certificates refused) and address pinning (no DNS
   rebinding; non-public addresses refused before connecting).
+- **Fixed (found in the acceptance run): rollback to v0.1.0-rc.5.** The
+  backup `upgrade` takes is now labeled with the installed release
+  (`v0.1.0-rc.5`), so that release's `restore` accepts it (it was labeled
+  `v2.0.0-rc.1` and refused). New `mak4i-enterprise rollback --from <backup>`
+  stops MAK4I and empties the database, because v0.1.0-rc.5 can neither
+  start on the upgraded schema nor drop its new tables; `upgrade` prints the
+  complete, tested rollback sequence.
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).

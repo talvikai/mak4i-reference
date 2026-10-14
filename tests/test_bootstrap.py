@@ -569,6 +569,46 @@ def test_upgrade_from_rc5_backs_up_first_and_adopts_the_installation(host):
     assert "MAK4I_INSTALLED_RELEASE=v2.0.0-rc.1" in env
     assert "MAK4I_INSTALL_STATE=complete" in env
     assert "Rollback to" in r.output
+    # The pre-upgrade backup holds the installed release's data and is
+    # labeled with it, so that release's own restore accepts it (found on a
+    # real host: a v2-labeled rc.5 backup was refused by the rc.5 restore).
+    first, *later = sorted(host.backups.glob("mak4i-backup-*"))
+    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.5" in (first / "manifest.env").read_text()
+    # A re-applied upgrade (already v2) backs up v2 data, labeled v2.
+    assert all("MAK4I_BACKUP_RELEASE=v2.0.0-rc.1" in (b / "manifest.env").read_text() for b in later)
+    # The printed rollback empties the database first and restores with rc.5.
+    assert "rollback --from" in r.output and "build mak4i" in r.output
+    assert "up -d --build --wait" not in r.output
+
+
+def test_rollback_empties_the_database_for_the_previous_release(host):
+    assert _install_private(host).returncode == 0
+    assert host.run("backup", "--backup-dir", str(host.backups)).returncode == 0
+    (dest,) = list(host.backups.glob("mak4i-backup-*"))
+    _relabel_backup(dest, "v0.1.0-rc.5")
+    r = host.run("rollback", "--from", str(dest), "--yes")
+    assert r.returncode == 0, r.output
+    assert ["stop", "mak4i"] in host.compose_calls("stop")
+    drops = [c for c in host.compose_calls("exec") if any("DROP DATABASE" in a for a in c)]
+    assert drops and any("CREATE DATABASE" in a for a in drops[0])
+    assert "git -C" in r.output and "checkout v0.1.0-rc.5" in r.output
+    assert f"restore --from {dest}" in r.output
+    # Rollback never restores with this release's code.
+    assert not [c for c in host.compose_calls("exec") if any("pg_restore -U" in a for a in c)]
+
+
+def test_rollback_requires_confirmation_and_a_previous_release_backup(host):
+    assert _install_private(host).returncode == 0
+    assert host.run("backup", "--backup-dir", str(host.backups)).returncode == 0
+    (dest,) = list(host.backups.glob("mak4i-backup-*"))
+    before = len(_mutations(host))
+    r = host.run("rollback", "--from", str(dest), "--non-interactive")
+    assert r.returncode == 7 and "rollback restores a v0.1.0-rc.5 backup" in r.output  # a v2 backup
+    _relabel_backup(dest, "v0.1.0-rc.5")
+    r = host.run("rollback", "--from", str(dest), "--non-interactive")
+    assert r.returncode == 6  # not confirmed
+    assert len(_mutations(host)) == before
+    assert not [c for c in host.compose_calls("exec") if any("DROP DATABASE" in a for a in c)]
 
 
 # -- uninstall -----------------------------------------------------------------------

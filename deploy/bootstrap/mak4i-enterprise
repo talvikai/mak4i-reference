@@ -51,6 +51,8 @@ Commands:
   upgrade     Back up, then upgrade $UPGRADE_FROM -> $MAK4I_RELEASE
   backup      Timestamped backup of the database, artifacts and .env
   restore     Replace all data with a backup (asks for confirmation)
+  rollback    Prepare a rollback to $UPGRADE_FROM: stop MAK4I and empty the
+              database, then restore the pre-upgrade backup with $UPGRADE_FROM
   uninstall   Remove the containers; keeps data unless --destroy-data
 
 Install / preflight options:
@@ -76,7 +78,7 @@ Other options:
   --backup-dir DIR            backup location, outside the repository
                               (default \$HOME/mak4i-backups)
   --online                    backup without stopping MAK4I (less consistent)
-  --from DIR                  restore: the backup directory
+  --from DIR                  restore, rollback: the backup directory
   --use-backup DIR            upgrade: use this verified backup instead of taking one
   --from-version TAG          upgrade: assert the installed version
   --preserve-data             uninstall: keep volumes and .env (the default)
@@ -118,6 +120,7 @@ _allowed_options() {
     upgrade) echo "profile backup-dir online use-backup from-version timeout" ;;
     backup) echo "backup-dir online timeout" ;;
     restore) echo "from yes timeout" ;;
+    rollback) echo "from yes" ;;
     uninstall) echo "preserve-data destroy-data yes-destroy-data remove-images" ;;
   esac
 }
@@ -208,13 +211,13 @@ main() {
   HTTP_PORT=8080 CHECK_INBOUND=0 ENDPOINT="" INSTANCE_NAME="MAK4I Enterprise"
   ENVIRONMENT_LABEL=enterprise CERT_TIMEOUT=300 TIMEOUT=300 BACKUP_DIR="" ONLINE=0
   RESTORE_FROM="" USE_BACKUP="" FROM_VERSION="" PRESERVE_DATA=0 DESTROY_DATA=0
-  YES_DESTROY=0 REMOVE_IMAGES=0 YES=0
+  YES_DESTROY=0 REMOVE_IMAGES=0 YES=0 BACKUP_RELEASE=""
 
   (($# > 0)) || { usage; exit "$EX_USAGE"; }
   case "$1" in
     -h | --help | help) usage; exit "$EX_OK" ;;
     --version) printf 'mak4i-enterprise %s\n' "$MAK4I_RELEASE"; exit "$EX_OK" ;;
-    preflight | install | status | admin-info | restart | upgrade | backup | restore | uninstall) COMMAND=$1 ;;
+    preflight | install | status | admin-info | restart | upgrade | backup | restore | rollback | uninstall) COMMAND=$1 ;;
     *) usage_error "unknown command: $1" ;;
   esac
   shift
