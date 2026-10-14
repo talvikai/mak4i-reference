@@ -794,3 +794,31 @@ def test_session_cannot_be_used_with_another_principals_oauth_token(world):  # M
         a["access_token"], "mak4i_create", _create_args(world, "cache", "caching_decision", "Use RED"), session=session_a
     )
     assert rpc["result"]["isError"] is False
+
+
+# -- M25 / M38: consent is never remembered; token, revocation and registration are rate-limited --
+
+
+def test_consent_is_asked_again_even_for_a_pre_registered_client(tmp_path):  # M25
+    w = World(tmp_path)
+    with w.client:
+        w.obtain_code()  # signed in and approved once; the browser session is still valid
+        again = w.authorize(state="st-2")
+        assert again.status_code == 200, again.headers.get("location")  # no silent redirect with a code
+        after_sign_in = w.sign_in(again)
+    assert after_sign_in.status_code == 200
+    assert 'name="decision"' in after_sign_in.text  # consent is asked again, never remembered
+
+
+@pytest.mark.parametrize("endpoint", ["/oauth/token", "/oauth/revoke", "/oauth/register"])
+def test_token_revocation_and_registration_endpoints_are_rate_limited(tmp_path, endpoint):  # M38
+    w = World(tmp_path, rate_limit_per_minute=3, enable_dcr=True)
+    with w.client:
+        if endpoint == "/oauth/register":
+            send = lambda: w.client.post(endpoint, json={"redirect_uris": ["http://127.0.0.1/cb"], "client_name": "x"})  # noqa: E731
+        else:
+            send = lambda: w.client.post(endpoint, data={"client_id": w.public_client["client_id"], "token": "x",  # noqa: E731
+                                                         "grant_type": "authorization_code", "code": "nope"})
+        statuses = [send().status_code for _ in range(4)]
+    assert 429 not in statuses[:3], statuses
+    assert statuses[3] == 429

@@ -6,8 +6,11 @@ in the protocol's `CONFORMANCE.md`, at the revision pinned in
 `201afde0c179b7bfca1fc6659bd6173c4341a564`, protocol version 0.2). The
 Reference claims the profiles reported by `mak4i_whoami.protocol.profiles`
 (`src/mak4i/protocol.py`): **`server-project-records`** plus
-**`transport-stdio`** (stdio) or **`transport-http-credential`** (HTTP). It
-does not claim `transport-http-oauth`. This is self-assessed evidence: no
+**`transport-stdio`** (stdio) or **`transport-http-credential`** (HTTP), and,
+when OAuth is enabled (`MAK4I_OAUTH_ENABLED=1`), **`transport-http-oauth`**
+with **`oauth-cimd`** and/or **`oauth-dcr`** for each enabled registration
+mode. Profiles follow the deployment's configuration
+(`test_protocol_alignment.py::test_profiles_follow_the_deployment_configuration`). This is self-assessed evidence: no
 shared conformance suite or certification process exists yet, so nothing here
 makes the Reference "MAK4I Certified". Run the suite with `uv run pytest`.
 `tests/test_protocol_conformance.py` validates live interface output (MCP
@@ -103,7 +106,7 @@ Test paths are relative to `tests/` and use `file.py::test_name`.
 | I19 | No unauthenticated remote administration endpoint | `test_administration.py::test_no_remote_administration_endpoint` | Met |
 | I20 | Nothing deletes principals, projects, grants, credentials, records | `test_administration.py::test_no_destructive_purge_exists`, `::test_archive_is_safe_and_stops_access` | Met |
 | I21 | Owners retrieve admin events durably | `test_administration.py::test_events_are_durable_across_restarts` | Met |
-| I22 | Every refused write → §8.6 security event; 403 scope refusal attributed | `test_protocol_alignment.py::test_unknown_arguments_are_validation_errors_and_audited` (validation), `::test_differing_identity_claim_is_identity_mismatch` (identity), `::test_scope_refusal_is_attributed_to_the_principal` (scope, 403), `::test_duplicate_create_is_artifact_exists`; `test_engine_audit_wiring.py::test_supersede_rejected_logs_supersede_rejected_event` (lifecycle); `test_cli_audit_log.py::test_cli_writes_and_refusals_reach_the_audit_log` (CLI). Grant and `stale_head` refusals go through the same `_audited_write` wrapper (`api.py`) but no test asserts them. Missing grant: `test_protocol_alignment.py::test_write_without_grant_is_a_refused_write_event`. All paths, end to end: `test_write_attribution.py::test_cli_subprocess_attributes_successful_refused_and_denied_writes` (real `mak4i` executable), `::test_stdio_process_attributes_writes_and_logs_revocation` (real stdio server), `::test_http_writes_are_attributed_for_both_auth_methods`, `::test_unexpected_failure_is_a_write_failed_event`; secrets scanned in every captured log. | Met |
+| I22 | Every refused write → §8.6 security event; 403 scope refusal attributed | `test_protocol_alignment.py::test_unknown_arguments_are_validation_errors_and_audited` (validation), `::test_differing_identity_claim_is_identity_mismatch` (identity), `::test_scope_refusal_is_attributed_to_the_principal` (scope, 403), `::test_duplicate_create_is_artifact_exists`; `test_engine_audit_wiring.py::test_supersede_rejected_logs_supersede_rejected_event` (lifecycle); `test_cli_audit_log.py::test_cli_writes_and_refusals_reach_the_audit_log` (CLI). Grant and `stale_head` refusals go through the same `_audited_write` wrapper (`api.py`) but no test asserts them. Missing grant: `test_protocol_alignment.py::test_write_without_grant_is_a_refused_write_event`. All paths, end to end: `test_write_attribution.py::test_cli_subprocess_attributes_successful_refused_and_denied_writes` (real `mak4i` executable), `::test_stdio_process_attributes_writes_and_logs_revocation` (real stdio server), `::test_http_writes_are_attributed_for_both_auth_methods`, `::test_unexpected_failure_is_a_write_failed_event`; secrets scanned in every captured log. The events can't be disabled by configuration: `test_write_attribution.py::test_cli_audit_log_can_be_redirected_but_not_disabled` (`MAK4I_AUDIT_LOG=off` refused), `::test_server_log_level_never_silences_security_events`. Keeping the emitted events (retention, not discarding stderr) is the deployment's responsibility (`docs/DEPLOYMENT.md` → Operational logs), outside the implementation's conformance. | Met |
 | I23 | External identity adapter, if provided, behaves | Conditional. The Reference provides no external identity adapter. | Met (no dedicated test) |
 
 ### MAK-0008: tool, error and catalog criteria
@@ -136,15 +139,23 @@ Test paths are relative to `tests/` and use `file.py::test_name`.
 | M18 | Plain HTTP only on loopback; remote requires HTTPS | `test_protocol_alignment.py::test_plain_http_is_refused_off_loopback_unless_tls_is_terminated_upstream` (the server refuses to start on a non-loopback bind unless `MAK4I_TLS_TERMINATED_UPSTREAM=1`), `::test_server_process_refuses_a_non_loopback_plain_http_bind` (real process); the Compose stack declares upstream TLS (Caddy or the operator's proxy); OAuth URLs must be HTTPS off loopback (`test_oauth.py::test_settings_validation`); `test_bootstrap.py::test_tls_install_binds_mak4i_to_loopback_only`. The declaration is the operator's assertion; a `private-http` installation serving plain HTTP on a private network is a documented deployment limitation. | Met |
 | M21 | Foreign tokens rejected, never forwarded | `test_oauth.py::test_invalid_token_of_either_kind_never_falls_back` (JWT-shaped token → 401), `::test_token_for_another_resource_is_rejected_at_the_mcp_endpoint`. The server never forwards tokens to anything upstream. | Met |
 | M22 | Advertised URLs from configuration; forwarded headers only from trusted proxies | Configured URLs: `test_oauth.py::test_metadata_urls_follow_a_configured_path_prefix`; `test_cli.py::test_credential_issue_uses_public_endpoint_and_omits_stdio_guidance`. Proxy trust: `test_protocol_alignment.py::test_forwarded_headers_are_trusted_only_from_configured_proxies` — with `MAK4I_TRUSTED_PROXIES` unset, forwarded headers are off for every peer (uvicorn's implicit loopback trust is disabled); otherwise only the listed proxies. `test_settings.py::test_self_hosted_http_with_oauth` validates the setting. | Met |
-| M38 | Token/revocation/registration endpoints rate-limited; signing keys persisted and rotatable | With OAuth disabled, these endpoints do not exist. Tokens are opaque and stored hashed, so there are no signing keys. With OAuth enabled, `oauth/web.py` rate-limits `token`, `revoke` and `register`, but only the sign-in limiter has a test (`test_oauth.py::test_sign_in_is_rate_limited`). | Met (no dedicated test) |
+| M38 | Token/revocation/registration endpoints rate-limited; signing keys persisted and rotatable | With OAuth disabled, these endpoints do not exist. Tokens are opaque and stored hashed, so there are no signing keys. With OAuth enabled, `oauth/web.py` rate-limits `token`, `revoke` and `register`, but only the sign-in limiter has a test (`test_oauth.py::test_sign_in_is_rate_limited`). Every limiter: `test_oauth_acceptance.py::test_token_revocation_and_registration_endpoints_are_rate_limited` (token, revoke, register → 429). | Met |
 | M39 | Configuration validated at startup; invalid → refuse to start | `test_settings.py::test_server_refuses_to_start_on_invalid_configuration`, `::test_every_problem_is_reported_at_once` | Met |
 
-## Remaining MAK-0008 criteria: HTTP + OAuth (`transport-http-oauth`), not claimed
+## Remaining MAK-0008 criteria: HTTP + OAuth (`transport-http-oauth`), claimed when OAuth is enabled
 
-The Reference includes an OAuth authorization server, but it does not claim
-this profile. The profile needs real-client interoperability evidence (M16)
-first, and `mak4i_whoami` does not report it
-(`test_protocol_alignment.py::test_whoami_reports_protocol_and_scopes_key`).
+Claimed since real-client acceptance on 2026-10-14 (M16). The Reference test
+deployment ran build `2a2c992` (image `sha256:ea4eee21…`; real-client runs on
+`b347a24`, with identical server code) at `https://mak4i-enterprise-test.talvik.ai/mcp`.
+
+**Registration modes per client, as tested:**
+
+| Client | Mode that worked | Notes |
+|---|---|---|
+| Claude (claude.ai custom connector) | **Pre-registered** public client (`mak4i oauth client register … --redirect-uri https://claude.ai/api/mcp/auth_callback`; client ID under the connector's Advanced settings) | With CIMD alone, claude.ai stopped after discovery and never called `/oauth/authorize`. **CIMD with claude.ai is unproven.** |
+| ChatGPT (developer-mode connector) | **Pre-registered** public client via "user-defined OAuth" (redirect `https://chatgpt.com/connector_platform_oauth_redirect`) | **CIMD is not compatible:** ChatGPT's metadata document declares `token_endpoint_auth_method: private_key_jwt`, and MAK-0008 §8.3 accepts only `none`. The server refuses it, as specified. |
+| Claude Code | **CIMD** (`https://claude.ai/oauth/claude-code-client-metadata`, loopback redirect) | Requests every advertised scope, so only grants limit it |
+| DCR | No real client used it | Covered by automated tests only (M12, M32) |
 
 | ID | Criterion (short) | Evidence | Status |
 |---|---|---|---|
@@ -157,10 +168,10 @@ first, and `mak4i_whoami` does not report it
 | M9 | Sign-in codes single use, expire, rate-limited, never bearer | `test_oauth.py::test_sign_in_code_is_single_use`, `::test_sign_in_code_expires`, `::test_sign_in_is_rate_limited`, `::test_sign_in_code_is_never_a_bearer_token` | Met |
 | M10 | Consent page content; CSRF | `test_oauth.py::test_consent_page_names_principal_client_host_and_scopes`, `::test_consent_denied_redirects_with_access_denied`, `::test_csrf_is_enforced_on_sign_in` | Met |
 | M13 | OAuth state survives restart | `test_oauth.py::test_oauth_state_survives_a_restart`; `test_oauth_acceptance.py::test_oauth_state_survives_a_full_restart` (new engine, control plane, OAuth service and app over the same database: access and refresh tokens, replay detection, pending codes, clients, browser session) | Met |
-| M16 | Two independent real OAuth clients against reachable HTTPS | `test_oauth_sdk_client_e2e.py` is an in-process MCP Python SDK smoke test. By its own docstring it is not interoperability evidence. No recorded runs with real clients exist. | Not met |
+| M16 | Two independent real OAuth clients against reachable HTTPS | Real clients on the public HTTPS test deployment, 2026-10-13/14: **Claude** (claude.ai), **ChatGPT** and **Claude Code**. Each passed sign-in and consent, tool calls, expiry with silent refresh (`grant_type=refresh_token`), and grant denial. Revoking one authorization (Claude's) left ChatGPT and Claude Code working. Scope denial (403 `insufficient_scope`, attributed): Claude (then a step-up that gained `resolve`) and ChatGPT. Per-step server events and UTC times are in the acceptance evidence log. `test_oauth_sdk_client_e2e.py` remains a diagnostic smoke test only. | Met |
 | M23 | Sign-in codes local-only, ≥128 bits, hashed; no password exchange | `test_oauth_acceptance.py::test_cli_sign_in_code_has_at_least_128_bits_and_is_stored_only_hashed` (real CLI; 140 bits; hash only in the database; single use; expiry), `::test_no_password_or_credential_for_token_exchange_exists`; `test_administration.py::test_no_remote_administration_endpoint` | Met |
 | M24 | Browser session ≤ 15 min; agent can be resource owner | `test_oauth.py::test_browser_session_expires_on_the_server_clock`; `test_agent_identity.py::test_agents_can_write_through_oauth_and_are_still_the_author`. The default is 900 s and is not configurable through the environment. The settings constructor does not cap it (tests override it). | Met |
-| M25 | Remembered consent limited to pre-registered clients | Consent is never remembered (`oauth/service.py`), so the restriction holds trivially. | Met (no dedicated test) |
+| M25 | Remembered consent limited to pre-registered clients | Consent is never remembered: `test_oauth_acceptance.py::test_consent_is_asked_again_even_for_a_pre_registered_client` (a second authorization by the same pre-registered client gets no code without signing in and consenting again) | Met |
 | M26 | Cookie flags, `no-store`, `frame-ancestors 'none'` | `test_oauth.py::test_pages_forbid_framing_and_caching` | Met |
 | M27 | Authorization response carries `iss` | `test_oauth.py::test_full_authorization_code_flow_reaches_mcp_tools`, `::test_pkce_is_required_and_s256_only` | Met |
 | M28 | ≥128-bit hashed codes/tokens; access TTL 1 h default, max 24 h | `test_oauth.py::test_secrets_are_stored_only_as_hashes`, `::test_full_authorization_code_flow_reaches_mcp_tools` (`expires_in == 3600`), `::test_settings_validation` (TTL over the maximum rejected) | Met |
@@ -169,12 +180,12 @@ first, and `mak4i_whoami` does not report it
 | M31 | No `scope` → `mak4i:read mak4i:write`; credentials have no ceiling | `test_oauth_acceptance.py::test_authorization_without_scope_grants_read_write_only`; `test_oauth.py::test_principal_credentials_keep_working_with_oauth_enabled` | Met |
 | M33 | Owners list/disable clients, revoke one/principal/client authorizations, each audited | `test_oauth_acceptance.py::test_revoking_one_authorization_leaves_the_principals_others_working` (real CLI), `::test_every_oauth_admin_action_is_durably_audited`, `::test_denied_oauth_admin_actions_are_durably_audited`; `test_oauth.py::test_admin_revocation_by_principal_and_client` | Met |
 
-## OAuth options: CIMD (`oauth-cimd`) and DCR (`oauth-dcr`), not claimed
+## OAuth options: CIMD (`oauth-cimd`) and DCR (`oauth-dcr`), claimed for each enabled mode
 
 | ID | Criterion (short) | Evidence | Status |
 |---|---|---|---|
 | M12 | Only enabled modes advertised; CIMD refuses non-public addresses | `test_oauth.py::test_dcr_is_off_by_default`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_disabled_is_not_advertised_and_refused`, `::test_cimd_refuses_non_public_addresses`, `::test_cimd_url_rules` | Met |
-| M32 | Pre-registered clients org-bound; CIMD fetch limits; DCR public only | `test_oauth.py::test_pre_registered_client_is_limited_to_its_organization`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_document_validation`, `::test_cimd_refuses_non_public_addresses`; fetch limits against a real local HTTP server: `test_oauth_acceptance.py::test_cimd_fetch_never_follows_redirects`, `::test_cimd_fetch_enforces_the_size_limit`, `::test_cimd_fetch_times_out`, `::test_cimd_documents_are_cached_within_their_lifetime`, `::test_cimd_cache_applies_through_the_authorization_endpoint`. TLS verification and IP pinning over real HTTPS are not exercised (the tests replace the HTTPS connection). | Met |
+| M32 | Pre-registered clients org-bound; CIMD fetch limits; DCR public only | `test_oauth.py::test_pre_registered_client_is_limited_to_its_organization`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_document_validation`, `::test_cimd_refuses_non_public_addresses`; fetch limits against a real local HTTP server: `test_oauth_acceptance.py::test_cimd_fetch_never_follows_redirects`, `::test_cimd_fetch_enforces_the_size_limit`, `::test_cimd_fetch_times_out`, `::test_cimd_documents_are_cached_within_their_lifetime`, `::test_cimd_cache_applies_through_the_authorization_endpoint`. TLS and address safety with the real connection and handshake: `test_cimd_transport_security.py::test_invalid_tls_is_refused` (self-signed, wrong host, expired), `::test_untrusted_ca_is_refused_by_default`, `::test_trusted_certificate_for_the_client_host_is_accepted` (control), `::test_connection_is_pinned_to_the_validated_address` (resolved once; connects to the validated IP; a later DNS answer is never used), `::test_unsafe_addresses_are_refused_before_connecting`, `::test_literal_unsafe_hosts_are_refused`. A successful real-client connection is not evidence for these refusals. | Met |
 
 ## Not applicable or not implemented
 
@@ -192,16 +203,12 @@ first, and `mak4i_whoami` does not report it
 
 These items are Partial or Not met:
 
-- **M16 (OAuth, not claimed):** there is no evidence from two real clients
-  against an HTTPS deployment. This is why `transport-http-oauth` is not
-  claimed.
-- **M32 (CIMD option, not claimed):** the fetch limits are tested over plain
-  HTTP to a local server; TLS verification and IP pinning against real hosts
-  are left to the real-client acceptance run.
-
+- **Registration modes (M16, `oauth-cimd`):** CIMD works with Claude Code.
+  claude.ai and ChatGPT connect through pre-registration. ChatGPT's metadata
+  document declares `private_key_jwt`, which MAK-0008 §8.3 doesn't accept
+  for CIMD (kept for this release). claude.ai's CIMD path is unproven.
 Criteria marked Met (no dedicated test) in the claimed profiles still lack a
-direct assertion: P14, C26, I23 (conditional; no external identity adapter
-exists) and M38 (OAuth endpoint rate limits). Every criterion of the claimed
-profiles is Met. `MAK4I_TLS_TERMINATED_UPSTREAM=1` is the operator's
+direct assertion: P14, C26 and I23 (conditional; no external identity
+adapter exists). Every criterion of the claimed profiles is Met. `MAK4I_TLS_TERMINATED_UPSTREAM=1` is the operator's
 declaration that TLS is terminated in front of the server; the server can't
 verify it.

@@ -569,6 +569,92 @@ def test_upgrade_from_rc5_backs_up_first_and_adopts_the_installation(host):
     assert "MAK4I_INSTALLED_RELEASE=v2.0.0-rc.1" in env
     assert "MAK4I_INSTALL_STATE=complete" in env
     assert "Rollback to" in r.output
+    # The pre-upgrade backup holds the installed release's data and is
+    # labeled with it, so that release's own restore accepts it (found on a
+    # real host: a v2-labeled rc.5 backup was refused by the rc.5 restore).
+    first, *later = sorted(host.backups.glob("mak4i-backup-*"))
+    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.5" in (first / "manifest.env").read_text()
+    # A re-applied upgrade (already v2) backs up v2 data, labeled v2.
+    assert all("MAK4I_BACKUP_RELEASE=v2.0.0-rc.1" in (b / "manifest.env").read_text() for b in later)
+    # The printed rollback empties the database first and restores with rc.5.
+    assert "rollback --from" in r.output and "build mak4i" in r.output
+    assert "up -d --build --wait" not in r.output
+
+
+def _rollback_ready(host):
+    """An installed v2 stack and an rc.5-labeled pre-upgrade backup of it."""
+    assert _install_private(host).returncode == 0
+    host.set_state(**{**host.state(), "version": "2.0.0rc1"})
+    assert host.run("backup", "--backup-dir", str(host.backups)).returncode == 0
+    (dest,) = list(host.backups.glob("mak4i-backup-*"))
+    _relabel_backup(dest, "v0.1.0-rc.5")
+    return dest
+
+
+def test_rollback_takes_a_recovery_backup_keeps_writers_out_then_empties_the_database(host):
+    dest = _rollback_ready(host)
+    before_calls = len(host.calls())
+    r = host.run("rollback", "--from", str(dest), "--yes", "--backup-dir", str(host.backups))
+    assert r.returncode == 0, r.output
+    calls = host.calls()[before_calls:]
+    flat = [" ".join(c) for c in calls]
+    dump = next(i for i, c in enumerate(flat) if "pg_dump" in c)
+    drop = next(i for i, c in enumerate(flat) if "DROP DATABASE" in c)
+    assert dump < drop, "the recovery backup must be taken before anything is deleted"
+    assert not [c for c in flat[dump:drop] if c.endswith("start mak4i")], "writers must stay stopped"
+    # The recovery backup is kept, complete and labeled with the current release.
+    recovery = sorted(p for p in host.backups.glob("mak4i-backup-*") if p != dest)[-1]
+    assert "MAK4I_BACKUP_RELEASE=v2.0.0-rc.1" in (recovery / "manifest.env").read_text()
+    assert f"Recovery backup of the v2.0.0-rc.1 data: {recovery}" in r.output
+    assert f"restore --from {recovery}" in r.output  # how to undo
+    assert "checkout v0.1.0-rc.5" in r.output and f"restore --from {dest}" in r.output
+    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.5" in host.env_file.read_text()
+    # Rollback never restores with this release's code.
+    assert not [c for c in flat if "pg_restore -U" in c]
+
+
+def _no_destruction(host, before_calls):
+    flat = [" ".join(c) for c in host.calls()[before_calls:]]
+    assert not [c for c in flat if "DROP DATABASE" in c or "pg_dump" in c]
+
+
+@pytest.mark.parametrize("problem", ["v2-backup", "foreign-endpoint", "other-profile", "not-v2", "unconfirmed"])
+def test_rollback_validates_before_anything_is_changed(host, problem):
+    dest = _rollback_ready(host)
+    args = ["rollback", "--from", str(dest), "--yes"]
+    if problem == "v2-backup":
+        _relabel_backup(dest, "v2.0.0-rc.1")
+        expect = "rollback restores a v0.1.0-rc.5 backup"
+    elif problem == "foreign-endpoint":
+        env = dest / "env"
+        env.write_text(env.read_text() + "MAK4I_PUBLIC_ENDPOINT=https://other.example.com/mcp\n")
+        expect = "belongs to another installation"
+    elif problem == "other-profile":
+        manifest = dest / "manifest.env"
+        manifest.write_text(re.sub(r"(?m)^MAK4I_BACKUP_PROFILE=.*$", "MAK4I_BACKUP_PROFILE=tls", manifest.read_text()))
+        expect = "from a tls installation"
+    elif problem == "not-v2":
+        host.set_state(**{**host.state(), "version": "0.1.0rc5"})
+        expect = "rollback applies to a v2.0.0-rc.1 installation"
+    else:
+        args = ["rollback", "--from", str(dest), "--non-interactive"]
+        expect = "confirmation required"
+    before_calls = len(host.calls())
+    r = host.run(*args)
+    assert r.returncode != 0 and expect in r.output, r.output
+    _no_destruction(host, before_calls)
+    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.5" not in host.env_file.read_text()
+
+
+def test_upgrade_trusts_the_running_version_over_a_stale_record(host):
+    host.env_file.write_text("POSTGRES_PASSWORD=abc\nMAK4I_INSTALLED_RELEASE=v2.0.0-rc.1\nMAK4I_INSTALL_STATE=complete\n")
+    host.env_file.chmod(0o600)
+    host.set_state(running=["postgres", "mak4i"], volumes=["mak4i_pgdata", "mak4i_artifacts"], version="0.1.0rc5")
+    r = host.run("upgrade", "--backup-dir", str(host.backups))
+    assert "recorded release v2.0.0-rc.1 differs from the running v0.1.0-rc.5" in r.output
+    assert "upgrading to v2.0.0-rc.1" in r.output
+    (backup,) = host.backups.glob("mak4i-backup-*")
+    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.5" in (backup / "manifest.env").read_text()
 
 
 # -- uninstall -----------------------------------------------------------------------

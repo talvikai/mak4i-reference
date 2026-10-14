@@ -68,6 +68,7 @@ The tools a client sees: `mak4i_whoami`, `mak4i_list_projects`,
 |---|---|
 | Architecture | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (deployment architecture and runtime contract), [`docs/MVP_ARCHITECTURE.md`](docs/MVP_ARCHITECTURE.md) (engine and authorization design) |
 | Walkthrough | [`docs/DEMO.md`](docs/DEMO.md): connecting clients, then create → evolve → history → denial |
+| Administration | [`docs/ADMIN_CLI.md`](docs/ADMIN_CLI.md): every administrative CLI command, who may run it, what it records and what it prints |
 | Measurements | [`docs/TOKEN_MEASUREMENT.md`](docs/TOKEN_MEASUREMENT.md), [`docs/LATENCY_BENCHMARK.md`](docs/LATENCY_BENCHMARK.md) |
 | Security | [`SECURITY.md`](SECURITY.md): supported versions, how to report a vulnerability privately, image and dependency policy |
 | Changes | [`CHANGELOG.md`](CHANGELOG.md) |

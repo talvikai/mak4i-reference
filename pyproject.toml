@@ -26,6 +26,8 @@ dev = [
     # Protocol conformance tests (tests/test_protocol_conformance.py).
     "jsonschema>=4.23",
     "rfc3339-validator>=0.1.4",
+    # Throwaway CA and certificates for CIMD TLS tests.
+    "cryptography>=43",
 ]
 
 [project.scripts]

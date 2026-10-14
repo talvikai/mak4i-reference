@@ -101,8 +101,9 @@ rules, resource groups) is architecture-defined and **not** implemented.
 - `mak4i_whoami` reports `protocol: {version, profiles}` and always carries
   the `scopes` key (`null` for credential sessions) (MAK-0008 §10.5). The
   Reference claims `server-project-records` plus its transport profile
-  (`transport-stdio` or `transport-http-credential`); `transport-http-oauth`
-  is not claimed until real-client interoperability (M16) is verified.
+  (`transport-stdio` or `transport-http-credential`), and, with OAuth
+  enabled, `transport-http-oauth` with the enabled `oauth-cimd` /
+  `oauth-dcr` options (see below).
 - **Breaking: closed tool inputs** (MAK-0008 §10.2). Unknown arguments,
   wrong types and out-of-range values fail `validation_error`; an identity
   claim (`agent_id`, `principal_id`, `created_by`, `author`, `actor`,
@@ -134,7 +135,10 @@ rules, resource groups) is architecture-defined and **not** implemented.
   (MAK-0008 §3.3). A reverse proxy on the same host must now be listed.
 - CLI commands emit the same audit and security events as the server, as
   JSON lines on **stderr** (stdout stays machine-readable);
-  `MAK4I_AUDIT_LOG` = `stderr` (default) | a file path | `off`.
+  `MAK4I_AUDIT_LOG` = `stderr` (default) or a file path. Security events
+  can't be switched off: `MAK4I_AUDIT_LOG=off` is refused, and
+  `MAK4I_LOG_LEVEL` (now diagnostic logging only) no longer silences them
+  (it did at `WARNING` or above).
 - Unexpected failures of a write are logged as `WRITE_FAILED` (not as a
   refusal); recovered resolutions as `RESOLUTION_RECOVERED` with the
   original actor and outcome. A stdio server logs its startup
@@ -156,6 +160,44 @@ rules, resource groups) is architecture-defined and **not** implemented.
   `MAK4I_TLS_TERMINATED_UPSTREAM=1` declares a TLS-terminating proxy or
   platform in front of it. The Compose stack sets it; set it yourself for
   any other container or `mak4i serve --host <non-loopback>` deployment.
+- `docs/ADMIN_CLI.md`: inventory of every administrative command (who may
+  run it, what it records, its output), with acceptance tests that run the
+  real `mak4i` executable for provisioning, disabling, grants, credential
+  and OAuth revocation, and permission boundaries.
+- **Fixed:** `mak4i admin revoke-oauth --all` (after a restore) now records
+  its administrative event in every affected organization, so their owners
+  see it in `mak4i audit list` (it was recorded without an organization).
+- **Fixed:** `mak4i credential issue --expires-at <invalid>` prints an error
+  line instead of a traceback.
+- CIMD transport security is tested with the real TLS handshake (untrusted,
+  wrong-host and expired certificates refused) and address pinning (no DNS
+  rebinding; non-public addresses refused before connecting).
+- **Fixed (found in the acceptance run): rollback to v0.1.0-rc.5.** The
+  backup `upgrade` takes is now labeled with the installed release
+  (`v0.1.0-rc.5`), so that release's `restore` accepts it (it was labeled
+  `v2.0.0-rc.1` and refused). New `mak4i-enterprise rollback --from <backup>`
+  stops MAK4I and empties the database, because v0.1.0-rc.5 can neither
+  start on the upgraded schema nor drop its new tables; it also records
+  v0.1.0-rc.5 as the installed release. `upgrade` prints the complete,
+  tested rollback sequence, and trusts the running server's version over a
+  stale recorded release (warning about the mismatch).
+- **OAuth profile claimed.** With `MAK4I_OAUTH_ENABLED=1`, `mak4i_whoami`
+  reports `transport-http-oauth`, plus `oauth-cimd` / `oauth-dcr` for each
+  enabled registration mode (MAK-0008 §10.5).
+  - Real-client acceptance: Claude (claude.ai) and ChatGPT through a
+    pre-registered client; Claude Code through CIMD.
+  - ChatGPT's metadata document declares `private_key_jwt`, which MAK4I
+    doesn't accept for CIMD, so use pre-registration.
+  - CIMD with claude.ai is unproven.
+- `mak4i-enterprise rollback` checks before changing anything: the backup
+  is the verified pre-upgrade one, and this installation runs v2.0.0-rc.1
+  with the same profile and endpoint. It then takes a recovery backup and
+  keeps MAK4I stopped from that backup until the database is emptied.
+- **Fixed:** `mak4i grant create` with an unknown permission prints an
+  error line instead of a traceback (the `failed` administrative event was
+  already recorded).
+- **Fixed:** requests without a token are logged with `auth_method: null`
+  and no principal (they were labeled `credential`).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).
@@ -174,17 +216,17 @@ rules, resource groups) is architecture-defined and **not** implemented.
 
 ### Known limitations
 
-- Real-client OAuth interoperability (claude.ai / Claude Code and MCP
-  Inspector over public HTTPS) is not yet verified for this release
-  candidate; see the release notes before relying on a specific client.
+- OAuth clients verified end to end over public HTTPS: Claude (claude.ai,
+  pre-registered), ChatGPT (pre-registered) and Claude Code (CIMD). Treat
+  other clients as untested.
 - One server process per installation (see DEPLOYMENT.md → Replicas).
 - Skills are planned/deferred and not part of this release.
 - A general writer-initiated withdraw/retire operation is not provided
   (protocol issue #4); `withdrawn` is set only by conflict resolution.
 - Supported protocol profiles: `server-project-records` with
-  `transport-stdio` or `transport-http-credential` (reported by
-  `mak4i_whoami.protocol`). `transport-http-oauth` is not claimed until
-  real-client acceptance. MAK-0009 (organization knowledge, rules,
+  `transport-stdio` or `transport-http-credential`, plus
+  `transport-http-oauth` and the enabled `oauth-cimd` / `oauth-dcr` options
+  when OAuth is on (reported by `mak4i_whoami.protocol`). MAK-0009 (organization knowledge, rules,
   resource groups, `govern`) and the Draft (In Progress) MAK-0002, MAK-0003
   and MAK-0007 are not implemented. Evidence and gaps:
   `docs/CONFORMANCE_EVIDENCE.md`.

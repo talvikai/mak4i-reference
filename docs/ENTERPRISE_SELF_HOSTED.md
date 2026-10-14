@@ -387,6 +387,9 @@ Once you hold the owner's token you can stop passing `--actor`: pass the
 token in the environment (`docker compose exec -e MAK4I_TOKEN mak4i …`,
 with `MAK4I_TOKEN` exported in your shell) and the CLI authenticates it.
 
+Every administrative command, who may run it, what it records and what it
+prints is listed in the [administrative CLI reference](ADMIN_CLI.md).
+
 ## 7. Connect AI clients
 
 There are two ways to authenticate a client: a static bearer credential
@@ -445,13 +448,24 @@ curl -s https://mak4i.example.com/.well-known/oauth-authorization-server
 ```
 
 **Connect a client.** Add the server by URL only
-(`https://mak4i.example.com/mcp`) and choose OAuth. Clients that publish a
-client ID metadata document (for example Claude) register themselves; for
-others, an owner pre-registers the client:
+(`https://mak4i.example.com/mcp`) and choose OAuth. How each client
+registers, as verified for this release:
+
+| Client | Registration | What to do |
+|---|---|---|
+| Claude Code | Client ID metadata document (CIMD), automatic | Nothing: `claude mcp add --transport http <name> https://mak4i.example.com/mcp`, then `/mcp` → Authenticate |
+| Claude (claude.ai custom connector) | **Pre-registered** client | Register it (below) with redirect URI `https://claude.ai/api/mcp/auth_callback`, then enter the printed client ID under the connector's **Advanced settings** (no secret) |
+| ChatGPT (developer-mode connector) | **Pre-registered** client | Register it with redirect URI `https://chatgpt.com/connector_platform_oauth_redirect`; in the connector choose **user-defined OAuth** and enter the client ID (no secret) and scopes `mak4i:read mak4i:write` |
+
+ChatGPT also offers a client ID metadata document, but that document
+declares `private_key_jwt` client authentication, and MAK4I accepts
+metadata documents only for public clients (MAK-0008 §8.3). Use
+pre-registration for ChatGPT. Any other client: try CIMD first, then
+pre-registration; treat it as untested.
 
 ```bash
 docker compose exec mak4i mak4i oauth client register --actor "$OWNER" \
-  --name "My client" --redirect-uri https://client.example/callback
+  --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback
 ```
 
 **Sign in.** When the client opens the MAK4I sign-in page, get a code
@@ -623,10 +637,29 @@ Keep the backup's `.env` (it holds the database password), and export
 anything you need from the post-upgrade period first (for example
 `mak4i audit list`, `mak4i_history`).
 
+v0.1.0-rc.5 can't start on the upgraded database, and its `restore`
+can't remove the tables v2.0.0-rc.1 added, so the rollback starts with
+**this** release's bootstrap. Before changing anything, `rollback` checks:
+- that the backup is complete and is the `v0.1.0-rc.5` pre-upgrade backup;
+- that this installation runs v2.0.0-rc.1, with the same profile and
+  endpoint as the backup.
+
+It then takes a **recovery backup** of the current data, keeps MAK4I
+stopped from that point on (no writes can slip in), checks that it is
+stopped, and empties the database. The recovery backup is kept: restoring
+it with this release undoes the rollback.
+v0.1.0-rc.5's own `restore` then loads the pre-upgrade backup (labeled
+`v0.1.0-rc.5` by `upgrade`), runs its migrations and starts:
+
 ```bash
+B=/srv/mak4i-backups/mak4i-backup-<timestamp>                    # printed by upgrade
+./deploy/bootstrap/mak4i-enterprise rollback --from "$B"          # 1. with v2.0.0-rc.1: stop MAK4I, empty the database
 git fetch --depth 1 origin tag v0.1.0-rc.5 && git checkout v0.1.0-rc.5   # rollback to the previous release
-./deploy/bootstrap/mak4i-enterprise restore --from /srv/mak4i-backups/mak4i-backup-<timestamp>
+(cd deploy/compose && docker compose --profile tls build mak4i)   # 2. rc.5 image (omit --profile tls for private-http)
+./deploy/bootstrap/mak4i-enterprise restore --from "$B"           # 3. with v0.1.0-rc.5: restore, migrate, start
 ```
+
+`upgrade` prints these exact commands with your paths.
 
 If PostgreSQL reports a **collation version change** after the upgrade
 (`upgrade` warns and prints the command), rebuild the indexes once. This
@@ -894,6 +927,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `upgrade` | Back up, then `v0.1.0-rc.5` → `v2.0.0-rc.1` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
+| `rollback` | Prepare a rollback to `v0.1.0-rc.5`: stop MAK4I and empty the database (then restore with v0.1.0-rc.5) | Yes (confirmation required) |
 | `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
 
 Options that never take secrets; `--non-interactive` never prompts (a

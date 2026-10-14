@@ -482,6 +482,21 @@ def _tighten_input_schemas(server: MCPServer) -> None:
                 prop.update(constraint)
 
 
+def _deployment_profiles() -> list[str]:
+    """The profiles this deployment supports, from its configuration (an
+    invalid OAuth configuration stops the server at start anyway)."""
+    transport = resolve_transport()
+    oauth = None
+    if transport != "stdio":
+        try:
+            from mak4i.oauth import OAuthSettings
+
+            oauth = OAuthSettings.from_env()
+        except Exception:
+            oauth = None
+    return claimed_profiles(transport, oauth)
+
+
 def build_server(
     engine: MAK4IEngine,
     *,
@@ -514,7 +529,7 @@ def build_server(
     connection = connection or resolve_connection_identity()
     protocol_info = ProtocolInfo(
         version=PROTOCOL_VERSION,
-        profiles=profiles if profiles is not None else claimed_profiles(resolve_transport()),
+        profiles=profiles if profiles is not None else _deployment_profiles(),
     )
     server = _MAK4IServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
     server._mak4i_audit = getattr(engine, "_audit", None)
@@ -1011,7 +1026,7 @@ class _AuthMiddleware:
                 )
 
     def _log_failure(
-        self, correlation_id: str, reason: str, auth_method: str, *, credential_id: str | None = None
+        self, correlation_id: str, reason: str, auth_method: str | None, *, credential_id: str | None = None
     ) -> None:
         if self._audit is not None:
             self._audit.log_authenticate(
@@ -1035,14 +1050,14 @@ class _AuthMiddleware:
         authorizations = [v.decode("latin-1") for k, v in headers if k == b"authorization"]
         query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
         if len(authorizations) > 1 or "access_token" in query:
-            self._log_failure(correlation_id, "invalid_request", CREDENTIAL)
+            self._log_failure(correlation_id, "invalid_request", None)
             await self._reject(scope, receive, send, 400, "invalid_request")
             return
 
         scheme, _, token = (authorizations[0] if authorizations else "").strip().partition(" ")
         token = token.strip()
         if scheme.lower() != "bearer" or not token:
-            self._log_failure(correlation_id, "missing_token", CREDENTIAL)
+            self._log_failure(correlation_id, "missing_token", None)
             await self._reject(scope, receive, send, 401, None)
             return
 
@@ -1219,6 +1234,11 @@ def configure_audit_logging(level: str = "INFO") -> None:
     actually work). format="%(message)s" keeps each line pure JSON, as
     AuditLogger emits it."""
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(message)s")
+    # MAK-0006 §8.6: security events are always emitted. MAK4I_LOG_LEVEL
+    # tunes diagnostic logging only; it never silences the audit stream.
+    from mak4i.audit import LOGGER_NAME
+
+    logging.getLogger(LOGGER_NAME).setLevel(logging.INFO)
 
 
 def _stdio_authenticate(control_plane: ControlPlane, audit: AuditLogger, token: str, *, quiet: bool = False):

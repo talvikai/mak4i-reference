@@ -481,12 +481,15 @@ def _cmd_principal_show(args: argparse.Namespace) -> int:
 def _cmd_grant_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_actor(control_plane, args)
-    grant = control_plane.grant(
-        actor=actor,
-        principal_id=args.principal_id,
-        project_id=args.project_id,
-        permissions=_split_permissions(args.permissions),
-    )
+    try:
+        grant = control_plane.grant(
+            actor=actor,
+            principal_id=args.principal_id,
+            project_id=args.project_id,
+            permissions=_split_permissions(args.permissions),
+        )
+    except ValueError as exc:  # pydantic validation (e.g. an unknown permission)
+        raise _CliError(_first_validation_message(exc)) from exc
     _print_json(grant)
     return 0
 
@@ -550,7 +553,10 @@ def _print_connection_instructions(*, raw_token: str) -> None:
 def _cmd_credential_issue(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_actor(control_plane, args)
-    expires_at = datetime.fromisoformat(args.expires_at) if args.expires_at else None
+    try:
+        expires_at = datetime.fromisoformat(args.expires_at) if args.expires_at else None
+    except ValueError as exc:
+        raise _CliError(f"--expires-at must be an ISO 8601 date-time: {args.expires_at!r}") from exc
     credential, raw_token = control_plane.issue_credential(
         actor=actor,
         principal_id=args.principal_id,
@@ -649,12 +655,20 @@ def _cmd_admin_revoke_oauth(args: argparse.Namespace) -> int:
     if not isinstance(store, SqlControlPlaneStore) or "oauth_authorizations" not in inspect(store.engine).get_table_names():
         _print_json({"revoked": 0})
         return 0
-    count = SqlOAuthStore(store.engine).revoke_all_active(args.reason, utc_now())
-    control_plane.record_admin_event(
-        action="oauth_authorization.revoke_all_instance", actor=None, organization_id=None,
-        targets={"reason": args.reason, "count": str(count)},
-    )
-    _print_json({"revoked": count})
+    per_org = SqlOAuthStore(store.engine).revoke_all_active(args.reason, utc_now())
+    # MAK-0006 §8.5: each affected organization's owners see the action in
+    # their own administrative history.
+    for organization_id, count in sorted(per_org.items()):
+        control_plane.record_admin_event(
+            action="oauth_authorization.revoke_all_instance", actor=None, organization_id=organization_id,
+            targets={"reason": args.reason, "count": str(count)},
+        )
+    if not per_org:
+        control_plane.record_admin_event(
+            action="oauth_authorization.revoke_all_instance", actor=None, organization_id=None,
+            targets={"reason": args.reason, "count": "0"},
+        )
+    _print_json({"revoked": sum(per_org.values())})
     return 0
 
 
@@ -1866,20 +1880,28 @@ def _configure_audit_log() -> None:
     """MAK-0006 §8.6: CLI operations, including operator writes and refusals,
     emit the same structured audit events as the server, as JSON lines.
 
-    `MAK4I_AUDIT_LOG` chooses the destination: `stderr` (the default), a
-    file path, or `off`. stdout stays reserved for the command's own
-    (machine-readable) output. Nothing is configured if the process already
-    attached a handler to the audit logger."""
+    `MAK4I_AUDIT_LOG` chooses the destination: `stderr` (the default) or a
+    file path. There is deliberately no way to switch the events off
+    (MAK-0006 §8.6); discarding them is a deployment decision outside MAK4I.
+    stdout stays reserved for the command's own (machine-readable) output.
+    Nothing is configured if the process already attached a handler to the
+    audit logger."""
     import logging
 
     from mak4i.audit import LOGGER_NAME
 
     logger = logging.getLogger(LOGGER_NAME)
-    if logger.handlers:
-        return
+    own = [h for h in logger.handlers if getattr(h, "_mak4i_cli", False)]
+    if len(own) != len(logger.handlers):
+        return  # the hosting process configured the audit logger itself
+    for handler in own:  # a previous in-process invocation; follow the current setting
+        logger.removeHandler(handler)
+        handler.close()
     target = os.environ.get("MAK4I_AUDIT_LOG", "").strip()
-    if target.lower() == "off":
-        return
+    if target.lower() in ("off", "none", "false", "0"):
+        raise SystemExit(
+            "MAK4I_AUDIT_LOG can't disable audit events (MAK-0006 §8.6); use 'stderr' or a file path"
+        )
     if target and target.lower() != "stderr":
         handler: logging.Handler = logging.FileHandler(target, encoding="utf-8")
     else:
@@ -1891,6 +1913,7 @@ def _configure_audit_log() -> None:
                 super().emit(record)
 
         handler = _CurrentStderr()
+    handler._mak4i_cli = True  # type: ignore[attr-defined]
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)

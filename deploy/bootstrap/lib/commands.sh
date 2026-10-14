@@ -379,7 +379,11 @@ do_backup() {
   compose cp mak4i:/data/artifacts "$dest/artifacts" >/dev/null ||
     die "$EX_BACKUP" "could not copy the artifacts volume out"
 
-  if [[ "$_BACKUP_STOPPED" == 1 ]]; then
+  if [[ "$_BACKUP_STOPPED" == 1 && "${BACKUP_KEEP_STOPPED:-0}" == 1 ]]; then
+    # The caller (rollback) keeps writers out from this dump onwards.
+    _BACKUP_STOPPED=0
+    trap - EXIT
+  elif [[ "$_BACKUP_STOPPED" == 1 ]]; then
     compose start mak4i >/dev/null || die "$EX_BACKUP" "could not start mak4i again"
     _BACKUP_STOPPED=0
     trap - EXIT
@@ -402,7 +406,7 @@ do_backup() {
   cat >"$dest/manifest.env" <<EOF
 # MAK4I Enterprise backup manifest (written by deploy/bootstrap/mak4i-enterprise)
 MAK4I_BACKUP_FORMAT=1
-MAK4I_BACKUP_RELEASE=$MAK4I_RELEASE
+MAK4I_BACKUP_RELEASE=${BACKUP_RELEASE:-$MAK4I_RELEASE}
 MAK4I_BACKUP_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MAK4I_BACKUP_PROFILE=$PROFILE
 MAK4I_BACKUP_DB_COUNTS=$counts
@@ -513,6 +517,86 @@ EOF
   warn "Credentials revoked AFTER this backup was taken are valid again (the audit history was restored too). Re-revoke them: mak4i credential list / credential revoke."
 }
 
+# --- rollback -----------------------------------------------------------------
+
+# The previous release can't open a database that newer migrations changed,
+# and its restore can't drop the newer tables. Rollback therefore empties the
+# database with this (newer) checkout; the previous release's own restore
+# then loads the pre-upgrade backup into it, migrates and starts.
+cmd_rollback() {
+  require_installed
+  [[ -n "$RESTORE_FROM" ]] || usage_error "rollback needs --from <the pre-upgrade backup directory>"
+  local src release installed running b_profile b_endpoint cur_endpoint recovery
+  src=$(abs_path "$RESTORE_FROM") || die "$EX_BACKUP" "no such backup: $RESTORE_FROM"
+
+  # 1. Validate everything before anything is changed.
+  step "Verify backup $src"
+  verify_backup "$src"
+  release=$(env_get "$src/manifest.env" MAK4I_BACKUP_RELEASE)
+  [[ "$release" == "$UPGRADE_FROM" ]] ||
+    die "$EX_UNSUPPORTED" "rollback restores a $UPGRADE_FROM backup (the one upgrade took); this backup is from $release. To restore it, use: $0 restore --from $src"
+  step "Verify this installation"
+  installed=${STORED_RELEASE:-}
+  running=""
+  service_running mak4i && running=$(running_version)
+  [[ "${running:-$installed}" == "$MAK4I_RELEASE" ]] ||
+    die "$EX_UNSUPPORTED" "rollback applies to a $MAK4I_RELEASE installation; this one is ${running:-${installed:-unknown}}"
+  b_profile=$(env_get "$src/manifest.env" MAK4I_BACKUP_PROFILE)
+  [[ -z "$b_profile" || "$b_profile" == "$PROFILE" ]] ||
+    die "$EX_BACKUP" "the backup is from a $b_profile installation; this one is $PROFILE"
+  b_endpoint=$(env_get "$src/env" MAK4I_PUBLIC_ENDPOINT)
+  cur_endpoint=$(env_get "$ENV_FILE" MAK4I_PUBLIC_ENDPOINT)
+  [[ -z "$b_endpoint" || -z "$cur_endpoint" || "$b_endpoint" == "$cur_endpoint" ]] ||
+    die "$EX_BACKUP" "the backup belongs to another installation ($b_endpoint); this one is $cur_endpoint"
+  service_running postgres || die "$EX_FAILURE" "PostgreSQL isn't running; run $0 restart first"
+  service_running mak4i || die "$EX_FAILURE" "MAK4I isn't running, so the current data can't be backed up first; run $0 restart first"
+  info "installation: $MAK4I_RELEASE, profile $PROFILE, ${cur_endpoint:-no endpoint}; backup matches"
+
+  cat <<EOF
+
+Rollback to $UPGRADE_FROM DELETES all current data of this installation:
+  - a recovery backup of the current $MAK4I_RELEASE data is taken first
+    (kept; it is how you undo the rollback);
+  - MAK4I is stopped and stays stopped, then the control-plane database is
+    emptied;
+  - the $UPGRADE_FROM restore that follows loads the pre-upgrade backup
+    ($src) and its artifacts.
+Everything written after that backup (records, resolutions, principals,
+grants, credentials, OAuth state, administrative history) is lost from the
+running system. MAK4I stays down until the $UPGRADE_FROM restore finishes.
+EOF
+  if [[ "$YES" != 1 ]]; then
+    confirm_phrase "rollback" "Make sure nobody needs MAK4I for the next few minutes."
+  fi
+
+  # 2. Recovery backup; writers stay out from this dump onwards.
+  step "Recovery backup of the current $MAK4I_RELEASE data"
+  ONLINE=0 BACKUP_KEEP_STOPPED=1 do_backup
+  recovery=$BACKUP_DEST
+  [[ "$DRY_RUN" == 1 ]] || [[ -f "$recovery/manifest.env" ]] || die "$EX_BACKUP" "the recovery backup is incomplete; nothing was changed"
+
+  # 3. Writers stopped, then the destructive step.
+  step "Empty the database for $UPGRADE_FROM"
+  run compose stop mak4i || die "$EX_FAILURE" "could not stop mak4i"
+  if [[ "$DRY_RUN" != 1 ]] && service_running mak4i; then
+    die "$EX_FAILURE" "MAK4I is still running; nothing was deleted. Recovery backup: $recovery"
+  fi
+  # shellcheck disable=SC2016 # expanded by the container's shell
+  run compose exec -T postgres sh -c \
+    'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE \"$POSTGRES_DB\" WITH (FORCE)" -c "CREATE DATABASE \"$POSTGRES_DB\" OWNER \"$POSTGRES_USER\""' ||
+    die "$EX_FAILURE" "could not empty the database. Recovery backup: $recovery (restore it with: $0 restore --from $recovery)"
+  [[ "$DRY_RUN" == 1 ]] && { say "Dry run complete: nothing was changed."; return; }
+  # The installation is the previous release from here on.
+  env_set "$ENV_FILE" "MAK4I_INSTALLED_RELEASE=$UPGRADE_FROM"
+  say ""
+  say "Database emptied and MAK4I stopped. Recovery backup of the $MAK4I_RELEASE data: $recovery"
+  say "Finish the rollback with $UPGRADE_FROM:"
+  say "  1. git -C $REPO_ROOT fetch --depth 1 origin tag $UPGRADE_FROM && git -C $REPO_ROOT checkout $UPGRADE_FROM"
+  say "  2. cd $COMPOSE_DIR && $(compose_hint) build mak4i"
+  say "  3. $0 restore --from $src"
+  say "To undo instead (back to $MAK4I_RELEASE): $0 restore --from $recovery (with this checkout)"
+}
+
 # --- upgrade ------------------------------------------------------------------
 
 cmd_upgrade() {
@@ -533,7 +617,16 @@ cmd_upgrade() {
   TLS_ISSUER=${TLS_ISSUER:-acme}
 
   from=${STORED_RELEASE:-}
-  if [[ -z "$from" ]] && service_running mak4i; then from=$(running_version); fi
+  if service_running mak4i; then
+    # The running server is the truth: a rollback (restored by the previous
+    # release) leaves the recorded release behind.
+    local running
+    running=$(running_version)
+    if [[ -n "$running" && "$running" != "$from" ]]; then
+      [[ -z "$from" ]] || warn "recorded release $from differs from the running $running; using $running"
+      from=$running
+    fi
+  fi
   from=${from:-$FROM_VERSION}
   [[ -n "$from" ]] || die "$EX_UNSUPPORTED" "can't determine the installed version: start the stack, or pass --from-version $UPGRADE_FROM"
   if [[ -n "$FROM_VERSION" && "$FROM_VERSION" != "$from" ]]; then
@@ -558,7 +651,9 @@ cmd_upgrade() {
     backup_dir=$(abs_path "$USE_BACKUP") || die "$EX_BACKUP" "no such backup: $USE_BACKUP"
     verify_backup "$backup_dir"
   else
-    do_backup
+    # The data still belongs to the installed release: label the backup
+    # with it, so that release's own restore accepts it for a rollback.
+    BACKUP_RELEASE=$from do_backup
     backup_dir=$BACKUP_DEST
   fi
 
@@ -600,12 +695,14 @@ cmd_upgrade() {
 _rollback_text() {
   cat <<EOF
 
-Rollback to $1, if you need it:
-  1. git -C $REPO_ROOT fetch --depth 1 origin tag $1 && git -C $REPO_ROOT checkout $1
-  2. cd $COMPOSE_DIR && $(compose_hint) up -d --build --wait
-  3. Only if the data must be reverted as well, restore the pre-upgrade
-     backup ($2) with that release's documented restore procedure
-     (control-plane.dump and artifacts/).
+Rollback to $1, if you need it ($1 can't run on the upgraded database, so a
+rollback always restores the pre-upgrade backup; data written since is lost):
+  1. $0 rollback --from $2
+     (with this checkout: stops MAK4I and empties the database)
+  2. git -C $REPO_ROOT fetch --depth 1 origin tag $1 && git -C $REPO_ROOT checkout $1
+  3. cd $COMPOSE_DIR && $(compose_hint) build mak4i
+  4. $0 restore --from $2
+     (with the $1 checkout: restores, migrates and starts $1)
 EOF
 }
 

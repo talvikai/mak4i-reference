@@ -577,7 +577,7 @@ from `.mak4i/`, so you normally set none of them.
 | `MAK4I_TLS_TERMINATED_UPSTREAM` | `1` only when a TLS-terminating proxy sits in front of MAK4I. Without it, MAK4I refuses to serve HTTP on any non-loopback address (MAK-0008 §1.2). |
 | `MAK4I_PORT` | HTTP port for one run; `--port` wins; otherwise the saved port, then 9090 |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this server names itself to AI clients (default `MAK4I local (<organization>)` / `local`) |
-| `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `stderr` (default; stdout stays machine-readable), a file path, or `off` |
+| `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `stderr` (default; stdout stays machine-readable) or a file path. Security events can't be switched off (MAK-0006 §8.6). |
 | `MAK4I_TOKEN` | the credential for `python -m mak4i.mcp_server` over stdio (manual setup); ignored by `mak4i serve` |
 | `MAK4I_CONTROL_PLANE_DB`, `MAK4I_STORE`, `MAK4I_LOCAL_STORE_DIR`, `MAK4I_CONTROL_PLANE_CREATE_TABLES` | backends for the manual setup (section 12); ignored by `mak4i serve` |
 
