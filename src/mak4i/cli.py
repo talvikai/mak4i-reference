@@ -481,12 +481,15 @@ def _cmd_principal_show(args: argparse.Namespace) -> int:
 def _cmd_grant_create(args: argparse.Namespace) -> int:
     control_plane = _make_control_plane()
     actor = _resolve_actor(control_plane, args)
-    grant = control_plane.grant(
-        actor=actor,
-        principal_id=args.principal_id,
-        project_id=args.project_id,
-        permissions=_split_permissions(args.permissions),
-    )
+    try:
+        grant = control_plane.grant(
+            actor=actor,
+            principal_id=args.principal_id,
+            project_id=args.project_id,
+            permissions=_split_permissions(args.permissions),
+        )
+    except ValueError as exc:  # pydantic validation (e.g. an unknown permission)
+        raise _CliError(_first_validation_message(exc)) from exc
     _print_json(grant)
     return 0
 

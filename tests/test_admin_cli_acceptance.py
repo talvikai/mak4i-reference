@@ -386,9 +386,6 @@ def test_invalid_expiry_is_a_clean_error_and_issues_nothing(admin):
     assert admin.ok("credential", "list", "--actor", ids["owner"], "--principal-id", ids["agent"]) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "`grant create --permissions read,admin` lets pydantic's ValidationError escape main(): "
-    "a Python traceback instead of a one-line `error:` (the failed admin event is recorded correctly)"))
 def test_unknown_permission_is_a_clean_error(admin):
     ids = admin.ids
     result = admin.run("grant", "create", "--actor", ids["owner"], "--principal-id", ids["service"],
@@ -404,7 +401,7 @@ def test_unknown_permission_grants_nothing_and_is_recorded_as_failed(admin):
     result = admin.run("grant", "create", "--actor", ids["owner"], "--principal-id", ids["service"],
                        "--project-id", ids["p1"], "--permissions", "read,admin")
     assert result.returncode != 0 and not result.stdout.strip()
-    admin.runs.pop()  # its traceback is the xfail above, not a leak
+    admin.runs.pop()  # refused on purpose; judged here
     assert admin.ok("grant", "list", "--actor", ids["owner"], "--principal-id", ids["service"]) == []
     failed = _one(admin.events(), "grant.set", "failed")
     assert failed["targets"]["permissions"] == "read,admin"

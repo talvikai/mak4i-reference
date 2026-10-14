@@ -101,8 +101,9 @@ rules, resource groups) is architecture-defined and **not** implemented.
 - `mak4i_whoami` reports `protocol: {version, profiles}` and always carries
   the `scopes` key (`null` for credential sessions) (MAK-0008 §10.5). The
   Reference claims `server-project-records` plus its transport profile
-  (`transport-stdio` or `transport-http-credential`); `transport-http-oauth`
-  is not claimed until real-client interoperability (M16) is verified.
+  (`transport-stdio` or `transport-http-credential`), and, with OAuth
+  enabled, `transport-http-oauth` with the enabled `oauth-cimd` /
+  `oauth-dcr` options (see below).
 - **Breaking: closed tool inputs** (MAK-0008 §10.2). Unknown arguments,
   wrong types and out-of-range values fail `validation_error`; an identity
   claim (`agent_id`, `principal_id`, `created_by`, `author`, `actor`,
@@ -180,6 +181,23 @@ rules, resource groups) is architecture-defined and **not** implemented.
   v0.1.0-rc.5 as the installed release. `upgrade` prints the complete,
   tested rollback sequence, and trusts the running server's version over a
   stale recorded release (warning about the mismatch).
+- **OAuth profile claimed.** With `MAK4I_OAUTH_ENABLED=1`, `mak4i_whoami`
+  reports `transport-http-oauth`, plus `oauth-cimd` / `oauth-dcr` for each
+  enabled registration mode (MAK-0008 §10.5).
+  - Real-client acceptance: Claude (claude.ai) and ChatGPT through a
+    pre-registered client; Claude Code through CIMD.
+  - ChatGPT's metadata document declares `private_key_jwt`, which MAK4I
+    doesn't accept for CIMD, so use pre-registration.
+  - CIMD with claude.ai is unproven.
+- `mak4i-enterprise rollback` checks before changing anything: the backup
+  is the verified pre-upgrade one, and this installation runs v2.0.0-rc.1
+  with the same profile and endpoint. It then takes a recovery backup and
+  keeps MAK4I stopped from that backup until the database is emptied.
+- **Fixed:** `mak4i grant create` with an unknown permission prints an
+  error line instead of a traceback (the `failed` administrative event was
+  already recorded).
+- **Fixed:** requests without a token are logged with `auth_method: null`
+  and no principal (they were labeled `credential`).
 - Audit and administrative events use the protocol vocabulary
   `auth_method: "operator"` for CLI operator actions; instance-operator
   administrative events have a `null` actor principal (MAK-0006 §7.6).
@@ -198,17 +216,17 @@ rules, resource groups) is architecture-defined and **not** implemented.
 
 ### Known limitations
 
-- Real-client OAuth interoperability (claude.ai / Claude Code and MCP
-  Inspector over public HTTPS) is not yet verified for this release
-  candidate; see the release notes before relying on a specific client.
+- OAuth clients verified end to end over public HTTPS: Claude (claude.ai,
+  pre-registered), ChatGPT (pre-registered) and Claude Code (CIMD). Treat
+  other clients as untested.
 - One server process per installation (see DEPLOYMENT.md → Replicas).
 - Skills are planned/deferred and not part of this release.
 - A general writer-initiated withdraw/retire operation is not provided
   (protocol issue #4); `withdrawn` is set only by conflict resolution.
 - Supported protocol profiles: `server-project-records` with
-  `transport-stdio` or `transport-http-credential` (reported by
-  `mak4i_whoami.protocol`). `transport-http-oauth` is not claimed until
-  real-client acceptance. MAK-0009 (organization knowledge, rules,
+  `transport-stdio` or `transport-http-credential`, plus
+  `transport-http-oauth` and the enabled `oauth-cimd` / `oauth-dcr` options
+  when OAuth is on (reported by `mak4i_whoami.protocol`). MAK-0009 (organization knowledge, rules,
   resource groups, `govern`) and the Draft (In Progress) MAK-0002, MAK-0003
   and MAK-0007 are not implemented. Evidence and gaps:
   `docs/CONFORMANCE_EVIDENCE.md`.

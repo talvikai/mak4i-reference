@@ -174,7 +174,7 @@ class AuditLogger:
         success: bool,
         principal_id: str | None = None,
         reason: str | None = None,
-        auth_method: str = "credential",
+        auth_method: str | None = "credential",
         credential_id: str | None = None,
     ) -> dict[str, Any]:
         """Never receives or logs the raw token or its hash — only the
@@ -184,6 +184,9 @@ class AuditLogger:
         extra = {"reason": reason} if reason is not None else {}
         if credential_id is not None:
             extra["credential_id"] = credential_id
+        if auth_method is None:
+            # No credential was presented: the method is unknown, not guessed.
+            extra["auth_method"] = None
         return self.log(
             "AUTHENTICATE_SUCCESS" if success else "AUTHENTICATE_FAILURE",
             correlation_id=correlation_id,

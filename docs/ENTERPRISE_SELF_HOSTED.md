@@ -448,13 +448,24 @@ curl -s https://mak4i.example.com/.well-known/oauth-authorization-server
 ```
 
 **Connect a client.** Add the server by URL only
-(`https://mak4i.example.com/mcp`) and choose OAuth. Clients that publish a
-client ID metadata document (for example Claude) register themselves; for
-others, an owner pre-registers the client:
+(`https://mak4i.example.com/mcp`) and choose OAuth. How each client
+registers, as verified for this release:
+
+| Client | Registration | What to do |
+|---|---|---|
+| Claude Code | Client ID metadata document (CIMD), automatic | Nothing: `claude mcp add --transport http <name> https://mak4i.example.com/mcp`, then `/mcp` → Authenticate |
+| Claude (claude.ai custom connector) | **Pre-registered** client | Register it (below) with redirect URI `https://claude.ai/api/mcp/auth_callback`, then enter the printed client ID under the connector's **Advanced settings** (no secret) |
+| ChatGPT (developer-mode connector) | **Pre-registered** client | Register it with redirect URI `https://chatgpt.com/connector_platform_oauth_redirect`; in the connector choose **user-defined OAuth** and enter the client ID (no secret) and scopes `mak4i:read mak4i:write` |
+
+ChatGPT also offers a client ID metadata document, but that document
+declares `private_key_jwt` client authentication, and MAK4I accepts
+metadata documents only for public clients (MAK-0008 §8.3). Use
+pre-registration for ChatGPT. Any other client: try CIMD first, then
+pre-registration; treat it as untested.
 
 ```bash
 docker compose exec mak4i mak4i oauth client register --actor "$OWNER" \
-  --name "My client" --redirect-uri https://client.example/callback
+  --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback
 ```
 
 **Sign in.** When the client opens the MAK4I sign-in page, get a code
@@ -628,7 +639,15 @@ anything you need from the post-upgrade period first (for example
 
 v0.1.0-rc.5 can't start on the upgraded database, and its `restore`
 can't remove the tables v2.0.0-rc.1 added, so the rollback starts with
-**this** release's bootstrap, which stops MAK4I and empties the database.
+**this** release's bootstrap. Before changing anything, `rollback` checks:
+- that the backup is complete and is the `v0.1.0-rc.5` pre-upgrade backup;
+- that this installation runs v2.0.0-rc.1, with the same profile and
+  endpoint as the backup.
+
+It then takes a **recovery backup** of the current data, keeps MAK4I
+stopped from that point on (no writes can slip in), checks that it is
+stopped, and empties the database. The recovery backup is kept: restoring
+it with this release undoes the rollback.
 v0.1.0-rc.5's own `restore` then loads the pre-upgrade backup (labeled
 `v0.1.0-rc.5` by `upgrade`), runs its migrations and starts:
 

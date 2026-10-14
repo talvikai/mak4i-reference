@@ -391,3 +391,17 @@ def test_recovered_resolutions_are_logged_with_their_actor(tmp_path, caplog, art
     (event,) = [e for e in _events(_caplog_text(caplog)) if e["event"] == "RESOLUTION_RECOVERED"]
     assert event["actor"] == owner.principal_id and event["outcome"] == "completed"
     assert event["resolution_id"] == recovered.resolution_id and event["project_id"] == project
+
+
+def test_requests_without_a_token_have_no_auth_method_or_principal(tmp_path, caplog):  # MAK-0006 §8.6
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    w = _http_world(tmp_path)
+    with w.client:
+        assert w.client.post("/mcp", json={}).status_code == 401
+        assert w.client.post("/mcp", json={}, headers={"Authorization": "Basic abc"}).status_code == 401
+        assert w.client.post("/mcp", json={}, headers=[("Authorization", "Bearer a"), ("Authorization", "Bearer b")]).status_code == 400
+    failures = [e for e in _events(_caplog_text(caplog)) if e["event"] == "AUTHENTICATE_FAILURE"]
+    assert [e["reason"] for e in failures] == ["missing_token", "missing_token", "invalid_request"]
+    for event in failures:
+        assert "auth_method" in event and event["auth_method"] is None
+        assert event.get("principal_id") is None and event["actor"] == "unauthenticated"

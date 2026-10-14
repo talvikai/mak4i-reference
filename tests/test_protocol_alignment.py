@@ -78,7 +78,6 @@ def test_whoami_reports_protocol_and_scopes_key(world):  # M37, MAK-0008 §10.5
     result = _call(world, world.agent_token, "mak4i_whoami", {})["structuredContent"]
     assert result["protocol"]["version"] == "0.2"
     assert "server-project-records" in result["protocol"]["profiles"]
-    assert "transport-http-oauth" not in result["protocol"]["profiles"]  # claimed only after M16 evidence
     assert "scopes" in result and result["scopes"] is None
 
 
@@ -290,3 +289,27 @@ def test_server_process_refuses_a_non_loopback_plain_http_bind(tmp_path):  # M18
                             timeout=60)
     assert result.returncode == 2
     assert "refusing plain HTTP on non-loopback address '0.0.0.0'" in result.stderr
+
+
+def test_profiles_follow_the_deployment_configuration(monkeypatch):  # MAK-0008 §10.5, CONFORMANCE profiles
+    from mak4i.mcp_server import _deployment_profiles
+    from mak4i.protocol import claimed_profiles
+
+    class OAuth:
+        def __init__(self, cimd, dcr):
+            self.enable_cimd, self.enable_dcr = cimd, dcr
+
+    base = ["server-project-records"]
+    assert claimed_profiles("stdio") == base + ["transport-stdio"]
+    assert claimed_profiles("stdio", OAuth(True, True)) == base + ["transport-stdio"]
+    assert claimed_profiles("http") == base + ["transport-http-credential"]
+    assert claimed_profiles("http", OAuth(True, False)) == base + ["transport-http-credential", "transport-http-oauth", "oauth-cimd"]
+    assert claimed_profiles("http", OAuth(False, True)) == base + ["transport-http-credential", "transport-http-oauth", "oauth-dcr"]
+
+    for key in [k for k in __import__("os").environ if k.startswith("MAK4I_OAUTH")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("MAK4I_TRANSPORT", "http")
+    monkeypatch.setenv("MAK4I_PUBLIC_ENDPOINT", "https://mak4i.example.com/mcp")
+    assert "transport-http-oauth" not in _deployment_profiles()  # OAuth off by default
+    monkeypatch.setenv("MAK4I_OAUTH_ENABLED", "1")
+    assert _deployment_profiles()[2:] == ["transport-http-oauth", "oauth-cimd"]  # CIMD on, DCR off by default
