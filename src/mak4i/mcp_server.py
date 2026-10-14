@@ -1220,6 +1220,30 @@ def configure_audit_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(message)s")
 
 
+def _stdio_authenticate(control_plane: ControlPlane, audit: AuditLogger, token: str, *, quiet: bool = False):
+    """Authenticate the stdio session's credential (at startup, and again
+    before every operation, MAK-0006 §6.4). A failure is logged with its
+    reason and the known `credential_id` (MAK-0006 §8.6); the per-operation
+    success is not logged again (`quiet`), since every operation already
+    logs its own attributed events."""
+    from mak4i.audit import request_scope
+
+    try:
+        principal, credential_id = control_plane.authenticate_with_credential(token)
+    except CredentialInvalidError as exc:
+        audit.log_authenticate(
+            correlation_id=request_scope.correlation_id(), success=False, reason=exc.reason,
+            credential_id=getattr(exc, "credential_id", None),
+        )
+        raise
+    if not quiet:
+        audit.log_authenticate(
+            correlation_id=request_scope.correlation_id(), success=True,
+            principal_id=principal.principal_id, credential_id=credential_id,
+        )
+    return principal, credential_id
+
+
 def uvicorn_proxy_options(trusted_proxies: list[str] | tuple[str, ...]) -> dict:
     """MAK-0008 §3.3: forwarded headers are honored only from configured
     proxies (for the client address in rate limits and logs); advertised
@@ -1276,10 +1300,10 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         token = resolve_secret("MAK4I_TOKEN")
         if not token:
             raise KeyError("MAK4I_TOKEN")
-        principal, credential_id = control_plane.authenticate_with_credential(token)
+        principal, credential_id = _stdio_authenticate(control_plane, audit, token)
         current_principal.set(principal)
         current_auth.set(AuthContext(auth_method=CREDENTIAL, credential_id=credential_id))
-        _stdio_reauthenticate.set(lambda: control_plane.authenticate(token))
+        _stdio_reauthenticate.set(lambda: _stdio_authenticate(control_plane, audit, token, quiet=True)[0])
         server.run(transport="stdio")
     else:
         import uvicorn

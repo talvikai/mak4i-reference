@@ -23,7 +23,7 @@ AI client ──HTTPS (Authorization: Bearer <per-principal credential>)──�
                                                                           │     projects, grants, credentials)
                                        ArtifactStore ─────────────────────┼──▶ artifact store
                                                                           │    (organization/project-scoped)
-                                       AuditLogger ───────────────────────┴──▶ stdout (structured JSON)
+                                       AuditLogger ───────────────────────┴──▶ stderr (structured JSON)
 ```
 
 The MCP server is one stateless process with two backing stores, each
@@ -33,7 +33,7 @@ chosen by configuration:
 |---|---|---|---|---|
 | Control plane (identity, authorization) | `ControlPlaneStore` | SQLite | PostgreSQL 16 | any SQLAlchemy-supported database |
 | Artifacts (durable knowledge) | `ArtifactStore` | `LocalJSONStore` | `LocalJSONStore` on a volume | `GCSArtifactStore`, or your own object-store implementation |
-| Audit | `AuditLogger` | stdout | stdout (container logs) | your log pipeline |
+| Audit and security events | `AuditLogger` | stderr | stderr (container logs) | your log pipeline |
 
 SQLite, PostgreSQL and GCS are reference choices, not requirements of the
 MAK4I protocol. Nothing in the protocol, tool contract, artifact schema or
@@ -210,6 +210,46 @@ balancer must:
   which matches the single-replica deployment this release supports.
 - Vulnerability reporting and the image and dependency policy:
   [`SECURITY.md`](../SECURITY.md).
+
+## Operational logs
+
+MAK4I keeps two kinds of attribution, with different durability:
+
+| What | Where | Durability |
+|---|---|---|
+| Who wrote each record version (provenance), resolution records, administrative events | The artifact store and the control-plane database | **Durable** protocol data; part of every backup (MAK-0006 §7, §8.5; MAK-0004 §A7.6) |
+| Operational audit and security events: authentication, access granted/denied, reads, successful and **refused or failed writes**, resolution lifecycle, OAuth events | One JSON object per line on the process's **stderr** (server and CLI) | **Operational**: kept only as long as your log pipeline keeps them (MAK-0006 §8.6) |
+
+Refused writes are never stored in the database; there is no security-event
+table. Their retention, rotation, collection and access are owned by the
+deployment:
+
+- **Collection.** Docker Compose: `docker compose logs mak4i` (the json-file
+  driver by default). Cloud Run: Cloud Logging. systemd: the journal. The
+  CLI writes to the terminal's stderr, or to the file named by
+  `MAK4I_AUDIT_LOG`.
+- **Rotation and retention.** Configure them in your logging driver or
+  pipeline (for example Docker's `max-size`/`max-file` options, or a Cloud
+  Logging bucket retention period). MAK4I neither rotates nor deletes logs.
+  Keep security events at least as long as your incident-response policy
+  requires.
+- **Access.** The events name principals, credentials, OAuth clients,
+  projects and record identifiers. Restrict them to operators, as you would
+  the database.
+- **Content.** Events never contain tokens, token hashes, sign-in codes,
+  client secrets, cookies or record content. Free text from clients (MCP
+  client name and version, reasons) is stripped of control characters and
+  shortened before it is logged.
+
+Key events: `CREATE`, `SUPERSEDE`, `WRITE_REFUSED` (refused write with
+`error_code`), `WRITE_FAILED` (unexpected failure), `ACCESS_DENIED`
+(including `insufficient_scope`, attributed to the principal),
+`AUTHENTICATE_FAILURE` (with `credential_id` when the token matches a known
+credential), `RESOLUTION_STARTED|COMPLETED|REJECTED|ABORTED|RECOVERED`. Every
+event has `ts`, `event` and `correlation_id`. Events for an authenticated
+caller also carry `principal_id`, `agent_id`, `auth_method`, `credential_id`
+or `oauth_client_id`, and the organization and project. A tool error's
+`error.correlation_id` matches the events of that call.
 
 ## Backups
 

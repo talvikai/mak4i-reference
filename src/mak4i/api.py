@@ -91,7 +91,9 @@ def _audited_write(operation: str):
                 if self._audit is not None and principal is not None:
                     auth = kwargs.get("auth")
                     auth_method = auth.auth_method if auth is not None else kwargs.get("auth_method", CREDENTIAL)
+                    code = error_code(exc)
                     self._audit.log_write_refused(
+                        event="WRITE_FAILED" if code == "internal_error" else "WRITE_REFUSED",
                         correlation_id=request_scope.correlation_id(),
                         principal_id=principal.principal_id,
                         agent_id=principal.agent_id,
@@ -99,7 +101,7 @@ def _audited_write(operation: str):
                         organization_id=principal.organization_id,
                         project=kwargs.get("project"),
                         operation=operation,
-                        error_code=error_code(exc),
+                        error_code=code,
                         credential_id=getattr(auth, "credential_id", None),
                         oauth_client_id=getattr(auth, "oauth_client_id", None),
                     )
@@ -862,10 +864,17 @@ class MAK4IEngine:
         aborted). Called at server start; safe to call any time."""
         finished = []
         for record in self._resolutions.all_pending():
+            correlation_id = str(uuid.uuid4())
             try:
-                finished.append(self._apply_resolution(record, str(uuid.uuid4()), None))
+                finished.append(self._apply_resolution(record, correlation_id, None))
             except ConflictChangedError:
                 finished.append(self._resolutions.get(record.resolution_id))
+            self._log_resolution(
+                "RESOLUTION_RECOVERED", correlation_id, None, None,
+                resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+                outcome=finished[-1].state, actor_principal_id=record.actor.principal_id,
+                organization_id=record.organization_id, project_id=record.project,
+            )
         return finished
 
     # -- conflict internals ------------------------------------------------------
