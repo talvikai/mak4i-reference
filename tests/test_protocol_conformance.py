@@ -119,6 +119,21 @@ def test_reference_interfaces_conform_to_the_protocol_schemas(tmp_path, validate
         current = call(agent_token, "mak4i_get_current", {"project": project})["structuredContent"]
         _tool(validate, "mak4i_get_current", "output", current)
         validate("context-package", current)
+        # MAK-0008 §14: change feed, change_sequence and the current resource.
+        assert isinstance(current["change_sequence"], int) and current["change_sequence"] >= 2
+        _tool(validate, "mak4i_changes", "input", {"project": project, "after": 0})
+        changes = call(agent_token, "mak4i_changes", {"project": project, "after": 0})["structuredContent"]
+        _tool(validate, "mak4i_changes", "output", changes)
+        assert [e["kind"] for e in changes["events"]] == ["record.created", "record.created"]
+        for event in changes["events"]:
+            validate("change-event", event)
+        session = w.session(agent_token)
+        listed = w.mcp(agent_token, "resources/list", {}, session=session, request_id=3)
+        from tests.test_oauth import _rpc
+
+        (resource,) = _rpc(listed.text)["result"]["resources"]
+        read = _rpc(w.mcp(agent_token, "resources/read", {"uri": resource["uri"]}, session=session, request_id=4).text)
+        validate("context-package", json.loads(read["result"]["contents"][0]["text"]))
         (conflict,) = current["conflicts"]
         validate("conflict", conflict)
         _tool(validate, "mak4i_list_conflicts", "output",

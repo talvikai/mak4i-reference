@@ -101,6 +101,7 @@ services:
       # address for rate limits and logs). Empty: none.
       MAK4I_TRUSTED_PROXIES: ${MAK4I_TRUSTED_PROXIES:-}
       MAK4I_LOG_LEVEL: ${MAK4I_LOG_LEVEL:-INFO}
+      MAK4I_CHANGE_FEED_RETENTION_DAYS: ${MAK4I_CHANGE_FEED_RETENTION_DAYS:-7}
       # Built-in OAuth authorization server (MAK-0008); off unless enabled.
       MAK4I_OAUTH_ENABLED: ${MAK4I_OAUTH_ENABLED:-0}
       MAK4I_OAUTH_ISSUER: ${MAK4I_OAUTH_ISSUER:-}

@@ -913,6 +913,7 @@ The one table of Enterprise Self-Hosted settings. The bootstrap writes
 | `MAK4I_OAUTH_RATE_LIMIT_PER_MINUTE` | `.env` | Sign-in / token / revocation / registration attempts per client address per minute (default 20). |
 | `MAK4I_TRUSTED_PROXIES` | `.env` | Reverse proxies whose `X-Forwarded-For` is trusted (default none). With the `tls` profile, set it to the Compose network (find it with `docker network inspect mak4i_default`) so rate limits see real client addresses. |
 | `MAK4I_LOG_LEVEL` | `.env` | Log level (default `INFO`). |
+| `MAK4I_CHANGE_FEED_RETENTION_DAYS` | `.env` | Days change-feed events are kept (default and minimum 7). |
 
 Check the configuration the way the server will (no secrets printed):
 `docker compose exec mak4i mak4i config check`.

@@ -12,14 +12,15 @@ PROTOCOL_VERSION = "0.2"
 SERVER_PROFILE = "server-project-records"
 
 
-def claimed_profiles(transport: str, oauth=None) -> list[str]:
+def claimed_profiles(transport: str, oauth=None, *, change_feed: bool = False) -> list[str]:
     """Profiles claimed for a server running on `transport` ("stdio" or
     "http"). `oauth` is the active `OAuthSettings` (None when OAuth is off):
     with it, HTTP + OAuth is claimed (M16 has real-client evidence: Claude,
     ChatGPT and Claude Code) plus each registration option that is enabled."""
+    extra = ["server-change-feed"] if change_feed else []  # MAK-0008 §14, durable feed only
     if transport == "stdio":
-        return [SERVER_PROFILE, "transport-stdio"]
-    profiles = [SERVER_PROFILE, "transport-http-credential"]
+        return [SERVER_PROFILE, *extra, "transport-stdio"]
+    profiles = [SERVER_PROFILE, *extra, "transport-http-credential"]
     if oauth is not None:
         profiles.append("transport-http-oauth")
         if getattr(oauth, "enable_cimd", False):

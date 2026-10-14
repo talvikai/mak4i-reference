@@ -85,6 +85,21 @@ def build_oauth_from_env(control_plane: ControlPlane, *, audit=None):
     )
 
 
+def build_change_feed(control_plane: ControlPlane):
+    """MAK-0008 §14 change feed: durable in the control-plane database
+    (migration 0006) when it is SQL, else in memory (tests). Attached to the
+    control plane too, so project lifecycle changes enter the feed."""
+    from mak4i.changes import InMemoryChangeFeed, SqlChangeFeed
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+
+    if control_plane.change_feed is not None:
+        return control_plane.change_feed
+    store = control_plane._store  # noqa: SLF001 - same database by design
+    feed = SqlChangeFeed(store.engine) if isinstance(store, SqlControlPlaneStore) else InMemoryChangeFeed()
+    control_plane.change_feed = feed
+    return feed
+
+
 def build_resolution_store(control_plane: ControlPlane):
     """Conflict resolution records live in the control-plane database
     (migration 0004) when it is SQL, else in memory (tests)."""

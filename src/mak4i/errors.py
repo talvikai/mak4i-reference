@@ -56,5 +56,15 @@ class ArtifactExistsError(MAK4IError):
     code = "artifact_exists"
 
 
+class CursorExpiredError(MAK4IError):
+    """MAK-0008 §14.4: a change-feed cursor is older than the retained feed.
+    Re-read current knowledge and continue from its `change_sequence`."""
+
+    code = "cursor_expired"
+
+    def __init__(self, message: str = "the cursor is older than the retained change feed; re-read current knowledge and continue from its change_sequence"):
+        super().__init__(message)
+
+
 class IdentityMismatchError(MAK4IError):
     code = "identity_mismatch"

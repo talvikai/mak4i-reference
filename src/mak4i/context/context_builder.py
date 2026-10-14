@@ -39,6 +39,9 @@ class ContextPackage(BaseModel):
     instruction: str
     resolution_trace_id: str
     resolution_trace: list[str]
+    # MAK-0008 §14.4a: the project's change-feed watermark before this
+    # result was computed.
+    change_sequence: int | None = None
 
 
 class ContextBuilder:

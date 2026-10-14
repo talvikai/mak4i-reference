@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
 import uuid
 
@@ -41,6 +42,7 @@ from mak4i.resolution.types import (
     conflict_id_for,
 )
 from mak4i.identity.errors import AccessDeniedError
+from mak4i.changes import ChangeFeed, InMemoryChangeFeed
 from mak4i.store.base import (
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
@@ -71,6 +73,27 @@ def error_code(exc: BaseException) -> str:
     if isinstance(exc, ValueError):
         return "validation_error"
     return "internal_error"
+
+
+def _actor(provenance) -> dict | None:
+    """The change-event actor (MAK-0008 §14.2) from authenticated provenance."""
+    if provenance is None:
+        return None
+    return {
+        "principal_id": provenance.principal_id,
+        "agent_id": provenance.agent_id,
+        "auth_method": provenance.auth_method,
+    }
+
+
+def _record_fields(artifact: Artifact) -> dict:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "lineage_id": artifact.lineage_id,
+        "artifact_type": artifact.artifact_type,
+        "subject_key": artifact.subject_key,
+        "actor": _actor(artifact.provenance),
+    }
 
 
 def _audited_write(operation: str):
@@ -204,8 +227,12 @@ class MAK4IEngine:
         authorizer: Authorizer,
         control_plane: ControlPlane,
         resolutions: ResolutionStore | None = None,
+        changes: ChangeFeed | None = None,
     ):
         self._resolutions = resolutions or InMemoryResolutionStore()
+        # MAK-0008 §14 change feed; in memory unless a durable one is given.
+        self._changes: ChangeFeed = changes or InMemoryChangeFeed()
+        self._change_listeners: list = []
         self._store = store
         self._audit = audit
         self._authorizer = authorizer
@@ -272,12 +299,22 @@ class MAK4IEngine:
             subject_key=subject_key,
             provenance=_provenance(principal, auth, auth_method, client, now),
         )
+        pending = self._changes.begin(
+            outcome.organization_id, project, "record.created",
+            verify={"type": "artifact_exists", "artifact_id": artifact_id},
+            **_record_fields(artifact),
+        )
         try:
             self._store.put_new(artifact)
         except ArtifactAlreadyExistsError as exc:
+            self._changes.abandon(pending)
             raise ArtifactExistsError(
                 f"artifact_id {artifact_id!r} already exists in this project; nothing was written"
             ) from exc
+        except BaseException:
+            self._changes.abandon(pending)
+            raise
+        self._commit_change(pending, conflict_id=self._subject_conflict_id(artifact))
         if self._audit is not None:
             self._audit.log_create(
                 correlation_id=correlation_id,
@@ -400,14 +437,25 @@ class MAK4IEngine:
         old_marked_superseded = old.model_copy(
             update={"status": "superseded", "superseded_by": new_id, "updated_at": now}
         )
+        provenance = _provenance(principal, auth, auth_method, client, now)
+        pending = self._changes.begin(
+            organization_id, project, "record.superseded",
+            verify={"type": "artifact_exists", "artifact_id": new_id},
+            artifact_id=new_id, lineage_id=old.lineage_id, artifact_type=old.artifact_type,
+            subject_key=new_subject_key, previous_artifact_id=old_id, actor=_actor(provenance),
+        )
         # Step 4: the GCS-native race-closing check — if `old` changed since
         # we read it, reject the whole operation here and write nothing else
         # (MAK-0005 §A4.2), and record the rejection (§A4.4).
         try:
             self._store.put_if_match(old_marked_superseded, expected_version_token=old_token)
         except ConcurrentModificationError as exc:
+            self._changes.abandon(pending)
             self._reject_supersede(correlation_id, principal, old_id, context, "stale head")
             raise StaleHeadError(old_id) from exc
+        except BaseException:
+            self._changes.abandon(pending)
+            raise
 
         new_artifact = Artifact(
             artifact_id=new_id,
@@ -428,13 +476,18 @@ class MAK4IEngine:
             tags=tags if tags is not None else old.tags,
             subject_key=new_subject_key,
             released_subject_key=released_subject_key,
-            provenance=_provenance(principal, auth, auth_method, client, now),
+            provenance=provenance,
         )
         # Step 5: on the (rare, racy) chance this id was claimed between
         # `_next_available_id`'s check and here, this raises
         # ArtifactAlreadyExistsError and propagates — the lineage is left
         # with zero active members, the "honest failure mode" §5 accepts.
-        self._store.put_new(new_artifact)
+        try:
+            self._store.put_new(new_artifact)
+        except BaseException:
+            self._changes.abandon(pending)
+            raise
+        self._commit_change(pending, conflict_id=self._subject_conflict_id(new_artifact))
         if self._audit is not None:
             self._audit.log_supersede(
                 correlation_id=correlation_id,
@@ -470,6 +523,9 @@ class MAK4IEngine:
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
+        # MAK-0008 §14.4a: taken before the result is computed, so every
+        # change at or below it is reflected.
+        change_sequence = self._changes.watermark(organization_id, project)
 
         if self._audit is not None:
             self._audit.log_read(
@@ -533,7 +589,7 @@ class MAK4IEngine:
 
         package = self._context_builder.build(
             resolution, resolution_trace_id=correlation_id, conflicts=conflicts
-        )
+        ).model_copy(update={"change_sequence": change_sequence})
         if self._audit is not None:
             self._audit.log_inject(
                 correlation_id=correlation_id,
@@ -754,6 +810,60 @@ class MAK4IEngine:
                 return self._resolved_view(record)
         raise NotFoundError("no conflict with this id in this project")
 
+    def get_changes(
+        self,
+        *,
+        principal: Principal,
+        project: str,
+        after: int | None = None,
+        limit: int = 100,
+        auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
+    ):
+        """MAK-0008 §14.4: the project's change feed after a cursor."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
+        correlation_id = request_scope.correlation_id()
+        outcome = self._authorizer.require(
+            principal, project, "read",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        context = self._authorizer.audit_context(outcome, auth_method=auth_method)
+        if self._audit is not None:
+            self._audit.log_read(
+                "CHANGES", correlation_id=correlation_id, actor=principal.principal_id,
+                context=context, project=project, after=after, limit=limit,
+            )
+        return self._changes.read(outcome.organization_id, project, after=after, limit=limit)
+
+    def get_record(
+        self,
+        *,
+        principal: Principal,
+        project: str,
+        artifact_id: str,
+        auth_method: str = CREDENTIAL,
+        auth: AuthContext | None = None,
+    ) -> Artifact:
+        """One record version (MAK-0008 §14.5 record resource)."""
+        auth_method, ceiling = _resolve_auth(auth, auth_method)
+        correlation_id = request_scope.correlation_id()
+        outcome = self._authorizer.require(
+            principal, project, "read",
+            correlation_id=correlation_id, auth_method=auth_method,
+            ceiling=ceiling,
+        )
+        context = self._authorizer.audit_context(outcome, auth_method=auth_method)
+        if self._audit is not None:
+            self._audit.log_read(
+                "RECORD_READ", correlation_id=correlation_id, actor=principal.principal_id,
+                context=context, project=project, artifact_id=artifact_id,
+            )
+        found = self._store.get(outcome.organization_id, project, artifact_id) if is_safe_artifact_id(artifact_id) else None
+        if found is None:
+            raise NotFoundError("no record with this id in this project")
+        return found[0]
+
     @_audited_write("resolve_conflict")
     def resolve_conflict(
         self,
@@ -948,7 +1058,9 @@ class MAK4IEngine:
                         heads.append(ResultingHead(subject_key=key, artifact_id=successor))
         except (ConflictChangedError, ArtifactNotFoundError) as exc:
             aborted = record.model_copy(update={"state": "aborted", "effects": effects, "completed_at": utc_now()})
-            self._resolutions.update(aborted)
+            # Effects already applied are committed changes: they get events.
+            pendings = self._begin_resolution_changes(record, effects, states=["aborted"], completed=False)
+            self._finish_changes(pendings, lambda: self._resolutions.update(aborted))
             self._log_resolution(
                 "RESOLUTION_ABORTED", correlation_id, None, context,
                 resolution_id=record.resolution_id, conflict_id=record.conflict_id,
@@ -963,7 +1075,8 @@ class MAK4IEngine:
         completed = record.model_copy(
             update={"state": "completed", "effects": effects, "resulting_heads": heads, "completed_at": utc_now()}
         )
-        self._resolutions.update(completed)
+        pendings = self._begin_resolution_changes(record, effects, states=["completed"], completed=True)
+        self._finish_changes(pendings, lambda: self._resolutions.update(completed))
         self._log_resolution(
             "RESOLUTION_COMPLETED", correlation_id, None, context,
             resolution_id=record.resolution_id, conflict_id=record.conflict_id,
@@ -971,6 +1084,113 @@ class MAK4IEngine:
             resulting_heads=[h.model_dump() for h in heads], actor_principal_id=record.actor.principal_id,
         )
         return completed
+
+    # -- change feed (MAK-0008 §14) ---------------------------------------
+
+    def add_change_listener(self, listener) -> None:
+        """Called with each committed `ChangeEvent` (in-process writes only;
+        the durable feed covers every process)."""
+        self._change_listeners.append(listener)
+
+    @property
+    def change_feed(self) -> ChangeFeed:
+        return self._changes
+
+    def _commit_change(self, pending, **fields):
+        event = self._changes.commit(pending, **fields)
+        for listener in list(self._change_listeners):
+            try:
+                listener(event)
+            except Exception:  # a notification hint must never fail the write
+                logging.getLogger(__name__).exception("change listener failed")
+        return event
+
+    def _finish_changes(self, pendings, write) -> None:
+        try:
+            write()
+        except BaseException:
+            for pending in pendings:
+                self._changes.abandon(pending)
+            raise
+        for pending in pendings:
+            self._commit_change(pending)
+
+    def _subject_conflict_id(self, artifact: Artifact) -> str | None:
+        if not artifact.subject_key:
+            return None
+        for conflict in self._open_conflicts(artifact.organization_id, artifact.project).values():
+            if (conflict.artifact_type, conflict.subject_key) == (artifact.artifact_type, artifact.subject_key):
+                return conflict.conflict_id
+        return None
+
+    def _begin_resolution_changes(self, record: ResolutionRecord, effects, *, states, completed: bool):
+        org, project = record.organization_id, record.project
+        verify = {"type": "resolution", "resolution_id": record.resolution_id, "states": states}
+        actor = _actor(record.actor)
+        pendings = []
+        for effect in effects:
+            if effect.effect == "superseded" and effect.successor_artifact_id:
+                found = self._store.get(org, project, effect.successor_artifact_id)
+                if found is None:
+                    continue
+                pendings.append(self._changes.begin(
+                    org, project, "record.superseded", verify=verify,
+                    **{**_record_fields(found[0]), "actor": actor},
+                    previous_artifact_id=effect.artifact_id, resolution_id=record.resolution_id,
+                    conflict_id=record.conflict_id,
+                ))
+            elif effect.effect == "withdrawn":
+                found = self._store.get(org, project, effect.artifact_id)
+                if found is None:
+                    continue
+                pendings.append(self._changes.begin(
+                    org, project, "record.withdrawn", verify=verify,
+                    **{**_record_fields(found[0]), "actor": actor},
+                    resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+                ))
+        if completed:
+            pendings.append(self._changes.begin(
+                org, project, "resolution.completed", verify=verify,
+                resolution_id=record.resolution_id, conflict_id=record.conflict_id,
+                artifact_type=record.artifact_type, subject_key=record.subject_key, actor=actor,
+            ))
+        return pendings
+
+    def reconcile_change_feed(self, *, older_than=None) -> dict[str, int]:
+        """MAK-0008 §14.3: decide every pending event from the stored state.
+        At start-up (`older_than=None`) every pending event is decided;
+        periodically, only those older than `older_than` (a crashed writer in
+        another process). A resolution still pending is left for
+        `recover_pending_resolutions` (abandoned at start-up; recovery emits
+        its events afresh)."""
+        counts = {"committed": 0, "abandoned": 0}
+        for item in self._changes.pending_events(older_than=older_than):
+            verify, pending = item.verify, item.pending
+            decided: bool | None
+            if verify.get("type") == "artifact_exists":
+                decided = self._store.get(pending.organization_id, pending.project, verify["artifact_id"]) is not None
+            elif verify.get("type") == "resolution":
+                record = self._resolutions.get(verify["resolution_id"])
+                if record is None:
+                    decided = False
+                elif record.state == "pending":
+                    decided = False if older_than is None else None
+                else:
+                    decided = record.state in verify.get("states", [])
+            elif verify.get("type") == "project_archived":
+                project = self._control_plane._store.get_project(pending.project)  # noqa: SLF001
+                decided = project is not None and project.status == "archived"
+            else:
+                decided = False
+            if decided is None:
+                continue
+            if decided:
+                self._commit_change(pending)
+                counts["committed"] += 1
+            else:
+                self._changes.abandon(pending)
+                counts["abandoned"] += 1
+        return counts
 
     def _is_pending_resolution(self, resolution_id: str) -> bool:
         record = self._resolutions.get(resolution_id)

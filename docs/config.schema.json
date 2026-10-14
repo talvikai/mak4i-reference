@@ -36,6 +36,21 @@
       "title": "AuthSettings",
       "type": "object"
     },
+    "ChangeFeedSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "retention_days": {
+          "default": 7,
+          "description": "MAK-0008 \u00a714.3: days change events are kept (at least 7); older cursors get cursor_expired.",
+          "maximum": 3650,
+          "minimum": 7,
+          "title": "Retention Days",
+          "type": "integer"
+        }
+      },
+      "title": "ChangeFeedSettings",
+      "type": "object"
+    },
     "ControlPlaneSettings": {
       "additionalProperties": false,
       "properties": {
@@ -300,6 +315,12 @@
     },
     "logging": {
       "$ref": "#/$defs/LoggingSettings"
+    },
+    "change_feed": {
+      "$ref": "#/$defs/ChangeFeedSettings",
+      "default": {
+        "retention_days": 7
+      }
     }
   },
   "required": [

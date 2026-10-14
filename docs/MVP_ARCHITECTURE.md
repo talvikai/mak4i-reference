@@ -364,6 +364,8 @@ records `auth_method: "operator"`.
 | `mak4i_list_conflicts` | `mak4i conflict list` | |
 | `mak4i_get_conflict` | `mak4i conflict show` | |
 | `mak4i_resolve_conflict` | `mak4i conflict resolve` | `--winner` / `--into` / `--content` map to the per-action parameters. |
+| `mak4i_changes` | `mak4i changes` | `--after` / `--limit`; without `--after`, returns the current cursor. |
+| MCP resources (`resources/list`, `resources/read`, subscriptions) | `mak4i get-current`, `mak4i conflict show` | Resources are an MCP surface; the CLI reads the same data through the tools above. |
 | — | `mak4i doctor` | Integrity check; operator-only, not model-callable. |
 
 **[MVP CHOICE]**, per v0.3.1 §15/§15.1: the MCP server (`src/mak4i/mcp_server.py`) deploys as a single **Cloud Run** service, Streamable HTTP over HTTPS. This replaces Revision 2's demo-time ngrok tunnel entirely — Cloud Run gives a stable HTTPS URL for the life of the deployment, not just the life of a demo session.

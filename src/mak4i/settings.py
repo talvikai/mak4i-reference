@@ -91,6 +91,14 @@ class LoggingSettings(_Model):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
+class ChangeFeedSettings(_Model):
+    retention_days: int = Field(
+        default=7, ge=7, le=3650,
+        description="MAK-0008 §14.3: days change events are kept (at least 7); "
+        "older cursors get cursor_expired.",
+    )
+
+
 class Settings(_Model):
     """The effective configuration of one MAK4I process."""
 
@@ -107,6 +115,7 @@ class Settings(_Model):
     auth: AuthSettings
     proxy: ProxySettings
     logging: LoggingSettings
+    change_feed: ChangeFeedSettings = ChangeFeedSettings()
 
 
 def _secret_ref(env, name: str, *, default: str | None, problems: list[str]) -> tuple[SecretRef, str | None]:
@@ -220,6 +229,15 @@ def load_settings(env=None) -> Settings:
 
     endpoint = env.get("MAK4I_PUBLIC_ENDPOINT") or None
 
+    retention_raw = env.get("MAK4I_CHANGE_FEED_RETENTION_DAYS") or "7"
+    try:
+        retention_days = int(retention_raw)
+        if not 7 <= retention_days <= 3650:
+            raise ValueError
+    except ValueError:
+        problems.append("MAK4I_CHANGE_FEED_RETENTION_DAYS must be a whole number of days from 7 to 3650")
+        retention_days = 7
+
     if problems:
         raise ConfigError(problems)
     return Settings(
@@ -237,6 +255,7 @@ def load_settings(env=None) -> Settings:
         auth=AuthSettings(oauth=oauth_policy, stdio_token=token_ref),
         proxy=ProxySettings(trusted_proxies=proxies),
         logging=LoggingSettings(level=level),
+        change_feed=ChangeFeedSettings(retention_days=retention_days),
     )
 
 

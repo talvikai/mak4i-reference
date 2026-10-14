@@ -266,3 +266,37 @@ admin_events = Table(
     Column("correlation_id", String, nullable=False),
     Index("ix_admin_events_org_time", "organization_id", "occurred_at"),
 )
+
+
+# MAK-0008 §14 change feed: one ordered sequence per project. An event is
+# recorded `pending` before the change it describes is written, and becomes
+# `committed` (or `abandoned`) afterwards; readers see only committed events
+# at or below the watermark (no pending event below it).
+change_feed_heads = Table(
+    "change_feed_heads",
+    metadata,
+    Column("organization_id", String, primary_key=True),
+    Column("project", String, primary_key=True),
+    Column("last_sequence", Integer, nullable=False),
+    # Highest sequence removed by retention pruning (0 = nothing pruned).
+    Column("pruned_through", Integer, nullable=False),
+)
+
+change_events = Table(
+    "change_events",
+    metadata,
+    Column("organization_id", String, primary_key=True),
+    Column("project", String, primary_key=True),
+    Column("sequence", Integer, primary_key=True),
+    Column("event_id", String, nullable=False, unique=True),
+    Column("kind", String, nullable=False),
+    # pending | committed | abandoned
+    Column("state", String, nullable=False),
+    Column("event", JSON, nullable=False),
+    # How start-up reconciliation decides whether the change committed.
+    Column("verify", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("committed_at", DateTime(timezone=True), nullable=True),
+    Index("ix_change_events_state", "state", "created_at"),
+)
+
