@@ -3,7 +3,13 @@
 # option parsing; state lives in the Compose .env (MAK4I_BOOTSTRAP_PROFILE,
 # MAK4I_INSTALL_STATE, MAK4I_INSTALLED_RELEASE) and in the Docker volumes.
 
-readonly UPGRADE_FROM="v0.1.0-rc.5"
+# Releases this one upgrades from (and rolls back to): v0.1.0-rc.6 is a
+# maintenance release of v0.1.0-rc.5 with the same schema.
+readonly UPGRADE_SOURCES="v0.1.0-rc.5 v0.1.0-rc.6"
+
+is_upgrade_source() {
+  [[ " $UPGRADE_SOURCES " == *" $1 "* ]]
+}
 
 compose_hint() {
   if [[ "$PROFILE" == tls ]]; then printf 'docker compose --profile tls'; else printf 'docker compose'; fi
@@ -440,10 +446,9 @@ verify_backup() {
   # Backups from the previous release are accepted too: restore and upgrade
   # run migrations before MAK4I starts, so an older schema is brought up to
   # date, and a backup taken just before upgrading must stay usable.
-  case "$release" in
-    "$MAK4I_RELEASE" | "$UPGRADE_FROM") ;;
-    *) die "$EX_UNSUPPORTED" "backup was made by $release; this bootstrap restores $MAK4I_RELEASE and $UPGRADE_FROM backups" ;;
-  esac
+  if [[ "$release" != "$MAK4I_RELEASE" ]] && ! is_upgrade_source "$release"; then
+    die "$EX_UNSUPPORTED" "backup was made by $release; this bootstrap restores $MAK4I_RELEASE, ${UPGRADE_SOURCES// / and } backups"
+  fi
   dump_sha=$(env_get "$manifest" MAK4I_BACKUP_DUMP_SHA256)
   list_sha=$(env_get "$manifest" MAK4I_BACKUP_ARTIFACTS_SHA256)
   [[ "$(sha256_file "$src/control-plane.dump")" == "$dump_sha" ]] || die "$EX_BACKUP" "control-plane.dump checksum mismatch"
@@ -533,8 +538,9 @@ cmd_rollback() {
   step "Verify backup $src"
   verify_backup "$src"
   release=$(env_get "$src/manifest.env" MAK4I_BACKUP_RELEASE)
-  [[ "$release" == "$UPGRADE_FROM" ]] ||
-    die "$EX_UNSUPPORTED" "rollback restores a $UPGRADE_FROM backup (the one upgrade took); this backup is from $release. To restore it, use: $0 restore --from $src"
+  is_upgrade_source "$release" ||
+    die "$EX_UNSUPPORTED" "rollback restores a ${UPGRADE_SOURCES// / or } backup (the one upgrade took); this backup is from $release. To restore it, use: $0 restore --from $src"
+  local target=$release
   step "Verify this installation"
   installed=${STORED_RELEASE:-}
   running=""
@@ -554,16 +560,16 @@ cmd_rollback() {
 
   cat <<EOF
 
-Rollback to $UPGRADE_FROM DELETES all current data of this installation:
+Rollback to $target DELETES all current data of this installation:
   - a recovery backup of the current $MAK4I_RELEASE data is taken first
     (kept; it is how you undo the rollback);
   - MAK4I is stopped and stays stopped, then the control-plane database is
     emptied;
-  - the $UPGRADE_FROM restore that follows loads the pre-upgrade backup
+  - the $target restore that follows loads the pre-upgrade backup
     ($src) and its artifacts.
 Everything written after that backup (records, resolutions, principals,
 grants, credentials, OAuth state, administrative history) is lost from the
-running system. MAK4I stays down until the $UPGRADE_FROM restore finishes.
+running system. MAK4I stays down until the $target restore finishes.
 EOF
   if [[ "$YES" != 1 ]]; then
     confirm_phrase "rollback" "Make sure nobody needs MAK4I for the next few minutes."
@@ -576,7 +582,7 @@ EOF
   [[ "$DRY_RUN" == 1 ]] || [[ -f "$recovery/manifest.env" ]] || die "$EX_BACKUP" "the recovery backup is incomplete; nothing was changed"
 
   # 3. Writers stopped, then the destructive step.
-  step "Empty the database for $UPGRADE_FROM"
+  step "Empty the database for $target"
   run compose stop mak4i || die "$EX_FAILURE" "could not stop mak4i"
   if [[ "$DRY_RUN" != 1 ]] && service_running mak4i; then
     die "$EX_FAILURE" "MAK4I is still running; nothing was deleted. Recovery backup: $recovery"
@@ -587,11 +593,11 @@ EOF
     die "$EX_FAILURE" "could not empty the database. Recovery backup: $recovery (restore it with: $0 restore --from $recovery)"
   [[ "$DRY_RUN" == 1 ]] && { say "Dry run complete: nothing was changed."; return; }
   # The installation is the previous release from here on.
-  env_set "$ENV_FILE" "MAK4I_INSTALLED_RELEASE=$UPGRADE_FROM"
+  env_set "$ENV_FILE" "MAK4I_INSTALLED_RELEASE=$target"
   say ""
   say "Database emptied and MAK4I stopped. Recovery backup of the $MAK4I_RELEASE data: $recovery"
-  say "Finish the rollback with $UPGRADE_FROM:"
-  say "  1. git -C $REPO_ROOT fetch --depth 1 origin tag $UPGRADE_FROM && git -C $REPO_ROOT checkout $UPGRADE_FROM"
+  say "Finish the rollback with $target:"
+  say "  1. git -C $REPO_ROOT fetch --depth 1 origin tag $target && git -C $REPO_ROOT checkout $target"
   say "  2. cd $COMPOSE_DIR && $(compose_hint) build mak4i"
   say "  3. $0 restore --from $src"
   say "To undo instead (back to $MAK4I_RELEASE): $0 restore --from $recovery (with this checkout)"
@@ -628,14 +634,16 @@ cmd_upgrade() {
     fi
   fi
   from=${from:-$FROM_VERSION}
-  [[ -n "$from" ]] || die "$EX_UNSUPPORTED" "can't determine the installed version: start the stack, or pass --from-version $UPGRADE_FROM"
+  [[ -n "$from" ]] || die "$EX_UNSUPPORTED" "can't determine the installed version: start the stack, or pass --from-version <installed release>"
   if [[ -n "$FROM_VERSION" && "$FROM_VERSION" != "$from" ]]; then
     die "$EX_UNSUPPORTED" "--from-version $FROM_VERSION doesn't match the installed version $from"
   fi
   case "$from" in
-    "$UPGRADE_FROM") info "installed: $from -> upgrading to $MAK4I_RELEASE" ;;
     "$MAK4I_RELEASE") info "already $MAK4I_RELEASE; re-applying and verifying" ;;
-    *) die "$EX_UNSUPPORTED" "upgrading from $from isn't supported. Supported path: $UPGRADE_FROM -> $MAK4I_RELEASE (upgrade to $UPGRADE_FROM first, following its guide)" ;;
+    *)
+      is_upgrade_source "$from" ||
+        die "$EX_UNSUPPORTED" "upgrading from $from isn't supported. Supported paths: ${UPGRADE_SOURCES// / or } -> $MAK4I_RELEASE (upgrade to v0.1.0-rc.6 first, following its guide)"
+      info "installed: $from -> upgrading to $MAK4I_RELEASE" ;;
   esac
 
   checkout=$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)

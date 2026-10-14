@@ -540,7 +540,7 @@ def test_upgrade_refuses_unsupported_versions(host):
     host.set_state(running=["postgres", "mak4i"], version="0.1.0rc3")
     r = host.run("upgrade", "--backup-dir", str(host.backups))
     assert r.returncode == 7
-    assert "v0.1.0-rc.5 -> v2.0.0-rc.1" in r.output
+    assert "v0.1.0-rc.5 or v0.1.0-rc.6 -> v2.0.0-rc.1" in r.output
     assert _mutations(host) == []
 
 
@@ -624,7 +624,7 @@ def test_rollback_validates_before_anything_is_changed(host, problem):
     args = ["rollback", "--from", str(dest), "--yes"]
     if problem == "v2-backup":
         _relabel_backup(dest, "v2.0.0-rc.1")
-        expect = "rollback restores a v0.1.0-rc.5 backup"
+        expect = "rollback restores a v0.1.0-rc.5 or v0.1.0-rc.6 backup"
     elif problem == "foreign-endpoint":
         env = dest / "env"
         env.write_text(env.read_text() + "MAK4I_PUBLIC_ENDPOINT=https://other.example.com/mcp\n")
@@ -728,3 +728,32 @@ def test_a_refused_backup_location_is_not_created(host):
     r = host.run("backup", "--backup-dir", str(inside))
     assert r.returncode == 2
     assert not inside.exists()
+
+
+def test_upgrade_accepts_the_rc6_security_release_and_rolls_back_to_it(host):
+    # v0.1.0-rc.6 is a maintenance release of v0.1.0-rc.5 with the same schema.
+    host.env_file.write_text("POSTGRES_PASSWORD=abc\nMAK4I_HTTP_BIND=127.0.0.1\n")
+    host.env_file.chmod(0o600)
+    host.set_state(running=["postgres", "mak4i"], volumes=["mak4i_pgdata", "mak4i_artifacts"], version="0.1.0rc6")
+    r = host.run("upgrade", "--backup-dir", str(host.backups))
+    assert "installed: v0.1.0-rc.6 -> upgrading to v2.0.0-rc.1" in r.output, r.output
+    (backup,) = host.backups.glob("mak4i-backup-*")
+    assert "MAK4I_BACKUP_RELEASE=v0.1.0-rc.6" in (backup / "manifest.env").read_text()
+    # Rollback to rc.6 from an upgraded (v2) installation.
+    host.set_state(**{**host.state(), "version": "2.0.0rc1"})
+    env = host.env_file.read_text()
+    host.env_file.write_text(env + "MAK4I_INSTALLED_RELEASE=v2.0.0-rc.1\nMAK4I_INSTALL_STATE=complete\nMAK4I_BOOTSTRAP_PROFILE=private-http\n")
+    r = host.run("rollback", "--from", str(backup), "--yes", "--backup-dir", str(host.backups))
+    assert r.returncode == 0, r.output
+    assert "checkout v0.1.0-rc.6" in r.output and "Finish the rollback with v0.1.0-rc.6" in r.output
+    assert "MAK4I_INSTALLED_RELEASE=v0.1.0-rc.6" in host.env_file.read_text()
+
+
+@pytest.mark.parametrize("release,ok", [("v0.1.0-rc.6", True), ("v0.1.0-rc.5", True), ("v0.1.0-rc.4", False)])
+def test_restore_accepts_rc5_and_rc6_backups_only(host, release, ok):
+    assert _install_private(host).returncode == 0
+    assert host.run("backup", "--backup-dir", str(host.backups)).returncode == 0
+    (dest,) = list(host.backups.glob("mak4i-backup-*"))
+    _relabel_backup(dest, release)
+    r = host.run("restore", "--from", str(dest), "--yes")
+    assert (r.returncode == 0) == ok, r.output

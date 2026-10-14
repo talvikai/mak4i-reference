@@ -208,7 +208,7 @@ rules, resource groups) is architecture-defined and **not** implemented.
 
 ### Upgrade
 
-- Supported path: `v0.1.0-rc.5` → `v2.0.0-rc.1` (bootstrap `upgrade`, which
+- Supported paths: `v0.1.0-rc.5` or `v0.1.0-rc.6` → `v2.0.0-rc.1` (bootstrap `upgrade`, which
   backs up first). Migrations `0002`–`0005` are additive; existing agent
   principals get `agent-<12 hex>` ids. Local SQLite environments are
   upgraded in place. Rollback = restore the pre-upgrade backup with

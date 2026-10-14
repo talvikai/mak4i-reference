@@ -573,7 +573,7 @@ is logged.
 
 ## 9. Upgrade from v0.1.0-rc.5
 
-The supported path is `v0.1.0-rc.5` → `v2.0.0-rc.1`, preserving all data.
+The supported paths are `v0.1.0-rc.5` or `v0.1.0-rc.6` → `v2.0.0-rc.1`, preserving all data.
 An installation on an earlier release upgrades to `v0.1.0-rc.5` first,
 following that release's guide.
 
@@ -924,7 +924,7 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
 | `admin-info` | Non-secret inventory: organizations, owners, projects, principals (incl. `agent_id`), grants, credential metadata. Use it to recover ids you didn't keep; tokens can't be recovered, only reissued | No |
 | `restart` | Restart and verify health and data | Yes |
-| `upgrade` | Back up, then `v0.1.0-rc.5` → `v2.0.0-rc.1` | Yes |
+| `upgrade` | Back up, then `v0.1.0-rc.5` or `v0.1.0-rc.6` → `v2.0.0-rc.1` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
 | `rollback` | Prepare a rollback to `v0.1.0-rc.5`: stop MAK4I and empty the database (then restore with v0.1.0-rc.5) | Yes (confirmation required) |
