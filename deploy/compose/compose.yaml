@@ -35,7 +35,7 @@ services:
     # Pinned to a reviewed version and digest (issue #10; see the
     # Dockerfile header for the update procedure). Stay on major 16: a
     # new PostgreSQL major version needs a dump/restore, not a restart.
-    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    image: postgres:16.15@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mak4i}
@@ -134,7 +134,7 @@ services:
 
   caddy:
     # Pinned to a reviewed version and digest (issue #10).
-    image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
+    image: caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73
     profiles: ["tls"]
     restart: unless-stopped
     environment:
