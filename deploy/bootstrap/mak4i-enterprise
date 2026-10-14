@@ -48,11 +48,11 @@ Commands:
   admin-info  Non-secret inventory: organizations, owners, projects,
               principals, grants and credential metadata (never tokens)
   restart     Restart the stack and verify health and data
-  upgrade     Back up, then upgrade $UPGRADE_FROM -> $MAK4I_RELEASE
+  upgrade     Back up, then upgrade v0.1.0-rc.5 or rc.6 -> $MAK4I_RELEASE
   backup      Timestamped backup of the database, artifacts and .env
   restore     Replace all data with a backup (asks for confirmation)
-  rollback    Prepare a rollback to $UPGRADE_FROM: stop MAK4I and empty the
-              database, then restore the pre-upgrade backup with $UPGRADE_FROM
+  rollback    Prepare a rollback to the pre-upgrade release (v0.1.0-rc.5/rc.6):
+              stop MAK4I and empty the database, then restore with that release
   uninstall   Remove the containers; keeps data unless --destroy-data
 
 Install / preflight options:
@@ -184,7 +184,7 @@ parse_options() {
       online) ONLINE=1 ;;
       from) RESTORE_FROM=$value ;;
       use-backup) USE_BACKUP=$value ;;
-      from-version) [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || usage_error "--from-version must look like $UPGRADE_FROM"; FROM_VERSION=$value ;;
+      from-version) [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || usage_error "--from-version must look like v0.1.0-rc.6"; FROM_VERSION=$value ;;
       preserve-data) PRESERVE_DATA=1 ;;
       destroy-data) DESTROY_DATA=1 ;;
       yes-destroy-data) YES_DESTROY=1 ;;
