@@ -433,12 +433,23 @@ request.
 `tls` profile). Hosted clients such as claude.ai connect from the
 internet, so a private-http installation can't be used with them.
 
-**Enable it** in `deploy/compose/.env`, then restart the stack:
+**Enable it** in `deploy/compose/.env`:
 
 ```bash
 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp
 MAK4I_OAUTH_ENABLED=1
 ```
+
+Then recreate the MAK4I container so it reads the new settings:
+
+```bash
+cd deploy/compose && docker compose up -d mak4i
+../bootstrap/mak4i-enterprise status        # wait for /health ok and /ready ready
+```
+
+`./deploy/bootstrap/mak4i-enterprise restart` is **not** enough here: it
+restarts the existing container, which keeps its old environment, so
+OAuth stays off. The same applies to every other `.env` change.
 
 Check discovery (both must return JSON without a token):
 
@@ -507,7 +518,11 @@ docker compose exec mak4i mak4i oauth sign-in-code --actor "$OWNER" --principal-
 ```
 
 `$OWNER` is the owner's `principal_id` printed by `mak4i org create`;
-recover ids with `./deploy/bootstrap/mak4i-enterprise admin-info`. A
+recover ids with `./deploy/bootstrap/mak4i-enterprise admin-info`.
+Who can issue a code: an owner, for anyone in the organization, or any
+principal for itself by acting with its own credential
+(`docker compose exec -e MAK4I_TOKEN mak4i mak4i oauth sign-in-code`,
+with `MAK4I_TOKEN` set in the shell). A
 sign-in code works **once** and for **10 minutes**, and it is consumed
 by the first successful sign-in: issue a new one for every sign-in. It
 is never a bearer token.
@@ -552,6 +567,20 @@ and write.
 The client is identified by its registration, never by the name an app
 reports. Tokens are bearer tokens, so a policy limits the client a token
 was issued to, not software that copies it (MAK-0006 §5.7.9).
+
+### 7.3 Change notifications
+
+MAK4I keeps a change feed per project (MAK-0008 §14). AI clients can
+subscribe to project resources and read the feed with `mak4i_changes`.
+Administrators read it with:
+
+```bash
+docker compose exec mak4i mak4i changes --principal "$PRINCIPAL" --project "$PROJECT" --after 0
+```
+
+Events are kept for `MAK4I_CHANGE_FEED_RETENTION_DAYS` (default 7) and
+are delivered by this single MAK4I instance. Details:
+[DEPLOYMENT.md → Change feed and MCP resources](DEPLOYMENT.md#change-feed-and-mcp-resources).
 
 ## 8. Operate
 
