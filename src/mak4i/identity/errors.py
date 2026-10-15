@@ -32,10 +32,15 @@ class AccessDeniedError(IdentityError):
     (MVP spec §3: "avoid leaking data from unauthorized projects").
     """
 
-    def __init__(self, *, principal_id: str, permission: str):
+    def __init__(self, *, principal_id: str, permission: str, reason: str | None = None):
         super().__init__("access denied")
         self.principal_id = principal_id
         self.permission = permission
+        self.reason = reason
+        """MAK-0008 §9.2 `reason`: only `client_not_permitted` (MAK-0006
+        §5.7.6), set when the principal holds the permission but the client
+        policy for this client does not allow it. `None` for every other
+        denial, which stays indistinguishable (§5.5)."""
 
 
 class LastOwnerError(IdentityError):
@@ -90,6 +95,12 @@ class ProjectNotFoundError(EntityNotFoundError):
 
 class CredentialNotFoundError(EntityNotFoundError):
     entity = "credential"
+
+
+class InvalidClientPolicyError(IdentityError, ValueError):
+    """A client policy names a client it may not (MAK-0006 §5.7.1–§5.7.2):
+    another principal's credential, a client of another organization, a
+    dynamically registered client, or an unknown client."""
 
 
 class AgentIdTakenError(IdentityError):

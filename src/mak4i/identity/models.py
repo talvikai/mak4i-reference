@@ -35,6 +35,8 @@ PrincipalType = Literal["human", "service", "agent"]
 PrincipalRole = Literal["owner", "member"]
 PrincipalStatus = Literal["active", "deactivated"]
 ProjectStatus = Literal["active", "archived"]
+ClientKind = Literal["credential", "oauth_client"]
+"""MAK-0006 §5.7.1: how a request's verified client is identified."""
 Permission = Literal["read", "write", "resolve"]
 CredentialStatus = Literal["active", "revoked"]
 
@@ -60,6 +62,10 @@ def new_organization_id() -> str:
 
 def new_principal_id() -> str:
     return _new_id("prn")
+
+
+def new_client_policy_id() -> str:
+    return _new_id("cpol")
 
 
 def new_project_id() -> str:
@@ -137,8 +143,52 @@ class Project(_Entity):
     organization_id: str
     name: str
     status: ProjectStatus = "active"
+    client_restrictions: bool = False
+    """MAK-0006 §5.7.3 restriction mode: False = `off` (a client without a
+    policy is unrestricted), True = `on` (deny clients without a policy)."""
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ClientPolicy(_Entity):
+    """MAK-0006 §5.7.2: a ceiling on one principal's permissions on one
+    project when it connects through one verified client. Never a grant;
+    an empty `permissions` list means no access through that client."""
+
+    policy_id: str = Field(default_factory=new_client_policy_id)
+    organization_id: str
+    principal_id: str
+    project_id: str
+    client_kind: ClientKind
+    client_id: str
+    permissions: list[Permission]
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("permissions")
+    @classmethod
+    def _normalize_permissions(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - _PERMISSION_ORDER.keys())
+        if unknown:
+            raise ValueError(f"unknown permission(s): {unknown}")
+        return sorted(set(value), key=_PERMISSION_ORDER.__getitem__)
+
+    @property
+    def client(self) -> tuple[str, str]:
+        return (self.client_kind, self.client_id)
+
+    def to_protocol(self) -> dict:
+        """`client-policy.schema.json` shape."""
+        return {
+            "policy_id": self.policy_id,
+            "organization_id": self.organization_id,
+            "principal_id": self.principal_id,
+            "project_id": self.project_id,
+            "client": {"kind": self.client_kind, "id": self.client_id},
+            "permissions": list(self.permissions),
+            "created_at": self.created_at.isoformat().replace("+00:00", "Z"),
+            "updated_at": self.updated_at.isoformat().replace("+00:00", "Z"),
+        }
 
 
 class Grant(_Entity):

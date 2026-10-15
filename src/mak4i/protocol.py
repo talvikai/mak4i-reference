@@ -12,6 +12,10 @@ PROTOCOL_VERSION = "0.2"
 SERVER_PROFILE = "server-project-records"
 
 
+CLIENT_POLICIES_PROFILE = "server-client-policies"
+"""MAK-0006 §5.7: client-scoped project access, always available."""
+
+
 def claimed_profiles(transport: str, oauth=None, *, change_feed: bool = False) -> list[str]:
     """Profiles claimed for a server running on `transport` ("stdio" or
     "http"). `oauth` is the active `OAuthSettings` (None when OAuth is off):
@@ -19,8 +23,8 @@ def claimed_profiles(transport: str, oauth=None, *, change_feed: bool = False) -
     ChatGPT and Claude Code) plus each registration option that is enabled."""
     extra = ["server-change-feed"] if change_feed else []  # MAK-0008 §14, durable feed only
     if transport == "stdio":
-        return [SERVER_PROFILE, *extra, "transport-stdio"]
-    profiles = [SERVER_PROFILE, *extra, "transport-http-credential"]
+        return [SERVER_PROFILE, CLIENT_POLICIES_PROFILE, *extra, "transport-stdio"]
+    profiles = [SERVER_PROFILE, CLIENT_POLICIES_PROFILE, *extra, "transport-http-credential"]
     if oauth is not None:
         profiles.append("transport-http-oauth")
         if getattr(oauth, "enable_cimd", False):

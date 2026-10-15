@@ -34,6 +34,21 @@ class AuthContext:
     oauth_client_id: str | None = None
     oauth_authorization_id: str | None = None
     scopes: tuple[str, ...] = ()
+    client_registration: str | None = None
+    """How the OAuth client was registered: `pre_registered`,
+    `metadata_document` or `dynamic` (MAK-0008 §10.5); `None` for
+    credentials."""
+
+    @property
+    def client(self) -> tuple[str, str] | None:
+        """MAK-0006 §5.7.1 verified client identity `(kind, id)`, derived only
+        from the verified credential or token — never from `clientInfo`.
+        `None` when the request has no such identity (operator tooling)."""
+        if self.auth_method == CREDENTIAL and self.credential_id:
+            return ("credential", self.credential_id)
+        if self.auth_method == OAUTH and self.oauth_client_id:
+            return ("oauth_client", self.oauth_client_id)
+        return None
 
     @classmethod
     def for_scopes(
@@ -42,6 +57,7 @@ class AuthContext:
         *,
         oauth_client_id: str,
         oauth_authorization_id: str,
+        client_registration: str | None = None,
     ) -> AuthContext:
         return cls(
             auth_method=OAUTH,
@@ -51,6 +67,7 @@ class AuthContext:
             oauth_client_id=oauth_client_id,
             oauth_authorization_id=oauth_authorization_id,
             scopes=tuple(scopes),
+            client_registration=client_registration,
         )
 
 

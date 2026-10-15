@@ -11,9 +11,10 @@ changes as the migrations, idempotently, to such databases only:
   left alone — they are upgraded with `alembic upgrade head`;
 - non-SQLite databases are left alone.
 
-Currently: new tables (OAuth, resolution records, admin events) and
-`principals.agent_id` (migration 0003, including its backfill of
-pre-existing agent principals).
+Currently: new tables (OAuth, resolution records, admin events, client
+policies), `principals.agent_id` (migration 0003, including its backfill
+of pre-existing agent principals) and `projects.client_restrictions`
+(migration 0007).
 """
 
 from __future__ import annotations
@@ -61,4 +62,11 @@ def reconcile(engine: Engine) -> list[str]:
                 )
             )
         changes.append("added principals.agent_id")
+    project_columns = {c["name"] for c in inspector.get_columns("projects")}
+    if "client_restrictions" not in project_columns:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE projects ADD COLUMN client_restrictions BOOLEAN NOT NULL DEFAULT 0")
+            )
+        changes.append("added projects.client_restrictions")
     return changes

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     String,
     Table,
     UniqueConstraint,
+    false,
 )
 
 metadata = MetaData()
@@ -73,9 +75,30 @@ projects = Table(
     ),
     Column("name", String, nullable=False),
     Column("status", String, nullable=False),
+    # MAK-0006 §5.7.3 restriction mode (False = off, True = on).
+    Column("client_restrictions", Boolean, nullable=False, server_default=false()),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Index("ix_projects_organization_id", "organization_id"),
+)
+
+# MAK-0006 §5.7.2: at most one policy per (principal, project, client).
+client_policies = Table(
+    "client_policies",
+    metadata,
+    Column("policy_id", String, primary_key=True),
+    Column("organization_id", String, ForeignKey("organizations.organization_id"), nullable=False),
+    Column("principal_id", String, ForeignKey("principals.principal_id"), nullable=False),
+    Column("project_id", String, ForeignKey("projects.project_id"), nullable=False),
+    # credential | oauth_client
+    Column("client_kind", String, nullable=False),
+    Column("client_id", String, nullable=False),
+    Column("permissions", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("principal_id", "project_id", "client_kind", "client_id",
+                     name="uq_client_policies_principal_project_client"),
+    Index("ix_client_policies_project", "project_id"),
 )
 
 grants = Table(

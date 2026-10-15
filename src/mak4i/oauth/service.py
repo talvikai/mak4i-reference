@@ -108,6 +108,11 @@ class ValidatedAccessToken:
     scopes: tuple[str, ...]
     client_id: str
     authorization_id: str
+    client_registration: str | None = None
+    """`pre_registered`, `metadata_document` or `dynamic` (MAK-0008 §10.5)."""
+
+
+_REGISTRATION = {"pre_registered": "pre_registered", "cimd": "metadata_document", "dcr": "dynamic"}
 
 
 @dataclass(frozen=True)
@@ -611,7 +616,14 @@ class OAuthService:
         if token is None or token["kind"] != "refresh":
             raise self._token_rejected("invalid_grant", "refresh token is invalid")
         authorization = self._store.get_authorization(token["authorization_id"])
-        if authorization is None or authorization["client_id"] != client["client_id"]:
+        if authorization is None:
+            raise self._token_rejected("invalid_grant", "refresh token is invalid")
+        if authorization["client_id"] != client["client_id"]:
+            # MAK-0008 §6.5: a refresh token is bound to its client. Another
+            # client presenting it means the token leaked: end the authorization.
+            if authorization["status"] == "active":
+                self._store.revoke_authorization(authorization["authorization_id"], "client_mismatch", now)
+                self._log("OAUTH_REFRESH_CLIENT_MISMATCH", authorization_id=authorization["authorization_id"])
             raise self._token_rejected("invalid_grant", "refresh token is invalid")
         if token["status"] == "rotated":
             self._replay(authorization, now)
@@ -687,6 +699,9 @@ class OAuthService:
             scopes=tuple(token["scopes"]),
             client_id=authorization["client_id"],
             authorization_id=authorization["authorization_id"],
+            client_registration=_REGISTRATION.get((client or {}).get("kind")) if client else (
+                "metadata_document" if authorization["client_id"].startswith("https://") else None
+            ),
         )
 
     # -- administration (§8.5) ---------------------------------------------------

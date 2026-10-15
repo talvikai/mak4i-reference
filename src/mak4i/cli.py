@@ -629,6 +629,108 @@ def _cmd_credential_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- client-scoped access (MAK-0006 §5.7) ---------------------------------------
+
+
+def _policy_client(args: argparse.Namespace) -> tuple[str, str]:
+    if bool(args.oauth_client_id) == bool(args.credential_id):
+        raise _CliError("name exactly one client: --oauth-client-id or --credential-id")
+    return ("oauth_client", args.oauth_client_id) if args.oauth_client_id else ("credential", args.credential_id)
+
+
+def _policy_permissions(raw: str) -> list[str]:
+    """`none` (no access through this client) or a comma-separated list."""
+    return [] if raw.strip().lower() == "none" else _split_permissions(raw)
+
+
+def _cmd_client_policy_set(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    kind, client_id = _policy_client(args)
+    try:
+        policy = control_plane.set_client_policy(
+            actor=actor, principal_id=args.principal_id, project_id=args.project_id,
+            client_kind=kind, client_id=client_id, permissions=_policy_permissions(args.permissions),
+        )
+    except ValueError as exc:
+        raise _CliError(_first_validation_message(exc)) from exc
+    _print_json(policy.to_protocol())
+    return 0
+
+
+def _cmd_client_policy_list(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    policies = control_plane.list_client_policies(
+        actor=actor, project_id=args.project_id, principal_id=args.principal_id
+    )
+    _print_json({"result": [p.to_protocol() for p in policies]})
+    return 0
+
+
+def _cmd_client_policy_remove(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    kind, client_id = _policy_client(args)
+    removed = control_plane.remove_client_policy(
+        actor=actor, principal_id=args.principal_id, project_id=args.project_id,
+        client_kind=kind, client_id=client_id,
+    )
+    _print_json({"removed": removed, "principal_id": args.principal_id, "project_id": args.project_id,
+                 "client": {"kind": kind, "id": client_id}})
+    return 0
+
+
+def _oauth_clients_lister(control_plane):
+    """OAuth clients each principal has authorized (active authorizations),
+    for the restriction preview. Empty when the OAuth tables don't exist."""
+    from sqlalchemy import inspect
+
+    from mak4i.identity.sql_store import SqlControlPlaneStore
+    from mak4i.oauth.store import SqlOAuthStore
+
+    store = control_plane._store  # noqa: SLF001 - same database by design
+    if not isinstance(store, SqlControlPlaneStore):
+        return None
+    if "oauth_authorizations" not in inspect(store.engine).get_table_names():
+        return None
+    oauth_store = SqlOAuthStore(store.engine)
+
+    def lister(principal_id: str) -> list[str]:
+        principal = control_plane.get_principal(principal_id)
+        rows = oauth_store.list_authorizations(
+            organization_id=principal.organization_id, principal_id=principal_id
+        )
+        return [r["client_id"] for r in rows if r["status"] == "active"]
+
+    return lister
+
+
+def _cmd_project_client_restrictions(args: argparse.Namespace) -> int:
+    control_plane = _make_control_plane()
+    actor = _resolve_actor(control_plane, args)
+    preview = control_plane.client_access_preview(
+        actor=actor, project_id=args.project_id, oauth_clients_of=_oauth_clients_lister(control_plane)
+    )
+    if args.mode is None:
+        project = control_plane.show_project(actor=actor, project_id=args.project_id)
+        _print_json({"project_id": args.project_id,
+                     "mode": "on" if project.client_restrictions else "off", "clients": preview})
+        return 0
+    enabled = args.mode == "on"
+    losing = [row for row in preview if enabled and not row["access_when_on"]]
+    if losing and not args.yes:
+        _print_json({"project_id": args.project_id, "mode": "unchanged", "would_lose_access": losing})
+        raise _CliError(
+            f"{len(losing)} client(s) would lose all access to this project when restrictions are on; "
+            "create client policies for them first, or pass --yes to switch anyway"
+        )
+    project = control_plane.set_client_restrictions(actor=actor, project_id=args.project_id, enabled=enabled)
+    _print_json({"project_id": project.project_id, "mode": "on" if project.client_restrictions else "off",
+                 "clients": preview})
+    return 0
+
+
 # -- lifecycle, audit and inventory (MAK-0006 §8) -------------------------------
 
 
@@ -1735,6 +1837,46 @@ def build_parser() -> argparse.ArgumentParser:
     ))
     credential_revoke.add_argument("--credential-id", required=True)
     credential_revoke.set_defaults(func=_cmd_credential_revoke)
+
+    client_policy = subparsers.add_parser(
+        "client-policy",
+        help="Client-scoped project access (MAK-0006 §5.7): limit a principal's permissions on a project per verified client.",
+    )
+    client_policy_sub = client_policy.add_subparsers(dest="client_policy_command", required=True)
+    for name, help_text, func in (
+        ("set", "Create or replace the policy for one principal, project and client.", _cmd_client_policy_set),
+        ("remove", "Remove the policy for one principal, project and client.", _cmd_client_policy_remove),
+    ):
+        cmd = client_policy_sub.add_parser(name, help=help_text)
+        cmd.add_argument("--actor", help=ACTOR_HELP)
+        cmd.add_argument("--principal-id", required=True)
+        cmd.add_argument("--project-id", required=True)
+        cmd.add_argument("--oauth-client-id", help="a pre-registered client id (mak4c_...) or a metadata-document URL")
+        cmd.add_argument("--credential-id", help="a credential of this principal (cred_...)")
+        if name == "set":
+            cmd.add_argument("--permissions", required=True,
+                             help="ceiling for this client: comma-separated (read,write,resolve) or 'none'")
+        cmd.set_defaults(func=func)
+    client_policy_list = client_policy_sub.add_parser("list", help="List client policies of your organization.")
+    client_policy_list.add_argument("--actor", help=ACTOR_HELP)
+    client_policy_list.add_argument("--project-id")
+    client_policy_list.add_argument("--principal-id")
+    client_policy_list.set_defaults(func=_cmd_client_policy_list)
+
+    project_restrictions = project_sub.add_parser(
+        "client-restrictions",
+        help="Show or switch a project's client restriction mode (MAK-0006 §5.7.3).",
+    )
+    project_restrictions.add_argument("--actor", help=ACTOR_HELP)
+    project_restrictions.add_argument("--project-id", required=True)
+    mode = project_restrictions.add_mutually_exclusive_group()
+    mode.add_argument("--on", dest="mode", action="store_const", const="on",
+                      help="deny clients without a policy for this project")
+    mode.add_argument("--off", dest="mode", action="store_const", const="off",
+                      help="clients without a policy are unrestricted (default)")
+    project_restrictions.add_argument("--yes", action="store_true",
+                                      help="switch on even if some clients would lose all access")
+    project_restrictions.set_defaults(func=_cmd_project_client_restrictions, mode=None)
 
     project_archive = project_sub.add_parser(
         "archive", help="Archive a project: nothing is deleted; all access to it stops."

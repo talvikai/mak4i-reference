@@ -122,6 +122,44 @@ the command records none.
 `resolve` lets a principal settle record conflicts; no permission ever
 confers administration (MAK-0006 §8.3).
 
+### Client policies (client-scoped access, MAK-0006 §5.7)
+
+A client policy limits what one principal may do on one project when it
+connects through one **verified client**:
+- a credential (`--credential-id`);
+- an OAuth client: a pre-registered `mak4c_…` ID, or a client metadata
+  document URL such as Claude Code's (`--oauth-client-id`).
+
+Client names an AI app reports about itself are never used.
+Dynamically registered clients can't be named, because they get a new ID
+on every registration.
+
+A policy only narrows access: effective permissions = grant ∩ OAuth
+scopes ∩ client policy.
+
+| Command | Purpose | Who | Required flags | Records | Output |
+|---|---|---|---|---|---|
+| `client-policy set` | Create or replace the policy for one principal, project and client. `--permissions none` gives that client no access to the project. | Owner | `--principal-id`, `--project-id`, one of `--oauth-client-id` / `--credential-id`, `--permissions` | `client_policy.set` | JSON policy (`client-policy.schema.json`) |
+| `client-policy list` | List the organization's policies | Owner | — (`--project-id`, `--principal-id` filter) | — | JSON `{"result": [...]}` |
+| `client-policy remove` | Remove one policy | Owner | as `set`, without `--permissions` | `client_policy.remove` | JSON `{removed, ...}` |
+| `project client-restrictions` | Show the project's mode and, for every principal with a grant, its active credentials and authorized OAuth clients with the policy that applies to each | Owner | `--project-id` | — | JSON `{project_id, mode, clients}` |
+| `project client-restrictions --on` / `--off` | Switch the mode. `on`: a client without a policy has no access to the project. `off` (default): it is unrestricted. Policies apply in both modes. `--on` is refused while a client would lose all access, unless `--yes` is given. | Owner | `--project-id` | `project.client_restrictions` | JSON `{project_id, mode, clients}` |
+
+Changes take effect on the next request, including on existing sessions
+and tokens. A refused operation returns `access_denied` with
+`reason: client_not_permitted`.
+
+Example: Claude read-only and ChatGPT read and write for the same person
+on one project.
+
+```bash
+mak4i client-policy set --actor "$OWNER" --principal-id "$PRINCIPAL" --project-id "$PROJECT" \
+  --oauth-client-id "$CLAUDE_CLIENT_ID" --permissions read
+mak4i client-policy set --actor "$OWNER" --principal-id "$PRINCIPAL" --project-id "$PROJECT" \
+  --oauth-client-id "$CHATGPT_CLIENT_ID" --permissions read,write
+mak4i project client-restrictions --actor "$OWNER" --project-id "$PROJECT"   # review, then optionally --on
+```
+
 ### Credentials
 
 | Command | Purpose | Who | Required flags | Records | Output |

@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 
 from mak4i.identity import schema
 from mak4i.identity.models import (
+    ClientPolicy,
     Credential,
     Grant,
     Organization,
@@ -168,6 +169,7 @@ class SqlControlPlaneStore:
             "organization_id": project.organization_id,
             "name": project.name,
             "status": project.status,
+            "client_restrictions": bool(project.client_restrictions),
             "created_at": _utc(project.created_at),
             "updated_at": _utc(project.updated_at),
         }
@@ -230,6 +232,79 @@ class SqlControlPlaneStore:
                 )
             ).all()
         return [_to_grant(r) for r in rows]
+
+    def list_grants_for_project(self, project_id: str) -> list[Grant]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(schema.grants).where(schema.grants.c.project_id == project_id)
+            ).all()
+        return [_to_grant(r) for r in rows]
+
+    # -- client policies (MAK-0006 §5.7) -------------------------------------
+
+    def _policy_where(self, principal_id, project_id, client_kind, client_id):
+        t = schema.client_policies
+        return (
+            t.c.principal_id == principal_id,
+            t.c.project_id == project_id,
+            t.c.client_kind == client_kind,
+            t.c.client_id == client_id,
+        )
+
+    def get_client_policy(self, principal_id, project_id, client_kind, client_id):
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(schema.client_policies).where(
+                    *self._policy_where(principal_id, project_id, client_kind, client_id)
+                )
+            ).first()
+        return _to_client_policy(row) if row else None
+
+    def put_client_policy(self, policy: ClientPolicy) -> None:
+        values = {
+            "policy_id": policy.policy_id,
+            "organization_id": policy.organization_id,
+            "principal_id": policy.principal_id,
+            "project_id": policy.project_id,
+            "client_kind": policy.client_kind,
+            "client_id": policy.client_id,
+            "permissions": list(policy.permissions),
+            "created_at": _utc(policy.created_at),
+            "updated_at": _utc(policy.updated_at),
+        }
+        with self._engine.begin() as conn:
+            self._upsert(
+                conn,
+                schema.client_policies,
+                {
+                    "principal_id": policy.principal_id,
+                    "project_id": policy.project_id,
+                    "client_kind": policy.client_kind,
+                    "client_id": policy.client_id,
+                },
+                values,
+            )
+
+    def delete_client_policy(self, principal_id, project_id, client_kind, client_id) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                schema.client_policies.delete().where(
+                    *self._policy_where(principal_id, project_id, client_kind, client_id)
+                )
+            )
+
+    def list_client_policies(self, organization_id, *, project_id=None, principal_id=None):
+        t = schema.client_policies
+        query = select(t).where(t.c.organization_id == organization_id)
+        if project_id is not None:
+            query = query.where(t.c.project_id == project_id)
+        if principal_id is not None:
+            query = query.where(t.c.principal_id == principal_id)
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                query.order_by(t.c.project_id, t.c.principal_id, t.c.client_kind, t.c.client_id)
+            ).all()
+        return [_to_client_policy(r) for r in rows]
 
     # -- credentials --------------------------------------------------------
 
@@ -313,6 +388,21 @@ def _to_project(row) -> Project:
         organization_id=row.organization_id,
         name=row.name,
         status=row.status,
+        client_restrictions=bool(getattr(row, "client_restrictions", False)),
+        created_at=_aware(row.created_at),
+        updated_at=_aware(row.updated_at),
+    )
+
+
+def _to_client_policy(row) -> ClientPolicy:
+    return ClientPolicy(
+        policy_id=row.policy_id,
+        organization_id=row.organization_id,
+        principal_id=row.principal_id,
+        project_id=row.project_id,
+        client_kind=row.client_kind,
+        client_id=row.client_id,
+        permissions=list(row.permissions),
         created_at=_aware(row.created_at),
         updated_at=_aware(row.updated_at),
     )

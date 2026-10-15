@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mak4i.identity.models import (
+    ClientPolicy,
     Credential,
     Grant,
     Organization,
@@ -23,6 +24,7 @@ class InMemoryControlPlaneStore:
         self._principals: dict[str, Principal] = {}
         self._projects: dict[str, Project] = {}
         self._grants: dict[tuple[str, str], Grant] = {}
+        self._client_policies: dict[tuple[str, str, str, str], ClientPolicy] = {}
         self._credentials: dict[str, Credential] = {}
 
     # -- organizations --
@@ -81,6 +83,32 @@ class InMemoryControlPlaneStore:
 
     def list_grants_for_principal(self, principal_id: str) -> list[Grant]:
         return [g for g in self._grants.values() if g.principal_id == principal_id]
+
+    def list_grants_for_project(self, project_id: str) -> list[Grant]:
+        return [g for g in self._grants.values() if g.project_id == project_id]
+
+    # -- client policies --
+    def get_client_policy(self, principal_id, project_id, client_kind, client_id):
+        return self._client_policies.get((principal_id, project_id, client_kind, client_id))
+
+    def put_client_policy(self, policy: ClientPolicy) -> None:
+        self._client_policies[
+            (policy.principal_id, policy.project_id, policy.client_kind, policy.client_id)
+        ] = policy
+
+    def delete_client_policy(self, principal_id, project_id, client_kind, client_id) -> None:
+        self._client_policies.pop((principal_id, project_id, client_kind, client_id), None)
+
+    def list_client_policies(self, organization_id, *, project_id=None, principal_id=None):
+        return sorted(
+            (
+                p for p in self._client_policies.values()
+                if p.organization_id == organization_id
+                and (project_id is None or p.project_id == project_id)
+                and (principal_id is None or p.principal_id == principal_id)
+            ),
+            key=lambda p: (p.project_id, p.principal_id, p.client_kind, p.client_id),
+        )
 
     # -- credentials --
     def get_credential(self, credential_id: str) -> Credential | None:

@@ -116,6 +116,7 @@ def _audited_write(operation: str):
                     auth = kwargs.get("auth")
                     auth_method = auth.auth_method if auth is not None else kwargs.get("auth_method", CREDENTIAL)
                     code = error_code(exc)
+                    reason = getattr(exc, "reason", None) if code == "access_denied" else None
                     self._audit.log_write_refused(
                         event="WRITE_FAILED" if code == "internal_error" else "WRITE_REFUSED",
                         correlation_id=request_scope.correlation_id(),
@@ -128,6 +129,7 @@ def _audited_write(operation: str):
                         error_code=code,
                         credential_id=getattr(auth, "credential_id", None),
                         oauth_client_id=getattr(auth, "oauth_client_id", None),
+                        reason=reason,
                     )
                 raise
 
@@ -269,7 +271,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         if not is_safe_artifact_id(artifact_id):
@@ -351,7 +353,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "write",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
@@ -519,7 +521,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
@@ -647,7 +649,7 @@ class MAK4IEngine:
             outcome = self._authorizer.require(
                 principal, project, "read",
                 correlation_id=correlation_id, auth_method=auth_method,
-                ceiling=ceiling,
+                ceiling=ceiling, client=_client_of(auth),
             )
             scopes = [(outcome.organization_id, project)]
             context = self._authorizer.audit_context(outcome, auth_method=auth_method)
@@ -655,7 +657,7 @@ class MAK4IEngine:
             authorized = [
                 ap
                 for ap in self._control_plane.list_authorized_projects(principal, "read")
-                if "read" in apply_ceiling(ap.permissions, ceiling)
+                if "read" in self._effective(principal, ap, ceiling, auth)
             ]
             scopes = [
                 (ap.project.organization_id, ap.project.project_id) for ap in authorized
@@ -697,7 +699,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
 
@@ -728,10 +730,18 @@ class MAK4IEngine:
         ceiling = auth.ceiling if auth is not None else None
         out = []
         for ap in self._control_plane.list_authorized_projects(principal):
-            permissions = apply_ceiling(ap.permissions, ceiling)
+            permissions = self._effective(principal, ap, ceiling, auth)
             if permissions:
                 out.append(ap.model_copy(update={"permissions": permissions}))
         return out
+
+    def _effective(self, principal: Principal, ap, ceiling, auth: AuthContext | None) -> list:
+        """MAK-0006 §5.3 for discovery: grant ∩ authentication ceiling ∩ client
+        ceiling (§5.7.5), so a client sees only what it may use."""
+        return apply_ceiling(
+            apply_ceiling(ap.permissions, ceiling),
+            self._control_plane.client_ceiling(principal, ap.project.project_id, _client_of(auth)),
+        )
 
     def organization_of(self, *, principal: Principal) -> Organization | None:
         """The organization the authenticated principal belongs to — part of
@@ -770,7 +780,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         organization_id = outcome.organization_id
         out: list[Conflict] = []
@@ -799,7 +809,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         organization_id = outcome.organization_id
         open_conflicts = self._open_conflicts(organization_id, project)
@@ -826,7 +836,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         if self._audit is not None:
@@ -851,7 +861,7 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         if self._audit is not None:
@@ -895,12 +905,12 @@ class MAK4IEngine:
         outcome = self._authorizer.require(
             principal, project, "read",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         self._authorizer.require(
             principal, project, "resolve",
             correlation_id=correlation_id, auth_method=auth_method,
-            ceiling=ceiling,
+            ceiling=ceiling, client=_client_of(auth),
         )
         context = self._authorizer.audit_context(outcome, auth_method=auth_method)
         organization_id = outcome.organization_id
@@ -1532,6 +1542,12 @@ def _provenance(
         client=client,
         recorded_at=now,
     )
+
+
+def _client_of(auth: AuthContext | None) -> tuple[str, str] | None:
+    """MAK-0006 §5.7.1: the verified client of the request, or `None`
+    (operator tooling and engine callers without an auth context)."""
+    return auth.client if auth is not None else None
 
 
 def _resolve_auth(
