@@ -3,8 +3,8 @@
 This page maps the MAK4I Reference implementation to the acceptance criteria
 in the protocol's `CONFORMANCE.md`, at the revision pinned in
 [`PROTOCOL_REVISION`](../PROTOCOL_REVISION) (`talvikai/mak4i-protocol` commit
-`c4a30156cdc9de5acd7c7c0b0375286127a39eaa`, the client-scoped access
-proposal on protocol version 0.2). The
+`fa068b9bbd4cc9e663f679f09204c773be6b03e3`, protocol main with #10 and #11
+merged, protocol version 0.2). The
 Reference claims the profiles reported by `mak4i_whoami.protocol.profiles`
 (`src/mak4i/protocol.py`): **`server-project-records`** and
 **`server-client-policies`** plus
@@ -213,8 +213,7 @@ means a SQL control plane.
 
 ## Server: Client policies (`server-client-policies`)
 
-MAK-0006 §5.7 (CLIENT-AUTH-001; protocol proposal talvikai/mak4i-protocol#11,
-pinned in `PROTOCOL_REVISION`). Claimed on every transport.
+MAK-0006 §5.7 (CLIENT-AUTH-001; talvikai/mak4i-protocol#11, merged). Claimed on every transport.
 
 | ID | Criterion (short) | Evidence | Status |
 |---|---|---|---|
