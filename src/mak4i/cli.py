@@ -76,11 +76,15 @@ def _make_control_plane() -> ControlPlane:
     # explicitly configured — see the function's docstring for the
     # full precedence.
     localconfig.resolve_ambient_local_environment()
-    return build_control_plane_from_env()
+    from mak4i.config import build_change_feed
+
+    control_plane = build_control_plane_from_env()
+    build_change_feed(control_plane)  # project lifecycle changes enter the feed (MAK-0008 §14)
+    return control_plane
 
 
 def _make_engine(control_plane: ControlPlane) -> MAK4IEngine:
-    from mak4i.config import build_resolution_store
+    from mak4i.config import build_change_feed, build_resolution_store
 
     audit = AuditLogger()
     return MAK4IEngine(
@@ -89,6 +93,7 @@ def _make_engine(control_plane: ControlPlane) -> MAK4IEngine:
         authorizer=Authorizer(control_plane, audit),
         control_plane=control_plane,
         resolutions=build_resolution_store(control_plane),
+        changes=build_change_feed(control_plane),
     )
 
 
@@ -307,6 +312,23 @@ def _cmd_get_current(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     _print_json(package)
+    return 0
+
+
+def _cmd_changes(args: argparse.Namespace) -> int:
+    """MAK-0008 §14.4 `mak4i_changes` (tool ↔ CLI mapping)."""
+    control_plane = _make_control_plane()
+    principal = _resolve_principal(control_plane, args.principal)
+    engine = _make_engine(control_plane)
+    try:
+        batch = engine.get_changes(
+            principal=principal, project=args.project, after=args.after, limit=args.limit,
+            auth_method=OPERATOR_IMPERSONATION,
+        )
+    except (AccessDeniedError, MAK4IError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _print_json(batch.to_protocol())
     return 0
 
 
@@ -1547,6 +1569,15 @@ def build_parser() -> argparse.ArgumentParser:
     get_current.add_argument("--artifact-type")
     get_current.add_argument("--tags", help="comma-separated")
     get_current.set_defaults(func=_cmd_get_current)
+
+    changes = subparsers.add_parser(
+        "changes", help="The project's change feed after a cursor (MAK-0008 §14.4); without --after, the current cursor."
+    )
+    changes.add_argument("--principal", required=True, help="principal id to act as (operator mode)")
+    changes.add_argument("--project", required=True)
+    changes.add_argument("--after", type=int, help="cursor from a previous call's `next` or a result's change_sequence")
+    changes.add_argument("--limit", type=int, default=100, help="1-500 (default 100)")
+    changes.set_defaults(func=_cmd_changes)
 
     history = subparsers.add_parser("history", help="Full lineage history, oldest first.")
     history.add_argument("--principal", required=True, help="principal id to act as (operator mode)")

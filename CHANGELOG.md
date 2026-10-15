@@ -104,6 +104,25 @@ is independent.
   signing keys), custom authentication adapter trust boundary, and an
   explicit single-replica statement.
 
+### Change feed and MCP resources (#20)
+
+Implements the optional MAK-0008 §14 profile `server-change-feed`
+(protocol proposal talvikai/mak4i-protocol#10).
+
+- **Durable per-project change feed.**
+  - Stored in the control-plane database (migration `0006_change_feed`).
+  - Events: `record.created`, `record.superseded`, `record.withdrawn`, `resolution.completed`, `project.archived`, with identifiers and the authenticated actor, never content.
+  - Ordered by `sequence` and a watermark.
+  - Pending events are reconciled at start-up and every minute, so a crash never shows an event for a change that didn't happen, and never loses one that did.
+  - Retention `MAK4I_CHANGE_FEED_RETENTION_DAYS` (at least 7).
+- **New tool `mak4i_changes`** (CLI `mak4i changes`), the error `cursor_expired`, and `change_sequence` in `mak4i_get_current`.
+- **MCP resources** for project current knowledge, record versions and conflicts (`mak4i://organizations/{org}/projects/{project}/…`).
+  - Subscriptions via `resources/subscribe` (MCP 2025-11-25) and `subscriptions/listen` (2026-07-28).
+  - Notifications carry only URIs, are driven by the durable feed (so CLI and other-process writes are noticed), and re-check access before every delivery.
+  - `list_changed` when the readable project set changes.
+  - The SDK's default `subscriptions/listen` handler, which didn't authorize subscriptions, is replaced.
+- `mak4i_whoami.protocol.profiles` includes `server-change-feed` when the feed is durable (SQL control plane).
+
 ### Protocol alignment (talvikai/mak4i-protocol#7)
 
 Aligns with the protocol revision merged in mak4i-protocol#7, pinned at

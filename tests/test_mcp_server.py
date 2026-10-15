@@ -73,6 +73,7 @@ async def test_lists_exactly_the_ten_required_tools(server):
             "mak4i_list_conflicts",
             "mak4i_get_conflict",
             "mak4i_resolve_conflict",
+            "mak4i_changes",
         }
 
 

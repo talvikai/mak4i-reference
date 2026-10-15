@@ -70,6 +70,9 @@ class ControlPlane:
         self._store = store
         self._now = clock
         self._events = events or InMemoryAdminEventSink()
+        # MAK-0008 §14: project lifecycle changes enter the project's change
+        # feed when one is attached (the same database as the engine's).
+        self.change_feed = None
         self.actor_auth_method = "operator"
         """How administrative actors are authenticated in this process:
         "operator" (trusted local tooling acting with --actor) by default;
@@ -445,7 +448,23 @@ class ControlPlane:
                 raise ProjectNotFoundError(project_id)
             self._require_owner(actor, project.organization_id)
             archived = project.model_copy(update={"status": "archived", "updated_at": self._now()})
-            self._store.put_project(archived)
+            feed = self.change_feed
+            pending = None
+            if feed is not None:
+                pending = feed.begin(
+                    project.organization_id, project_id, "project.archived",
+                    verify={"type": "project_archived"},
+                    actor={"principal_id": actor.principal_id, "agent_id": actor.agent_id,
+                           "auth_method": self.actor_auth_method},
+                )
+            try:
+                self._store.put_project(archived)
+            except BaseException:
+                if pending is not None:
+                    feed.abandon(pending)
+                raise
+            if pending is not None:
+                feed.commit(pending)
             return archived
 
         return self._audited(

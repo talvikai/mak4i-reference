@@ -210,6 +210,7 @@ def test_real_streamable_http_process_end_to_end(e2e_server):
         "mak4i_list_conflicts",
         "mak4i_get_conflict",
         "mak4i_resolve_conflict",
+        "mak4i_changes",
     }
 
     # an authorized MAK4I operation: create, then read it back

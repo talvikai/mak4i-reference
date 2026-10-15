@@ -8,6 +8,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable
 from contextvars import ContextVar
+from typing import Any
 from urllib.parse import parse_qs
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -455,6 +456,8 @@ _FIELD_CONSTRAINTS = {
     "subject_key": {"type": "string", "minLength": 1, "maxLength": 512},
     "conflict_id": {"type": "string", "pattern": "^cfl_[0-9a-f]{32}$"},
     "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 200},
+    "after": {"type": "integer", "minimum": 0},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
     "status": {"enum": ["active", "superseded", "withdrawn"]},
     "state": {"enum": ["open", "resolved", "all"]},
     "action": {"enum": ["select_winner", "merge", "separate_subjects"]},
@@ -482,7 +485,7 @@ def _tighten_input_schemas(server: MCPServer) -> None:
                 prop.update(constraint)
 
 
-def _deployment_profiles() -> list[str]:
+def _deployment_profiles(*, change_feed: bool = False) -> list[str]:
     """The profiles this deployment supports, from its configuration (an
     invalid OAuth configuration stops the server at start anyway)."""
     transport = resolve_transport()
@@ -494,7 +497,7 @@ def _deployment_profiles() -> list[str]:
             oauth = OAuthSettings.from_env()
         except Exception:
             oauth = None
-    return claimed_profiles(transport, oauth)
+    return claimed_profiles(transport, oauth, change_feed=change_feed)
 
 
 def build_server(
@@ -529,7 +532,9 @@ def build_server(
     connection = connection or resolve_connection_identity()
     protocol_info = ProtocolInfo(
         version=PROTOCOL_VERSION,
-        profiles=profiles if profiles is not None else _deployment_profiles(),
+        profiles=profiles if profiles is not None else _deployment_profiles(
+            change_feed=bool(getattr(engine.change_feed, "durable", False))
+        ),
     )
     server = _MAK4IServer(name, instructions=_SERVER_INSTRUCTIONS, version=__version__)
     server._mak4i_audit = getattr(engine, "_audit", None)
@@ -849,6 +854,31 @@ def build_server(
         except _HANDLED as exc:
             raise _coded(exc, connection=connection, write=True) from exc
 
+    @server.tool(
+        description=(
+            "The project's change feed (MAK-0008 §14.4): committed changes after a "
+            "cursor, oldest first, each with identifiers and the authenticated actor "
+            "but never content. Call without `after` to get the current cursor "
+            "(`next`), then pass it as `after` later; if `more` is true, call again "
+            "with `after = next`. `mak4i_get_current` returns `change_sequence`, the "
+            "cursor its result reflects. On `cursor_expired`, re-read current "
+            "knowledge. Read-only."
+        )
+    )
+    def mak4i_changes(project: str, after: int | None = None, limit: int = 100) -> dict[str, Any]:
+        principal, auth = _require_auth()
+        try:
+            return engine.get_changes(
+                principal=principal, auth=auth, project=project, after=after, limit=limit
+            ).to_protocol()
+        except _HANDLED as exc:
+            raise _coded(exc, connection=connection, write=False) from exc
+
+    from mak4i import mcp_resources
+
+    server._mak4i_resources = mcp_resources.install(
+        server, engine, principal=current_principal.get, auth=current_auth.get
+    )
     _tighten_input_schemas(server)
     return server
 
@@ -1296,6 +1326,36 @@ def plain_http_problem(host: str, env) -> str | None:
     )
 
 
+def start_change_feed_maintenance(engine, *, retention_days: int, interval: float = 60.0,
+                                  stale_after: float = 60.0, prune_every: float = 86400.0):
+    """MAK-0008 §14.3, in the background of a running server: decide change
+    events left pending by a writer that died in *another* process (the CLI,
+    a crashed request) once they are older than `stale_after` seconds, and
+    prune events older than the retention period (at start and daily).
+    Returns the daemon thread."""
+    import threading
+    import time
+    from datetime import timedelta
+
+    retention = timedelta(days=retention_days)
+
+    def loop():
+        last_prune = 0.0
+        while True:
+            try:
+                engine.reconcile_change_feed(older_than=timedelta(seconds=stale_after))
+                if time.monotonic() - last_prune >= prune_every or last_prune == 0.0:
+                    engine.change_feed.prune(retention=retention)
+                    last_prune = time.monotonic()
+            except Exception:
+                logging.getLogger(__name__).exception("change feed maintenance failed")
+            time.sleep(interval)
+
+    thread = threading.Thread(target=loop, name="mak4i-change-feed-maintenance", daemon=True)
+    thread.start()
+    return thread
+
+
 def uvicorn_proxy_options(trusted_proxies: list[str] | tuple[str, ...]) -> dict:
     """MAK-0008 §3.3: forwarded headers are honored only from configured
     proxies (for the client address in rate limits and logs); advertised
@@ -1330,7 +1390,7 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
     control_plane = build_control_plane_from_env()
     audit = AuditLogger()
     authorizer = Authorizer(control_plane, audit)
-    from mak4i.config import build_resolution_store
+    from mak4i.config import build_change_feed, build_resolution_store
 
     engine = MAK4IEngine(
         store,
@@ -1338,9 +1398,13 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         authorizer=authorizer,
         control_plane=control_plane,
         resolutions=build_resolution_store(control_plane),
+        changes=build_change_feed(control_plane),
     )
-    # MAK-0004 §A8.2: finish any resolution a previous process left pending.
+    # MAK-0008 §14.3: decide change events a previous process left pending,
+    # then (MAK-0004 §A8.2) finish any resolution it left pending.
+    engine.reconcile_change_feed()
     engine.recover_pending_resolutions()
+    start_change_feed_maintenance(engine, retention_days=settings.change_feed.retention_days)
     server = build_server(engine)
 
     transport = resolve_transport()

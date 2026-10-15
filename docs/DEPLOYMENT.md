@@ -125,6 +125,7 @@ What any platform must provide to run the container image
 | `MAK4I_DEPLOYMENT_MODE` | `local` or `self-hosted` (default: `self-hosted` unless bound to loopback) |
 | `MAK4I_TRUSTED_PROXIES` | comma-separated IPs/CIDRs of your reverse proxies, whose `X-Forwarded-For` is trusted for the client address (rate limits, logs). Never `*`. Advertised URLs never come from request headers. |
 | `MAK4I_LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR` |
+| `MAK4I_CHANGE_FEED_RETENTION_DAYS` | Days change-feed events are kept (default and minimum 7, at most 3650); older `mak4i_changes` cursors get `cursor_expired` |
 
 **Validation.** The server validates all of these at start and refuses to
 run with a complete list of problems. `mak4i config check` runs the same
@@ -212,6 +213,48 @@ balancer must:
 - Vulnerability reporting and the image and dependency policy:
   [`SECURITY.md`](../SECURITY.md).
 
+## Change feed and MCP resources
+
+MAK4I implements the optional MAK-0008 §14 profile `server-change-feed`. It is
+claimed (in `mak4i_whoami.protocol.profiles`) when the feed is durable,
+which means a SQL control plane.
+
+- **Change feed.**
+  - Every committed change gets one event in its project's feed, in the
+    control-plane database: record created, superseded or withdrawn,
+    resolution completed, project archived.
+  - Events carry identifiers and the authenticated actor, never content.
+  - Clients read the feed with `mak4i_changes` (CLI: `mak4i changes`) from a
+    cursor. `mak4i_get_current` returns `change_sequence`, the cursor its
+    result reflects.
+  - An event is recorded *pending* before its write and committed after, so a
+    crash never shows an event for a change that didn't happen:
+    - at start-up, every pending event is decided from the stored state;
+    - while running, events pending longer than a minute (a writer that died
+      in another process) are decided every minute.
+  - Events are kept for `MAK4I_CHANGE_FEED_RETENTION_DAYS` (at least 7) and
+    pruned daily.
+- **MCP resources.**
+  - `mak4i://organizations/{organization_id}/projects/{project_id}/current`, plus
+    `…/records/{artifact_id}` and `…/conflicts/{conflict_id}`.
+  - Read access is checked like a tool call; unreadable and missing resources
+    get the same error.
+  - Clients subscribe with `resources/subscribe` (MCP 2025-11-25) or
+    `subscriptions/listen` (2026-07-28).
+  - The server polls the feed (every 2 s, immediately after its own writes)
+    and sends `notifications/resources/updated`, carrying only the URI.
+  - Access is re-checked before every delivery: deactivation, credential or
+    OAuth revocation, a removed grant.
+  - `notifications/resources/list_changed` is sent when the set of readable
+    projects changes.
+- **Delivery is best effort.** Notifications aren't stored or replayed. A
+  client that reconnects catches up with `mak4i_changes` from its last
+  cursor. Neither notifications nor the feed are the audit record (see
+  Operational logs).
+- **One server process.** Subscriptions live in the process that serves them
+  ([Replicas](#replicas)). Changes made by the CLI or by another process are
+  still noticed, because notifications come from the shared database feed.
+
 ## Operational logs
 
 MAK4I keeps two kinds of attribution, with different durability:
@@ -252,7 +295,8 @@ Key events: `CREATE`, `SUPERSEDE`, `WRITE_REFUSED` (refused write with
 `error_code`), `WRITE_FAILED` (unexpected failure), `ACCESS_DENIED`
 (including `insufficient_scope`, attributed to the principal),
 `AUTHENTICATE_FAILURE` (with `credential_id` when the token matches a known
-credential), `RESOLUTION_STARTED|COMPLETED|REJECTED|ABORTED|RECOVERED`. Every
+credential), `RESOLUTION_STARTED|COMPLETED|REJECTED|ABORTED|RECOVERED`, and the read markers `GET_CURRENT`, `SEARCH`,
+`HISTORY`, `CHANGES`, `RECORD_READ`. Every
 event has `ts`, `event` and `correlation_id`. Events for an authenticated
 caller also carry `principal_id`, `agent_id`, `auth_method`, `credential_id`
 or `oauth_client_id`, and the organization and project. A tool error's

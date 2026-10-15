@@ -33,6 +33,9 @@ EventType = Literal[
     "GET_CURRENT",
     "SEARCH",
     "HISTORY",
+    # MAK-0008 §14: change feed and single-record reads (resources).
+    "CHANGES",
+    "RECORD_READ",
     # OAuth authorization service (MAK-0008); never carry a secret.
     "OAUTH_SIGN_IN_CODE_ISSUED",
     "OAUTH_SIGN_IN",
@@ -416,7 +419,7 @@ class AuditLogger:
 
     def log_read(
         self,
-        event: Literal["GET_CURRENT", "SEARCH", "HISTORY"],
+        event: Literal["GET_CURRENT", "SEARCH", "HISTORY", "CHANGES", "RECORD_READ"],
         *,
         correlation_id: str,
         actor: str,

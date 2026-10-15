@@ -179,6 +179,7 @@ code (MAK-0006 §8.6). All print JSON.
 | `search` | Raw candidate lookup | `read` | `--principal`, `--project` |
 | `get-current` | Resolved current context | `read` | `--principal`, `--project` |
 | `history` | A lineage's history, oldest first | `read` | `--principal`, `--project`, `--lineage-id` |
+| `changes` | The project's change feed after a cursor (MAK-0008 §14.4) | `read` | `--principal`, `--project` (`--after`, `--limit`) |
 | `conflict list` / `conflict show` | Subject conflicts | `read` | `--principal`, `--project` (`--conflict-id` for show) |
 | `conflict resolve` | Resolve a conflict | `resolve` | `--principal`, `--project`, `--conflict-id`, `--candidates`, `--action`, `--reason` |
 

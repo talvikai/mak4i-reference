@@ -187,6 +187,29 @@ deployment ran build `2a2c992` (image `sha256:ea4eee21…`; real-client runs on
 | M12 | Only enabled modes advertised; CIMD refuses non-public addresses | `test_oauth.py::test_dcr_is_off_by_default`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_disabled_is_not_advertised_and_refused`, `::test_cimd_refuses_non_public_addresses`, `::test_cimd_url_rules` | Met |
 | M32 | Pre-registered clients org-bound; CIMD fetch limits; DCR public only | `test_oauth.py::test_pre_registered_client_is_limited_to_its_organization`, `::test_dcr_registers_public_clients_only_when_enabled`, `::test_cimd_document_validation`, `::test_cimd_refuses_non_public_addresses`; fetch limits against a real local HTTP server: `test_oauth_acceptance.py::test_cimd_fetch_never_follows_redirects`, `::test_cimd_fetch_enforces_the_size_limit`, `::test_cimd_fetch_times_out`, `::test_cimd_documents_are_cached_within_their_lifetime`, `::test_cimd_cache_applies_through_the_authorization_endpoint`. TLS and address safety with the real connection and handshake: `test_cimd_transport_security.py::test_invalid_tls_is_refused` (self-signed, wrong host, expired), `::test_untrusted_ca_is_refused_by_default`, `::test_trusted_certificate_for_the_client_host_is_accepted` (control), `::test_connection_is_pinned_to_the_validated_address` (resolved once; connects to the validated IP; a later DNS answer is never used), `::test_unsafe_addresses_are_refused_before_connecting`, `::test_literal_unsafe_hosts_are_refused`. A successful real-client connection is not evidence for these refusals. | Met |
 
+## Change feed (`server-change-feed`), claimed with a durable (SQL) feed
+
+MAK-0008 §14 (protocol proposal talvikai/mak4i-protocol#10, pinned in
+`PROTOCOL_REVISION`). Claimed only when the change feed is durable, which
+means a SQL control plane.
+
+| ID | Criterion (short) | Evidence | Status |
+|---|---|---|---|
+| F1 | One event per committed change; none for refused or failed writes | `test_change_feed.py::test_every_committed_change_has_one_event_and_nothing_else`, `::test_refused_or_failed_writes_produce_no_event`, `::test_conflict_candidates_and_resolution_events`, `::test_cli_changes_command_and_archive_event` (CLI `project archive`) | Met |
+| F2 | Schema-valid events with identifiers and actor, never content | `test_change_feed.py::test_every_committed_change_has_one_event_and_nothing_else` (validates `change-event.schema.json`; no `content`); `test_protocol_conformance.py::test_reference_interfaces_conform_to_the_protocol_schemas` (events over MCP) | Met |
+| F3 | Candidate events carry the open conflict's `conflict_id` | `test_change_feed.py::test_conflict_candidates_and_resolution_events` | Met |
+| F4 | Strictly increasing sequence; nothing above the watermark | `test_change_feed.py::test_readers_never_see_past_a_pending_event` | Met |
+| F5 | Crash between write and event is reconciled | `test_change_feed.py::test_crash_between_write_and_event_is_reconciled`, `::test_periodic_reconciliation_only_decides_stale_events`, `::test_background_maintenance_decides_stale_pending_events` | Met |
+| F6 | Retention at least 7 days, documented | `test_change_feed.py::test_retention_is_at_least_seven_days`, `::test_paging_cursor_expiry_and_validation`; `MAK4I_CHANGE_FEED_RETENTION_DAYS` (DEPLOYMENT.md) | Met |
+| F7 | `mak4i_changes` contract (read, paging, from-now, `cursor_expired`, `validation_error`) | `test_change_feed.py::test_paging_cursor_expiry_and_validation`, `::test_changes_require_read`, `::test_whoami_claims_the_change_feed_profile_and_tool_contract` | Met |
+| F8 | `change_sequence`; read-then-follow misses nothing | `test_change_feed.py::test_read_current_then_follow_misses_nothing`; conformance test (`change_sequence` present over MCP) | Met |
+| F9 | Resource URIs, list, templates, read authorization, indistinguishable refusals | `test_change_feed.py::test_resources_list_read_and_refusals`; conformance test (`resources/list` and `resources/read` over HTTP, schema-validated) | Met |
+| F10 | Subscriptions on 2025-11-25 and 2026-07-28; unreadable refused | `test_change_feed.py::test_legacy_subscribe_notifies`, `::test_listen_stream_notifies_with_uris_only`, `::test_subscribing_to_an_unreadable_uri_is_refused` | Met |
+| F11 | URI-only `resources/updated` for current and affected resources | `test_change_feed.py::test_listen_stream_notifies_with_uris_only`, `::test_legacy_subscribe_notifies`, `::test_delivery_rechecks_access_and_list_changed` | Met |
+| F12 | Access re-checked at delivery | `test_change_feed.py::test_delivery_rechecks_access_and_list_changed` (grant revoked: no further updates) | Met |
+| F13 | `list_changed` when the readable project set changes | `test_change_feed.py::test_delivery_rechecks_access_and_list_changed` | Met |
+| F14 | No cross-organization or cross-project feeds; rate limits | `test_change_feed.py::test_resources_list_read_and_refusals`, `::test_subscribing_to_an_unreadable_uri_is_refused`. **Partial:** no dedicated rate limit for `mak4i_changes` and subscriptions beyond the per-stream backlog cap (256) and the single-process subscription registry. | Partial |
+
 ## Not applicable or not implemented
 
 - **K1–K12 (`client-sdk`)** apply to clients and SDKs, not servers.
