@@ -11,6 +11,7 @@ from mak4i.identity.errors import (
     CredentialInvalidError,
     CredentialNotFoundError,
     CrossOrganizationGrantError,
+    InvalidClientPolicyError,
     LastOwnerError,
     OrganizationNotFoundError,
     PrincipalNotFoundError,
@@ -18,6 +19,7 @@ from mak4i.identity.errors import (
     ProjectNotFoundError,
 )
 from mak4i.identity.models import (
+    ClientPolicy,
     Credential,
     Grant,
     Organization,
@@ -25,6 +27,7 @@ from mak4i.identity.models import (
     Principal,
     PrincipalType,
     Project,
+    new_client_policy_id,
     utc_now,
 )
 from mak4i.identity.admin_events import AdminEvent, AdminEventSink, new_event
@@ -73,6 +76,9 @@ class ControlPlane:
         # MAK-0008 §14: project lifecycle changes enter the project's change
         # feed when one is attached (the same database as the engine's).
         self.change_feed = None
+        self.client_registry: Callable[[str], dict | None] | None = None
+        """Looks up an OAuth client row by `client_id` (MAK-0006 §5.7.1–§5.7.2).
+        Defaults to the OAuth tables of a SQL control plane; tests set it."""
         self.actor_auth_method = "operator"
         """How administrative actors are authenticated in this process:
         "operator" (trusted local tooling acting with --actor) by default;
@@ -622,9 +628,193 @@ class ControlPlane:
             return []
         return list(grant.permissions)
 
+    def client_ceiling(
+        self, principal: Principal, project_id: str, client: tuple[str, str] | None
+    ) -> frozenset[str] | None:
+        """MAK-0006 §5.7.4. `None` means no client ceiling (all permissions):
+        no verified client (operator tooling), or restriction mode `off`
+        without a policy. Read live on every call (§5.7.5)."""
+        if client is None:
+            return None
+        project = self._store.get_project(project_id)
+        if project is None:
+            return frozenset()
+        policy = self._store.get_client_policy(principal.principal_id, project_id, client[0], client[1])
+        if policy is not None:
+            return frozenset(policy.permissions)
+        return frozenset() if project.client_restrictions else None
+
     def resolve_organization_id(self, principal: Principal, project_id: str) -> str | None:
         project = self._resolve_active_project(project_id, principal)
         return project.organization_id if project is not None else None
+
+    # -- client-scoped access (MAK-0006 §5.7) --------------------------------
+
+    def _lookup_oauth_client(self, client_id: str) -> dict | None:
+        if self.client_registry is not None:
+            return self.client_registry(client_id)
+        engine = getattr(self._store, "engine", None)
+        if engine is None:
+            return None
+        from mak4i.oauth.store import SqlOAuthStore
+
+        return SqlOAuthStore(engine).get_client(client_id)
+
+    def _check_policy_client(self, principal: Principal, client_kind: str, client_id: str) -> None:
+        """§5.7.1–§5.7.2: which clients a policy may name."""
+        if client_kind == "credential":
+            credential = self._store.get_credential(client_id)
+            if credential is None or credential.principal_id != principal.principal_id:
+                raise InvalidClientPolicyError("the credential does not belong to this principal")
+            if credential.status != "active":
+                raise InvalidClientPolicyError("the credential is revoked")
+            return
+        if client_kind != "oauth_client":
+            raise InvalidClientPolicyError("client kind must be credential or oauth_client")
+        if client_id.startswith("https://"):
+            if "#" in client_id:
+                raise InvalidClientPolicyError("a metadata-document client id has no fragment")
+            row = self._lookup_oauth_client(client_id)
+            if row is not None and row.get("kind") == "dcr":
+                raise InvalidClientPolicyError(
+                    "dynamically registered clients can't be named by a client policy"
+                )
+            return  # a Client ID Metadata Document URL (MAK-0008 §8.3)
+        row = self._lookup_oauth_client(client_id)
+        if row is None:
+            raise InvalidClientPolicyError("unknown OAuth client")
+        if row.get("kind") == "dcr":
+            raise InvalidClientPolicyError(
+                "dynamically registered clients can't be named by a client policy: they get "
+                "a new client ID on every registration (MAK-0006 §5.7.1)"
+            )
+        if row.get("kind") != "pre_registered" or row.get("organization_id") != principal.organization_id:
+            raise InvalidClientPolicyError("the OAuth client is not registered in this organization")
+
+    def set_client_policy(
+        self, *, actor: Principal, principal_id: str, project_id: str,
+        client_kind: str, client_id: str, permissions: list[Permission],
+    ) -> ClientPolicy:
+        principal = self._store.get_principal(principal_id)
+
+        def run() -> ClientPolicy:
+            if principal is None:
+                raise PrincipalNotFoundError(principal_id)
+            project = self._store.get_project(project_id)
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            self._require_owner(actor, principal.organization_id)
+            if project.organization_id != principal.organization_id:
+                raise CrossOrganizationGrantError(
+                    "a client policy can't bind a principal to another organization's project"
+                )
+            self._check_policy_client(principal, client_kind, client_id)
+            now = self._now()
+            existing = self._store.get_client_policy(principal_id, project_id, client_kind, client_id)
+            policy = ClientPolicy(
+                policy_id=existing.policy_id if existing else new_client_policy_id(),
+                organization_id=principal.organization_id,
+                principal_id=principal_id,
+                project_id=project_id,
+                client_kind=client_kind,
+                client_id=client_id,
+                permissions=permissions,
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
+            )
+            self._store.put_client_policy(policy)
+            return policy
+
+        return self._audited(
+            "client_policy.set", actor=actor,
+            organization_id=principal.organization_id if principal else None,
+            targets={"principal_id": principal_id, "project_id": project_id, "client_kind": client_kind,
+                     "client_id": client_id, "permissions": ",".join(permissions) or "none"},
+            run=run, result_targets=lambda r: {"policy_id": r.policy_id},
+        )
+
+    def remove_client_policy(
+        self, *, actor: Principal, principal_id: str, project_id: str, client_kind: str, client_id: str,
+    ) -> bool:
+        principal = self._store.get_principal(principal_id)
+
+        def run() -> bool:
+            if principal is None:
+                raise PrincipalNotFoundError(principal_id)
+            self._require_owner(actor, principal.organization_id)
+            existed = self._store.get_client_policy(principal_id, project_id, client_kind, client_id) is not None
+            self._store.delete_client_policy(principal_id, project_id, client_kind, client_id)
+            return existed
+
+        return self._audited(
+            "client_policy.remove", actor=actor,
+            organization_id=principal.organization_id if principal else None,
+            targets={"principal_id": principal_id, "project_id": project_id,
+                     "client_kind": client_kind, "client_id": client_id},
+            run=run,
+        )
+
+    def list_client_policies(
+        self, *, actor: Principal, organization_id: str | None = None,
+        project_id: str | None = None, principal_id: str | None = None,
+    ) -> list[ClientPolicy]:
+        organization_id = organization_id or actor.organization_id
+        self._require_owner(actor, organization_id)
+        return self._store.list_client_policies(
+            organization_id, project_id=project_id, principal_id=principal_id
+        )
+
+    def set_client_restrictions(self, *, actor: Principal, project_id: str, enabled: bool) -> Project:
+        """§5.7.3: switch a project's restriction mode. Takes effect on the
+        next request (§5.7.5)."""
+        project = self._store.get_project(project_id)
+
+        def run() -> Project:
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            self._require_owner(actor, project.organization_id)
+            updated = project.model_copy(update={"client_restrictions": enabled, "updated_at": self._now()})
+            self._store.put_project(updated)
+            return updated
+
+        return self._audited(
+            "project.client_restrictions", actor=actor,
+            organization_id=project.organization_id if project else None,
+            targets={"project_id": project_id, "mode": "on" if enabled else "off"}, run=run,
+        )
+
+    def client_access_preview(self, *, actor: Principal, project_id: str,
+                              oauth_clients_of: Callable[[str], list[str]] | None = None) -> list[dict]:
+        """§5.7.7: for every principal with a grant on the project, its
+        active credentials and the OAuth clients it has authorized
+        (`oauth_clients_of(principal_id)`), each with the policy that applies
+        to it, if any. A client without a policy loses access when the mode
+        is `on`. Never shows secrets."""
+        project = self._store.get_project(project_id)
+        if project is None:
+            raise ProjectNotFoundError(project_id)
+        self._require_owner(actor, project.organization_id)
+        rows: list[dict] = []
+        for grant in sorted(self._store.list_grants_for_project(project_id), key=lambda g: g.principal_id):
+            principal = self._store.get_principal(grant.principal_id)
+            if principal is None or principal.status != "active":
+                continue
+            clients = [("credential", c.credential_id) for c in self._store.list_credentials(principal.principal_id)
+                       if c.status == "active"]
+            if oauth_clients_of is not None:
+                clients += [("oauth_client", cid) for cid in sorted(set(oauth_clients_of(principal.principal_id)))]
+            for kind, cid in clients:
+                policy = self._store.get_client_policy(principal.principal_id, project_id, kind, cid)
+                rows.append({
+                    "principal_id": principal.principal_id,
+                    "display_name": principal.display_name,
+                    "grant": list(grant.permissions),
+                    "client": {"kind": kind, "id": cid},
+                    "policy": list(policy.permissions) if policy else None,
+                    "access_when_on": [p for p in grant.permissions if policy and p in policy.permissions],
+                    "access_when_off": [p for p in grant.permissions if policy is None or p in policy.permissions],
+                })
+        return rows
 
     # -- internals ---------------------------------------------------------
 

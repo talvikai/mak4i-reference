@@ -535,6 +535,24 @@ principal or removing its grant also stops its OAuth access at once.
 Which clients have been verified end to end is recorded in the release
 notes; treat any other client as untested.
 
+### 7.2 Different access per AI client
+
+The same person can get different access to a project depending on the
+client they connect with. For example, Claude read-only and ChatGPT read
+and write.
+
+1. Find the client IDs: `docker compose exec mak4i mak4i oauth client list --actor "$OWNER"`.
+   For a credential, use `credential list`.
+2. Set a policy per client: `mak4i client-policy set … --permissions read` (see
+   [ADMIN_CLI.md → Client policies](ADMIN_CLI.md#client-policies-client-scoped-access-mak-0006-57)).
+3. Optional: `mak4i project client-restrictions --project-id … --on` denies
+   every client without a policy. Run it without `--on` first to see who
+   would lose access.
+
+The client is identified by its registration, never by the name an app
+reports. Tokens are bearer tokens, so a policy limits the client a token
+was issued to, not software that copies it (MAK-0006 §5.7.9).
+
 ## 8. Operate
 
 ### 8.1 Status, stop, start and restart

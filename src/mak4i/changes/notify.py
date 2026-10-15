@@ -88,6 +88,10 @@ class AccessChecker:
             ceiling = getattr(auth, "ceiling", None)
             if ceiling is not None and "read" not in ceiling:
                 return False
+            # MAK-0006 §5.7: the client policy applies to resources and notifications too.
+            client_ceiling = self._cp.client_ceiling(principal, project, getattr(auth, "client", None))
+            if client_ceiling is not None and "read" not in client_ceiling:
+                return False
             store = self._cp._store  # noqa: SLF001 - same process, read-only
             credential_id = getattr(auth, "credential_id", None)
             if credential_id:

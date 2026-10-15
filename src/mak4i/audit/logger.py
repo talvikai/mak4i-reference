@@ -45,6 +45,7 @@ EventType = Literal[
     "OAUTH_TOKEN_REJECTED",
     "OAUTH_CODE_REUSE",
     "OAUTH_REFRESH_REPLAY",
+    "OAUTH_REFRESH_CLIENT_MISMATCH",
     "OAUTH_REVOKED",
     "OAUTH_CLIENT_REGISTERED",
     "OAUTH_CLIENT_DISABLED",
@@ -212,6 +213,7 @@ class AuditLogger:
         error_code: str,
         credential_id: str | None = None,
         oauth_client_id: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any]:
         """MAK-0006 §8.6: attributable, secret-free, no record content."""
         fields = {
@@ -227,6 +229,8 @@ class AuditLogger:
             fields["credential_id"] = credential_id
         if oauth_client_id:
             fields["oauth_client_id"] = oauth_client_id
+        if reason:
+            fields["reason"] = reason
         return self.log(event, correlation_id=correlation_id, actor=principal_id, **fields)
 
     def log_access_granted(
@@ -241,14 +245,17 @@ class AuditLogger:
         )
 
     def log_access_denied(
-        self, *, correlation_id: str, context: AuditContext, permission: str
+        self, *, correlation_id: str, context: AuditContext, permission: str,
+        reason: str | None = None,
     ) -> dict[str, Any]:
+        extra = {"reason": reason} if reason else {}
         return self.log(
             "ACCESS_DENIED",
             correlation_id=correlation_id,
             actor=context.principal_id or "unknown",
             context=context,
             permission=permission,
+            **extra,
         )
 
     # -- artifact lifecycle ---------------------------------------------------

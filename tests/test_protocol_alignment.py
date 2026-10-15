@@ -299,7 +299,7 @@ def test_profiles_follow_the_deployment_configuration(monkeypatch):  # MAK-0008 
         def __init__(self, cimd, dcr):
             self.enable_cimd, self.enable_dcr = cimd, dcr
 
-    base = ["server-project-records"]
+    base = ["server-project-records", "server-client-policies"]  # MAK-0006 §5.7, always claimed
     assert claimed_profiles("stdio") == base + ["transport-stdio"]
     assert claimed_profiles("stdio", OAuth(True, True)) == base + ["transport-stdio"]
     assert claimed_profiles("http") == base + ["transport-http-credential"]
@@ -312,4 +312,4 @@ def test_profiles_follow_the_deployment_configuration(monkeypatch):  # MAK-0008 
     monkeypatch.setenv("MAK4I_PUBLIC_ENDPOINT", "https://mak4i.example.com/mcp")
     assert "transport-http-oauth" not in _deployment_profiles()  # OAuth off by default
     monkeypatch.setenv("MAK4I_OAUTH_ENABLED", "1")
-    assert _deployment_profiles()[2:] == ["transport-http-oauth", "oauth-cimd"]  # CIMD on, DCR off by default
+    assert _deployment_profiles()[len(base) + 1:] == ["transport-http-oauth", "oauth-cimd"]  # CIMD on, DCR off by default

@@ -59,12 +59,20 @@ class Authorizer:
         correlation_id: str,
         auth_method: str = "credential",
         ceiling: frozenset[str] | None = None,
+        client: tuple[str, str] | None = None,
     ) -> AuthorizationOutcome:
-        permissions = apply_ceiling(
+        held = apply_ceiling(
             self._control_plane.effective_permissions(principal, project), ceiling
+        )
+        # MAK-0006 §5.7.4: the client ceiling is the last factor of §5.3.
+        permissions = apply_ceiling(
+            held, self._control_plane.client_ceiling(principal, project, client)
         )
         organization_id = self._control_plane.resolve_organization_id(principal, project)
         granted = permission in permissions
+        # §5.7.6: only a principal that holds the permission learns that the
+        # client policy refused it; every other denial stays uniform (§5.5).
+        reason = "client_not_permitted" if (not granted and permission in held) else None
 
         context = AuditContext(
             principal_id=principal.principal_id,
@@ -77,10 +85,11 @@ class Authorizer:
         if not granted:
             if self._audit is not None:
                 self._audit.log_access_denied(
-                    correlation_id=correlation_id, context=context, permission=permission
+                    correlation_id=correlation_id, context=context, permission=permission,
+                    reason=reason,
                 )
             raise AccessDeniedError(
-                principal_id=principal.principal_id, permission=permission
+                principal_id=principal.principal_id, permission=permission, reason=reason
             )
 
         if self._audit is not None:

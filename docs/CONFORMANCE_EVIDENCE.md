@@ -3,9 +3,11 @@
 This page maps the MAK4I Reference implementation to the acceptance criteria
 in the protocol's `CONFORMANCE.md`, at the revision pinned in
 [`PROTOCOL_REVISION`](../PROTOCOL_REVISION) (`talvikai/mak4i-protocol` commit
-`201afde0c179b7bfca1fc6659bd6173c4341a564`, protocol version 0.2). The
+`c4a30156cdc9de5acd7c7c0b0375286127a39eaa`, the client-scoped access
+proposal on protocol version 0.2). The
 Reference claims the profiles reported by `mak4i_whoami.protocol.profiles`
-(`src/mak4i/protocol.py`): **`server-project-records`** plus
+(`src/mak4i/protocol.py`): **`server-project-records`** and
+**`server-client-policies`** plus
 **`transport-stdio`** (stdio) or **`transport-http-credential`** (HTTP), and,
 when OAuth is enabled (`MAK4I_OAUTH_ENABLED=1`), **`transport-http-oauth`**
 with **`oauth-cimd`** and/or **`oauth-dcr`** for each enabled registration
@@ -189,8 +191,7 @@ deployment ran build `2a2c992` (image `sha256:ea4eee21…`; real-client runs on
 
 ## Change feed (`server-change-feed`), claimed with a durable (SQL) feed
 
-MAK-0008 §14 (protocol proposal talvikai/mak4i-protocol#10, pinned in
-`PROTOCOL_REVISION`). Claimed only when the change feed is durable, which
+MAK-0008 §14 (talvikai/mak4i-protocol#10, merged). Claimed only when the change feed is durable, which
 means a SQL control plane.
 
 | ID | Criterion (short) | Evidence | Status |
@@ -209,6 +210,26 @@ means a SQL control plane.
 | F12 | Access re-checked at delivery | `test_change_feed.py::test_delivery_rechecks_access_and_list_changed` (grant revoked: no further updates) | Met |
 | F13 | `list_changed` when the readable project set changes | `test_change_feed.py::test_delivery_rechecks_access_and_list_changed` | Met |
 | F14 | No cross-organization or cross-project feeds; rate limits | `test_change_feed.py::test_resources_list_read_and_refusals`, `::test_subscribing_to_an_unreadable_uri_is_refused`. **Partial:** no dedicated rate limit for `mak4i_changes` and subscriptions beyond the per-stream backlog cap (256) and the single-process subscription registry. | Partial |
+
+## Server: Client policies (`server-client-policies`)
+
+MAK-0006 §5.7 (CLIENT-AUTH-001; protocol proposal talvikai/mak4i-protocol#11,
+pinned in `PROTOCOL_REVISION`). Claimed on every transport.
+
+| ID | Criterion (short) | Evidence | Status |
+|---|---|---|---|
+| CP1 | Client identity only from authentication; `clientInfo` changes nothing | `test_client_policies.py::test_client_info_cannot_change_the_client`, `::test_credential_is_its_own_client` | Met |
+| CP2 | Only own credentials, org pre-registered clients or CIMD URLs; DCR refused | `test_client_policies.py::test_policy_targets_are_validated` | Met |
+| CP3 | One policy per (principal, project, client); schema-valid | `test_client_policies.py::test_policy_targets_are_validated`; `test_protocol_conformance.py::test_reference_interfaces_conform_to_the_protocol_schemas` (`client-policy`) | Met |
+| CP4 | Two OAuth clients, same principal and project: read-only vs read+write | `test_client_policies.py::test_claude_read_only_chatgpt_read_write` (two artifact types) | Met |
+| CP5 | A policy never widens the grant | `test_client_policies.py::test_policy_never_adds_a_permission` | Met |
+| CP6 | Mode `off` unchanged; mode `on` denies clients without a policy | `test_client_policies.py::test_mode_off_is_unchanged_and_mode_on_denies_unlisted_clients`, `::test_credential_is_its_own_client` | Met |
+| CP7 | Changes apply on the next request of existing sessions and tokens | `test_client_policies.py::test_policy_changes_apply_to_existing_sessions_and_tokens` | Met |
+| CP8 | Refresh with another client's `client_id` → `invalid_grant` and revocation | `test_client_policies.py::test_refresh_token_presented_by_another_client_fails_and_revokes` | Met |
+| CP9 | `client_not_permitted` only for principals holding the permission; others unchanged | `test_client_policies.py::test_claude_read_only_chatgpt_read_write`, `::test_principal_without_grant_learns_nothing`; conformance test (`error` with `reason`) | Met |
+| CP10 | `list_projects` per client; `whoami.client` | `test_client_policies.py::test_mode_off_is_unchanged_and_mode_on_denies_unlisted_clients`, `::test_client_info_cannot_change_the_client`, `::test_credential_is_its_own_client` | Met |
+| CP11 | Owner-only administration, admin events, refused-write events with reason | `test_client_policies.py::test_only_owners_administer_and_every_change_is_audited`, `::test_refused_write_security_event_carries_the_reason`, `::test_cli_client_policy_lifecycle_and_restriction_preview` (real executable) | Met |
+| CP12 | Provenance records the verified client | `test_client_policies.py::test_claude_read_only_chatgpt_read_write` | Met |
 
 ## Not applicable or not implemented
 

@@ -3,6 +3,35 @@
 All notable changes to MAK4I Reference. Releases are tagged `vX.Y.Z-rc.N`;
 the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
+## Unreleased
+
+### Added
+- **Client-scoped project access** (CLIENT-AUTH-001; MAK-0006 §5.7,
+  profile `server-client-policies`; protocol proposal
+  talvikai/mak4i-protocol#11).
+  - The same principal can have different permissions on a project
+    depending on the verified client: a credential, or a pre-registered
+    or metadata-document OAuth client. Example: Claude read-only,
+    ChatGPT read and write.
+  - Client policies are ceilings (grant ∩ scopes ∩ policy). Each project
+    has a restriction mode, `off` by default; `on` denies clients without
+    a policy.
+  - New CLI: `client-policy set|list|remove` and `project
+    client-restrictions [--on|--off]`, which first previews who would
+    lose access.
+  - Denials return `access_denied` with `reason: client_not_permitted`.
+    `mak4i_whoami` reports `client`. `mak4i_list_projects` shows the
+    permissions effective for the requesting client.
+  - Admin events `client_policy.set`, `client_policy.remove` and
+    `project.client_restrictions`. Refused-write events carry the reason.
+  - Migration `0007_client_policies` is additive: every project starts
+    `off` with no policies, so nothing changes until an owner acts.
+    Local SQLite environments are upgraded automatically.
+
+### Security
+- A refresh token presented with another client's `client_id` now also
+  revokes its authorization (MAK-0008 §6.5). Before, it was only refused.
+
 ## v2.0.0-rc.1 — Developer Preview (prepared, not yet released)
 
 Implements the MAK4I protocol v0.2 drafts (talvikai/mak4i-protocol#6):

@@ -176,6 +176,24 @@ def test_reference_interfaces_conform_to_the_protocol_schemas(tmp_path, validate
             validate("error", result["structuredContent"])
             assert result["structuredContent"]["error"]["correlation_id"]
 
+        # Every profile combination the Reference can claim is a valid protocolInfo.
+        from mak4i.protocol import PROTOCOL_VERSION, claimed_profiles
+
+        for transport in ("stdio", "http"):
+            validate("common", {"version": PROTOCOL_VERSION,
+                                "profiles": claimed_profiles(transport, w.settings, change_feed=True)},
+                     "#/$defs/protocolInfo")
+        # Client-scoped access (MAK-0006 §5.7): whoami.client and a client-ceiling denial.
+        whoami = call(agent_token, "mak4i_whoami")["structuredContent"]
+        assert whoami["client"] == {"kind": "credential", "id": _cred.credential_id, "registration": None}
+        w.cp.set_client_policy(actor=w.owner, principal_id=agent.principal_id, project_id=project,
+                               client_kind="credential", client_id=_cred.credential_id, permissions=["read"])
+        refused = call(agent_token, "mak4i_create", {**create, "artifact_id": "client-ceiling"})
+        assert refused["isError"] is True and refused["structuredContent"]["error"]["reason"] == "client_not_permitted"
+        validate("error", refused["structuredContent"])
+        policy = w.cp.list_client_policies(actor=w.owner, project_id=project)[0]
+        validate("client-policy", policy.to_protocol())
+
         # Administrative events (MAK-0006 §8.5), including instance-operator events, and identity objects.
         events = [e.to_protocol() for e in w.cp.list_admin_events(actor=w.owner, organization_id=w.org.organization_id)]
         for event in events:

@@ -133,6 +133,9 @@ class WhoAmI(BaseModel):
     """OAuth scopes of the presented access token; `None` for a principal
     credential, which has no scope ceiling (MAK-0008 §7.4)."""
     protocol: ProtocolInfo
+    client: dict | None = None
+    """MAK-0008 §10.5 / MAK-0006 §5.7.1: the verified client identity of this
+    request (`kind`, `id`, `registration`), derived from the authentication."""
 
 
 def resolve_connection_identity() -> ConnectionIdentity:
@@ -151,17 +154,22 @@ class CodedToolError(ToolError):
     """A tool failure with a MAK-0008 §9 error code. `_MAK4IServer` turns it
     into `structuredContent: {"error": {code, message, retryable}}`."""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False):
+    def __init__(self, code: str, message: str, *, retryable: bool = False, reason: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.reason = reason
 
 
 def _coded(exc: Exception, *, connection: ConnectionIdentity, write: bool) -> CodedToolError:
     """Map an engine/store exception to its MAK-0008 §9 code. Messages carry
     no secrets and never reveal whether an unreadable project exists."""
     if isinstance(exc, AccessDeniedError):
+        if getattr(exc, "reason", None) == "client_not_permitted":
+            return CodedToolError(
+                "access_denied", str(_client_denied(exc, connection=connection)), reason="client_not_permitted"
+            )
         return CodedToolError("access_denied", str(_denied(exc, connection=connection)))
     code = _engine_error_code(exc)
     message = getattr(exc, "message", None) or str(exc)
@@ -233,6 +241,7 @@ class _MAK4IServer(MCPServer):
                         "message": coded.message,
                         "retryable": coded.retryable,
                         "correlation_id": scope["correlation_id"],
+                        **({"reason": coded.reason} if getattr(coded, "reason", None) else {}),
                     }
                 },
                 is_error=True,
@@ -311,6 +320,18 @@ def _denied(exc: AccessDeniedError, *, connection: ConnectionIdentity) -> ToolEr
         "this connection. Do not retry this operation on another MAK4I "
         "connection, organization or project unless the user explicitly "
         "selects and confirms that exact destination."
+    )
+
+
+def _client_denied(exc: AccessDeniedError, *, connection: ConnectionIdentity) -> ToolError:
+    """MAK-0006 §5.7.6: the principal holds the permission, but the client
+    policy for *this* client does not allow it. Names no other client."""
+    return ToolError(
+        f"access denied: this AI client may not use {exc.permission} permission on "
+        f"the requested project on MAK4I connection {connection.instance_name!r} "
+        f"(environment: {connection.environment}); the organization's client policy "
+        "limits this client. Do not retry with this client. The user can use a client "
+        "that is allowed, or ask an organization owner to change the policy."
     )
 
 
@@ -576,6 +597,10 @@ def build_server(
             auth_method=auth.auth_method,
             scopes=list(auth.scopes) if auth.auth_method == "oauth" else None,
             protocol=protocol_info,
+            client=(
+                {"kind": auth.client[0], "id": auth.client[1], "registration": auth.client_registration}
+                if auth.client is not None else None
+            ),
         )
 
     @server.tool(
@@ -1113,6 +1138,7 @@ class _AuthMiddleware:
                 validated.scopes,
                 oauth_client_id=validated.client_id,
                 oauth_authorization_id=validated.authorization_id,
+                client_registration=validated.client_registration,
             )
         else:
             self._log_failure(correlation_id, "unknown", CREDENTIAL)
