@@ -14,10 +14,13 @@ knowledge, pasted context, earlier turns in the conversation. If it can
 only have come from a `mak4i_*` tool call, the demo means something.
 
 **The audit format.** The server writes each audit event as one
-structured JSON line to stdout:
+structured JSON line to **stderr**. With Compose that's the container
+log: `docker compose logs mak4i`. The CLI also writes to stderr, or to
+the file named by `MAK4I_AUDIT_LOG`. See
+[DEPLOYMENT.md → Operational logs](DEPLOYMENT.md#operational-logs).
 
 ```json
-{"event": "CREATE", "principal_id": "prn_…", "organization_id": "org_…", "project_id": "prj_…", "artifact_id": "…", "correlation_id": "…"}
+{"ts": "2026-10-15T12:00:00+00:00", "event": "CREATE", "correlation_id": "…", "actor": "prn_…", "principal_id": "prn_…", "organization_id": "org_…", "project_id": "prj_…", "auth_method": "oauth", "artifact_id": "…", "lineage_id": "…", "version": "1.0"}
 ```
 
 Whatever collects your deployment's logs is where you read these. The
@@ -27,42 +30,103 @@ event names and fields are the same regardless of the log backend.
 
 ## Connecting a client
 
-Every client authenticates the same way: a static
-`Authorization: Bearer <token>` request header, where `<token>` is your
-per-principal credential. The endpoint URL must include the `/mcp` path.
-Your identity, and everything you're allowed to do, is derived from that
-credential — there is no separate "user" or "actor" argument on any tool.
+There are two ways to authenticate. Your identity, and everything you're
+allowed to do, come from what you authenticated with. No tool has a
+separate "user" or "actor" argument.
+
+| Method | Use it for | What the client stores |
+|---|---|---|
+| **OAuth sign-in** ([Enterprise §7.1](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in); locally [LOCAL_SETUP §5.1](LOCAL_SETUP.md#51-oauth-sign-in-optional-local-http)) | claude.ai, ChatGPT, Claude Code: any client with MCP OAuth | nothing you paste; you sign in once with a one-time code |
+| **Credential header** `Authorization: Bearer <token>` | Claude Code, Gemini CLI, scripts: any client that can send a header | the credential issued with `mak4i credential issue` |
+
+OAuth needs the server's OAuth service enabled. Hosted clients (claude.ai,
+ChatGPT) also need a public HTTPS endpoint.
 
 **Two things to check first if a connection fails:**
 
 - **URL must end in `/mcp`.** The bare server root is not the MCP
   endpoint and returns `404`. A `401`→`404` shift between attempts means
-  auth started passing but the path is wrong.
-- **Header value must include the literal `Bearer ` prefix** (the word,
-  then a space, then the token). Without it the request is rejected in a
-  couple of milliseconds — it never gets past the credential middleware.
+  auth started passing but the path is wrong. ChatGPT without `/mcp` signs
+  in and then reports *action discovery failed*.
+- **A header value must include the literal `Bearer ` prefix** (the word,
+  then a space, then the token). Without it the request is rejected
+  before it reaches any tool.
+
+### Signing in with OAuth
+
+When a client opens the MAK4I sign-in page, an organization owner issues
+a one-time code (or you issue one for yourself with your own credential):
+
+```bash
+mak4i oauth sign-in-code --actor <owner-principal-id> --principal-id <your-principal-id>
+```
+
+Enter it, then approve the consent page. A code works once and for 10
+minutes. After that, new conversations reuse the connection. Sign in
+again after 7 days unused, 30 days in total, or when the authorization is
+revoked.
 
 ### Claude.ai / Cowork
 
-**Customize → Connectors → Add custom connector**:
+**OAuth (recommended).** An owner registers Claude once and gives you the
+printed client ID:
 
-- **URL**: your endpoint, including `/mcp`
-- **Authentication**: None
-- **Request header**: name `authorization`, value `Bearer <your token>`,
-  marked Required
+```bash
+mak4i oauth client register --actor <owner> --name "Claude (claude.ai)" \
+  --redirect-uri https://claude.ai/api/mcp/auth_callback
+```
 
-(Claude.ai's static-header connector support is a per-organization beta;
-an enterprise-managed Cowork/Claude Desktop deployment instead carries
-the header through a `managedMcpServers` config entry set by whoever
-administers it.)
+Then **Settings → Connectors → Add custom connector**:
+- **URL**: your endpoint, including `/mcp`;
+- **Advanced settings → OAuth Client ID**: the printed `mak4c_…` ID, no secret.
+
+Connect and sign in with a code. The sign-in page opens in a pop-up;
+allow pop-ups for claude.ai.
+
+**Static header (alternative).** Where your organization has Claude.ai's
+static-header connector beta, use **Authentication: None** with the
+request header `authorization` = `Bearer <your token>`, marked Required.
+An enterprise-managed Cowork/Claude Desktop deployment can carry the
+header through a `managedMcpServers` entry.
+
+### ChatGPT
+
+ChatGPT connectors support only OAuth or no authentication, so use OAuth.
+An owner registers ChatGPT once:
+
+```bash
+mak4i oauth client register --actor <owner> --name "ChatGPT" \
+  --redirect-uri https://chatgpt.com/connector_platform_oauth_redirect
+```
+
+Then:
+1. **Settings → Apps & Connectors → Advanced settings**: turn on
+   **Developer mode**.
+2. **Create** a connector with URL `https://<your-host>/mcp`.
+3. Choose **OAuth → user-defined OAuth**: Client ID `mak4c_…`, no secret,
+   scopes `mak4i:read mak4i:write` (add `mak4i:resolve` only if this
+   connection should resolve conflicts).
+4. Sign in with a code.
+
+ChatGPT also offers a client metadata document, but MAK4I accepts those
+only for public clients, so use pre-registration.
 
 ### Claude Code
 
 ```bash
+# OAuth: no token in your configuration
+claude mcp add --transport http mak4i <endpoint-url>
+# then /mcp → mak4i → Authenticate, and sign in with a code
+
+# or a credential header
 claude mcp add --transport http mak4i <endpoint-url> \
   --header "Authorization: Bearer <your token>"
 claude mcp get mak4i     # health-checks the connection
 ```
+
+Over OAuth, Claude Code identifies itself with its client metadata
+document (`https://claude.ai/oauth/claude-code-client-metadata`). Nothing
+needs registering.
 
 ### Gemini CLI
 
@@ -75,15 +139,8 @@ npx -y @google/gemini-cli mcp list     # lists the discovered tools
 Gemini CLI needs its own, separate authentication to Google's models —
 unrelated to the MAK4I credential.
 
-### ChatGPT — known limitation
-
-ChatGPT's custom-connector UI (**Settings → Apps → Advanced → Developer
-mode**) supports only OAuth or no-authentication connectors; per OpenAI's
-own docs it has *"no field to set a Bearer token (or arbitrary
-headers)."* Such clients need MAK4I's OAuth sign-in
-([Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)).
-Whether a given client has been verified end to end against it is
-recorded in the release notes; until then treat it as untested.
+Which clients have been verified end to end is recorded in the release
+notes. Treat any other client as untested.
 
 ---
 
@@ -246,6 +303,69 @@ conversation — which is exactly what the audit trail proves.
 
 This has been run end to end with real, separate clients (Claude.ai and
 Claude Code as writers, Gemini CLI as an independent reader).
+
+---
+
+## Same person, different AI clients: client-scoped access
+
+MAK4I can give the same person different access to a project depending on
+the **verified client** they connect with (MAK-0006 §5.7). This scenario
+gives Claude read-only and ChatGPT read and write.
+
+> These steps are covered by the automated suite (`tests/test_client_policies.py`).
+> Their run against real claude.ai and ChatGPT connectors is recorded in
+> the release notes once it has been done. Until then, treat this as the
+> procedure, not as evidence.
+
+**Setup (owner, CLI).** You need both clients registered (see above), the
+person's principal ID, and a grant with `read,write` on the project.
+
+```bash
+mak4i oauth client list --actor "$OWNER"            # note the Claude and ChatGPT client IDs
+mak4i client-policy set --actor "$OWNER" --principal-id "$PERSON" --project-id "$PROJECT" \
+  --oauth-client-id "$CLAUDE_CLIENT_ID" --permissions read
+mak4i client-policy set --actor "$OWNER" --principal-id "$PERSON" --project-id "$PROJECT" \
+  --oauth-client-id "$CHATGPT_CLIENT_ID" --permissions read,write
+mak4i project client-restrictions --actor "$OWNER" --project-id "$PROJECT"   # review who gets what
+```
+
+**1. Check the verified client in each app.** Ask each client to call
+`mak4i_whoami`. Both show the same `principal`. `client` differs, and it
+comes from the sign-in, not from the app's self-reported name:
+
+```
+Claude : "client": {"kind": "oauth_client", "id": "<CLAUDE_CLIENT_ID>",  "registration": "pre_registered"}
+ChatGPT: "client": {"kind": "oauth_client", "id": "<CHATGPT_CLIENT_ID>", "registration": "pre_registered"}
+```
+
+**2. Compare project access.** `mak4i_list_projects` shows
+`"permissions": ["read"]` in Claude and `["read", "write"]` in ChatGPT
+for the same project.
+
+**3. Write from Claude: denied.** Ask Claude to create a decision:
+
+```
+mak4i_create(project=..., artifact_id="cache-choice", ...)
+→ isError: true
+  {"error": {"code": "access_denied", "reason": "client_not_permitted",
+             "retryable": false, "message": "access denied: this AI client may not use write permission …"}}
+```
+
+Nothing is written. The message names no other client. *Audit:*
+`ACCESS_DENIED` and `WRITE_REFUSED`, both with `reason:
+client_not_permitted` and Claude's `oauth_client_id`.
+
+**4. Write from ChatGPT: allowed.** The same request succeeds. The
+record's `provenance.oauth_client_id` is ChatGPT's client ID.
+
+**5. Read it in Claude.** `mak4i_get_current` in Claude returns the
+record ChatGPT wrote. Read access is unchanged.
+
+**6. Change takes effect immediately.** `mak4i client-policy set …
+--oauth-client-id "$CLAUDE_CLIENT_ID" --permissions read,write`, then retry
+step 3 in the same Claude conversation. It now succeeds without signing in
+again. Removing a policy, or switching `project client-restrictions --on`,
+also applies on the next request.
 
 ---
 
