@@ -6,7 +6,7 @@ running deployment actually enables."""
 
 from __future__ import annotations
 
-PROTOCOL_VERSION = "0.2"
+PROTOCOL_VERSION = "0.3"
 """SPEC.md version; the exact revision is pinned in PROTOCOL_REVISION."""
 
 SERVER_PROFILE = "server-project-records"

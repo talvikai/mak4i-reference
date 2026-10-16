@@ -6,7 +6,7 @@ AI clients connect to over HTTPS.
 
 **Audience:** cloud administrators, platform engineers, DevOps and SRE.
 
-> **Developer Preview.** This is a release candidate (`v2.0.0-rc.1`) for
+> **Developer Preview.** This is a release candidate (`v2.1.0-rc.1`) for
 > evaluation and feedback, not a production-supported release. It is a
 > single-VM reference deployment: Docker Compose with PostgreSQL (the
 > control plane), artifacts on a Docker volume, and Caddy for HTTPS.
@@ -26,7 +26,7 @@ AI clients connect to over HTTPS.
 6. [Create your organization and access](#6-create-your-organization-and-access)
 7. [Connect AI clients](#7-connect-ai-clients)
 8. [Operate](#8-operate)
-9. [Upgrade from v0.1.0-rc.5](#9-upgrade-from-v010-rc5) (9.1 [from v2.0.0-rc.1 to the next release](#91-upgrade-from-v200-rc1-to-the-next-release-prepared-not-yet-released))
+9. [Upgrade](#9-upgrade) (9.1 [from v2.0.0-rc.1](#91-from-v200-rc1), 9.2 [from v0.1.0-rc.5 or rc.6](#92-from-v010-rc5-or-rc6))
 10. [Uninstall](#10-uninstall)
 11. [Manual Compose procedure](#11-manual-compose-procedure)
 12. [Configuration reference](#12-configuration-reference)
@@ -141,7 +141,7 @@ docker compose version            # must print v2.x or later
 ## 4. Get the release
 
 ```bash
-git clone --branch v2.0.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
+git clone --branch v2.1.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
 cd mak4i-reference
 ```
 
@@ -239,7 +239,7 @@ this installation names itself to AI clients (see
 Expected ending:
 
 ```
-MAK4I Enterprise v2.0.0-rc.1 is installed and healthy.
+MAK4I Enterprise v2.1.0-rc.1 is installed and healthy.
   Profile:   tls
   Endpoint:  https://mak4i.example.com/mcp
   ...
@@ -263,7 +263,7 @@ changes nothing: it never regenerates the database password, creates
 organizations or replaces credentials. It refuses to overwrite a different
 installation: a different profile or domain, existing data volumes without
 their `.env`, or a manual installation (adopt that with
-[`upgrade`](#9-upgrade-from-v010-rc5)).
+[`upgrade`](#9-upgrade)).
 
 ### 5.4 Verify
 
@@ -653,7 +653,8 @@ history that recorded them):
 you to type `restore` (or pass `--yes` for automation), runs migrations,
 and checks that the restored counts match the manifest. Expect MAK4I to be
 unavailable for under a minute on small installations. It restores
-`v2.0.0-rc.1` backups; the installation's current `.env` is kept.
+`v2.1.0-rc.1` backups and backups from the releases it upgrades from
+(`v0.1.0-rc.5`, `v0.1.0-rc.6`, `v2.0.0-rc.1`); the installation's current `.env` is kept.
 
 **On a new VM:** install first (section 5), then restore. Restoring
 brings back all organizations, principals, grants and credentials.
@@ -670,120 +671,104 @@ Every bootstrap run is also logged, mode 600, under
 `~/.local/state/mak4i-enterprise/logs/`. No secret is ever printed, so none
 is logged.
 
-## 9. Upgrade from v0.1.0-rc.5
+## 9. Upgrade
 
-The supported paths are `v0.1.0-rc.5` or `v0.1.0-rc.6` → `v2.0.0-rc.1`, preserving all data.
-An installation on an earlier release upgrades to `v0.1.0-rc.5` first,
-following that release's guide.
+Supported paths to `v2.1.0-rc.1`; every one preserves all data:
 
-**What changes for you.** v2.0.0-rc.1 adds database tables and a column
-(migrations `0002`–`0005`: OAuth, `agent_id`, conflict resolution records,
-administrative audit), and new fields on records written from now on
-(provenance, resolution fields). Existing principals, credentials, grants
-and records are kept unchanged; existing agent principals get an
-`agent_id` of the form `agent-<12 hex digits>`. Read the **breaking
-changes** in [`CHANGELOG.md`](../CHANGELOG.md) (conflict object shape,
-filters no longer hide one side of a conflict, releasing a subject key
-during a conflict is refused, tool calls with arguments a tool doesn't
-define are rejected with `validation_error`, a duplicate `artifact_id` is
-`artifact_exists`) before upgrading clients that rely on them.
+| Installed release | Migrations applied | What changes |
+|---|---|---|
+| `v2.0.0-rc.1` | `0006`, `0007` | [9.1](#91-from-v200-rc1) |
+| `v0.1.0-rc.5` or `v0.1.0-rc.6` | `0002`–`0007`, in one step | [9.2](#92-from-v010-rc5-or-rc6) |
+
+Every migration only adds tables and columns, and they always run in
+order, so a v0.1 installation upgrades directly; there's no need to install
+v2.0.0-rc.1 first. An installation on an earlier release upgrades to
+`v0.1.0-rc.6` first, following that release's guide.
+
+The steps are the same for every path. Read the section for your release
+first.
 
 ```bash
-git fetch --depth 1 origin tag v2.0.0-rc.1
-git checkout v2.0.0-rc.1
+./deploy/bootstrap/mak4i-enterprise backup --backup-dir /srv/mak4i-backups   # optional extra copy
+git fetch --depth 1 origin tag v2.1.0-rc.1 && git checkout v2.1.0-rc.1
 ./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
+./deploy/bootstrap/mak4i-enterprise status
 ```
 
 `upgrade`:
 
 1. detects the installed version (from the bootstrap state or the running
-   container; `--from-version v0.1.0-rc.5` if the stack is stopped) and
+   container; `--from-version v2.0.0-rc.1` if the stack is stopped) and
    refuses any other path;
-2. **takes a verified backup first** (or verifies one you give with
-   `--use-backup DIR`);
-3. pulls and builds the pinned `v2.0.0-rc.1` images;
+2. **takes a verified backup first**, labeled with the installed release
+   (or verifies one you give with `--use-backup DIR`);
+3. pulls and builds the pinned `v2.1.0-rc.1` images;
 4. recreates the containers; the migrations run before MAK4I starts;
 5. verifies the version, health, readiness, schema, unchanged data counts
    and HTTPS;
 6. prints the rollback steps.
 
 Database, artifacts, certificates, `.env` and every credential are kept.
-OAuth stays off until you enable it ([7.1](#71-oauth-sign-in)).
-
-**Schema downgrade is not a rollback.** The migrations can be reversed
-(`alembic downgrade 0001_initial` drops the OAuth, resolution and audit
-tables and the `agent_id` column), but that doesn't make the data usable
-by v0.1.0-rc.5: every record version v2.0.0-rc.1 writes carries
-provenance, and conflict resolution writes the `withdrawn` status — v0.1.0-rc.5
-rejects both. Records that existed before the upgrade and were never
-changed stay readable. Use a schema downgrade only together with
-restoring data.
-
-**Rollback = restore the pre-upgrade backup** with v0.1.0-rc.5. Restoring
-it returns the database and artifacts to the moment of the upgrade, so
-everything after that is lost:
-
-- records created or superseded, and conflict resolutions (with their
-  records), after the upgrade;
-- organizations, projects, principals (including `agent_id`s), grants and
-  credentials created or changed after the upgrade — credentials issued
-  after it stop working, revoked ones from before it work again;
-- all OAuth state (clients, authorizations, tokens): OAuth clients must
-  connect again, if you re-upgrade later;
-- the administrative audit history.
-
-Keep the backup's `.env` (it holds the database password), and export
-anything you need from the post-upgrade period first (for example
-`mak4i audit list`, `mak4i_history`).
-
-v0.1.0-rc.5 can't start on the upgraded database, and its `restore`
-can't remove the tables v2.0.0-rc.1 added, so the rollback starts with
-**this** release's bootstrap. Before changing anything, `rollback` checks:
-- that the backup is complete and is the `v0.1.0-rc.5` pre-upgrade backup;
-- that this installation runs v2.0.0-rc.1, with the same profile and
-  endpoint as the backup.
-
-It then takes a **recovery backup** of the current data, keeps MAK4I
-stopped from that point on (no writes can slip in), checks that it is
-stopped, and empties the database. The recovery backup is kept: restoring
-it with this release undoes the rollback.
-v0.1.0-rc.5's own `restore` then loads the pre-upgrade backup (labeled
-`v0.1.0-rc.5` by `upgrade`), runs its migrations and starts:
-
-```bash
-B=/srv/mak4i-backups/mak4i-backup-<timestamp>                    # printed by upgrade
-./deploy/bootstrap/mak4i-enterprise rollback --from "$B"          # 1. with v2.0.0-rc.1: stop MAK4I, empty the database
-git fetch --depth 1 origin tag v0.1.0-rc.5 && git checkout v0.1.0-rc.5   # rollback to the previous release
-(cd deploy/compose && docker compose --profile tls build mak4i)   # 2. rc.5 image (omit --profile tls for private-http)
-./deploy/bootstrap/mak4i-enterprise restore --from "$B"           # 3. with v0.1.0-rc.5: restore, migrate, start
-```
-
-`upgrade` prints these exact commands with your paths.
 
 If PostgreSQL reports a **collation version change** after the upgrade
 (`upgrade` warns and prints the command), rebuild the indexes once. This
 happens when an older installation's PostgreSQL image was built on an
 earlier Debian release than the one this release pins.
 
-### 9.1 Upgrade from v2.0.0-rc.1 to the next release (prepared, not yet released)
+**Rollback = restore the pre-upgrade backup** with the release you upgraded
+from. Restoring it returns the database and artifacts to the moment of the
+upgrade, so everything after that is lost:
 
-The next Reference release adds the change feed and client-scoped access.
-Its version and tag aren't chosen yet; below, `<next-tag>` stands for it.
-These steps are for that tagged release. Don't upgrade a production
-installation from `main`.
+- records created or superseded, and conflict resolutions (with their
+  records), after the upgrade;
+- organizations, projects, principals, grants and credentials created or
+  changed after the upgrade — credentials issued after it stop working,
+  revoked ones from before it work again;
+- OAuth clients and authorizations made after the upgrade (coming from
+  v0.1: all OAuth state);
+- client policies, project restriction modes and change events;
+- the administrative audit history after the upgrade.
 
-**Release gate.** The bootstrap on `main` still says it installs
-`v2.0.0-rc.1`. It accepts only `v0.1.0-rc.5`/`rc.6` as upgrade sources,
-and rolls back only to those. Before `<next-tag>` is tagged, the release
-change must:
-- set `MAK4I_RELEASE` and the package version;
-- add `v2.0.0-rc.1` to the supported upgrade and rollback sources.
+Keep the backup's `.env` (it holds the database password), and export
+anything you need from the post-upgrade period first (for example
+`mak4i audit list`, `mak4i_history`).
 
-Until then, `upgrade` on a v2.0.0-rc.1 installation would only re-apply
-v2.0.0-rc.1.
+The previous release can't start on the upgraded database, and its
+`restore` can't remove the tables this release added, so the rollback
+starts with **this** release's bootstrap. Before changing anything,
+`rollback` checks:
+- that the backup is complete and is a pre-upgrade backup of a supported
+  source release;
+- that this installation runs v2.1.0-rc.1, with the same profile and
+  endpoint as the backup.
 
-**What changes for you.** Two additive migrations; existing data is not
-rewritten:
+It then takes a **recovery backup** of the current data, keeps MAK4I
+stopped from that point on (no writes can slip in), checks that it is
+stopped, and empties the database. The recovery backup is kept: restoring
+it with this release undoes the rollback.
+The previous release's own `restore` then loads the pre-upgrade backup,
+runs its migrations and starts. For an upgrade from v2.0.0-rc.1:
+
+```bash
+B=/srv/mak4i-backups/mak4i-backup-<timestamp>                    # printed by upgrade
+./deploy/bootstrap/mak4i-enterprise rollback --from "$B"          # 1. with v2.1.0-rc.1: stop MAK4I, empty the database
+git fetch --depth 1 origin tag v2.0.0-rc.1 && git checkout v2.0.0-rc.1   # rollback to the previous release
+(cd deploy/compose && docker compose --profile tls build mak4i)   # 2. previous image (omit --profile tls for private-http)
+./deploy/bootstrap/mak4i-enterprise restore --from "$B"           # 3. with the previous release: restore, migrate, start
+```
+
+From v0.1, use `v0.1.0-rc.5` or `v0.1.0-rc.6` in step 2. `upgrade` prints
+these exact commands with your paths and release.
+
+**Schema downgrade is not a rollback.** The migrations can be reversed
+(`alembic downgrade <revision>`), but that doesn't make data written by
+this release usable by an earlier one. Use a schema downgrade only together
+with restoring data.
+
+### 9.1 From v2.0.0-rc.1
+
+v2.1.0-rc.1 adds the change feed and client-scoped access. Two additive
+migrations; existing data is not rewritten:
 
 | Migration | Adds | Effect until you act |
 |---|---|---|
@@ -793,43 +778,42 @@ rewritten:
 - **OAuth.** Clients, authorizations and tokens are kept, so connected
   clients stay signed in. One behavior changes: a refresh token presented
   by a different client now also revokes its authorization (MAK-0008 §6.5).
-- **Profiles.** `mak4i_whoami` reports two more profiles,
-  `server-change-feed` and `server-client-policies`, and a `client` field.
+- **Profiles.** `mak4i_whoami` reports protocol version `0.3`, two more
+  profiles, `server-change-feed` and `server-client-policies`, and a
+  `client` field.
 - **Configuration.** One new optional setting,
   `MAK4I_CHANGE_FEED_RETENTION_DAYS` (default 7).
 
-```bash
-./deploy/bootstrap/mak4i-enterprise backup --backup-dir /srv/mak4i-backups   # optional extra copy
-git fetch --depth 1 origin tag <next-tag> && git checkout <next-tag>
-./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
-./deploy/bootstrap/mak4i-enterprise status
-```
-
-`upgrade` takes and verifies a backup labeled `v2.0.0-rc.1`, rebuilds,
-runs the migrations before MAK4I starts, and checks version, health,
-schema, unchanged data counts and HTTPS.
-
-Then confirm:
-- `docker compose exec mak4i mak4i --version` reports the new version;
+After the upgrade, confirm:
+- `docker compose exec mak4i mak4i --version` reports `mak4i 2.1.0rc1`;
 - `mak4i_whoami` lists `server-client-policies`;
 - a connected OAuth client still works without signing in again.
 
-**Rollback = restore the pre-upgrade backup** with v2.0.0-rc.1. It's the
-same model as above: anything after the upgrade is lost. That includes
-change events, client policies and restriction modes, credentials issued
-or revoked since, and OAuth authorizations made since.
+`alembic downgrade 0005_admin_events` removes the two migrations' tables
+and column; as above, only together with restoring data.
 
-```bash
-B=/srv/mak4i-backups/mak4i-backup-<timestamp>                       # printed by upgrade
-./deploy/bootstrap/mak4i-enterprise rollback --from "$B"             # with <next-tag>
-git fetch --depth 1 origin tag v2.0.0-rc.1 && git checkout v2.0.0-rc.1
-(cd deploy/compose && docker compose --profile tls build mak4i)      # omit --profile tls for private-http
-./deploy/bootstrap/mak4i-enterprise restore --from "$B"              # with v2.0.0-rc.1
-```
+### 9.2 From v0.1.0-rc.5 or rc.6
 
-Schema downgrade (`alembic downgrade 0005_admin_events`) removes the two
-migrations' tables and column. Like above, use it only together with
-restoring data.
+v2.0.0-rc.1 and v2.1.0-rc.1 together add database tables and columns
+(migrations `0002`–`0007`: OAuth, `agent_id`, conflict resolution records,
+administrative audit, change feed, client policies), and new fields on
+records written from now on (provenance, resolution fields). Existing
+principals, credentials, grants and records are kept unchanged; existing
+agent principals get an `agent_id` of the form `agent-<12 hex digits>`.
+Read the **breaking changes** of v2.0.0-rc.1 in
+[`CHANGELOG.md`](../CHANGELOG.md) (conflict object shape, filters no longer
+hide one side of a conflict, releasing a subject key during a conflict is
+refused, tool calls with arguments a tool doesn't define are rejected with
+`validation_error`, a duplicate `artifact_id` is `artifact_exists`) before
+upgrading clients that rely on them. Everything in [9.1](#91-from-v200-rc1)
+applies too.
+
+OAuth stays off until you enable it ([7.1](#71-oauth-sign-in)).
+
+v0.1.0-rc.5 can't read data this release writes: every record version
+carries provenance, and conflict resolution writes the `withdrawn` status.
+Records that existed before the upgrade and were never changed stay
+readable, but a rollback still means restoring the pre-upgrade backup.
 
 ## 10. Uninstall
 
@@ -978,8 +962,8 @@ directories you've made private.)
 Back up first, then:
 
 ```bash
-git fetch --depth 1 origin tag v2.0.0-rc.1
-git checkout v2.0.0-rc.1
+git fetch --depth 1 origin tag v2.1.0-rc.1
+git checkout v2.1.0-rc.1
 docker compose --profile tls up -d --build --wait
 ```
 
@@ -1094,10 +1078,10 @@ in [`DEPLOYMENT.md` → Runtime contract](DEPLOYMENT.md#runtime-contract).
 | `status` | Containers, version, health, readiness, schema, data, HTTPS | No |
 | `admin-info` | Non-secret inventory: organizations, owners, projects, principals (incl. `agent_id`), grants, credential metadata. Use it to recover ids you didn't keep; tokens can't be recovered, only reissued | No |
 | `restart` | Restart and verify health and data | Yes |
-| `upgrade` | Back up, then `v0.1.0-rc.5` or `v0.1.0-rc.6` → `v2.0.0-rc.1` | Yes |
+| `upgrade` | Back up, then `v0.1.0-rc.5`, `v0.1.0-rc.6` or `v2.0.0-rc.1` → `v2.1.0-rc.1` | Yes |
 | `backup` | Timestamped, verified backup | Writes the backup only |
 | `restore` | Replace all data with a backup | Yes (confirmation required) |
-| `rollback` | Prepare a rollback to `v0.1.0-rc.5`: stop MAK4I and empty the database (then restore with v0.1.0-rc.5) | Yes (confirmation required) |
+| `rollback` | Prepare a rollback to the pre-upgrade release: stop MAK4I and empty the database (then restore with that release) | Yes (confirmation required) |
 | `uninstall` | Remove containers; `--destroy-data` removes data too | Yes (destroy needs confirmation) |
 
 Options that never take secrets; `--non-interactive` never prompts (a

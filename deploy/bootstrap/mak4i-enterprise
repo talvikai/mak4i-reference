@@ -14,7 +14,7 @@ set -Eeuo pipefail
 # substitution that can fail is also checked explicitly.
 shopt -s inherit_errexit 2>/dev/null || true
 
-readonly MAK4I_RELEASE="v2.0.0-rc.1"
+readonly MAK4I_RELEASE="v2.1.0-rc.1"
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
@@ -48,10 +48,10 @@ Commands:
   admin-info  Non-secret inventory: organizations, owners, projects,
               principals, grants and credential metadata (never tokens)
   restart     Restart the stack and verify health and data
-  upgrade     Back up, then upgrade v0.1.0-rc.5 or rc.6 -> $MAK4I_RELEASE
+  upgrade     Back up, then upgrade v0.1.0-rc.5, rc.6 or v2.0.0-rc.1 -> $MAK4I_RELEASE
   backup      Timestamped backup of the database, artifacts and .env
   restore     Replace all data with a backup (asks for confirmation)
-  rollback    Prepare a rollback to the pre-upgrade release (v0.1.0-rc.5/rc.6):
+  rollback    Prepare a rollback to the pre-upgrade release (v0.1.0-rc.5/rc.6, v2.0.0-rc.1):
               stop MAK4I and empty the database, then restore with that release
   uninstall   Remove the containers; keeps data unless --destroy-data
 

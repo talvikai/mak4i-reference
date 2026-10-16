@@ -76,7 +76,7 @@ def _create_args(w, artifact_id, artifact_type, **extra):
 
 def test_whoami_reports_protocol_and_scopes_key(world):  # M37, MAK-0008 §10.5
     result = _call(world, world.agent_token, "mak4i_whoami", {})["structuredContent"]
-    assert result["protocol"]["version"] == "0.2"
+    assert result["protocol"]["version"] == "0.3"
     assert "server-project-records" in result["protocol"]["profiles"]
     assert "scopes" in result and result["scopes"] is None
 

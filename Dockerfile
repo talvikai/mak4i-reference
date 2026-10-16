@@ -21,7 +21,7 @@ FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabf
 
 # Kept in step with pyproject.toml by scripts/check_release_consistency.py.
 LABEL org.opencontainers.image.title="MAK4I Reference MCP server" \
-      org.opencontainers.image.version="2.0.0-rc.1" \
+      org.opencontainers.image.version="2.1.0-rc.1" \
       org.opencontainers.image.source="https://github.com/talvikai/mak4i-reference" \
       org.opencontainers.image.licenses="MIT"
 
