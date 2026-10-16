@@ -3,8 +3,9 @@
 This page maps the MAK4I Reference implementation to the acceptance criteria
 in the protocol's `CONFORMANCE.md`, at the revision pinned in
 [`PROTOCOL_REVISION`](../PROTOCOL_REVISION) (`talvikai/mak4i-protocol` commit
-`fa068b9bbd4cc9e663f679f09204c773be6b03e3`, protocol main with #10 and #11
-merged, protocol version 0.2). The
+`6d1192b4793fd110dd1dbfc1f31770b3b6aa33c2`, protocol v0.3 as prepared in
+talvikai/mak4i-protocol#13 on top of main with #10 and #11 merged; re-pinned
+to protocol main once #13 merges). The
 Reference claims the profiles reported by `mak4i_whoami.protocol.profiles`
 (`src/mak4i/protocol.py`): **`server-project-records`** and
 **`server-client-policies`** plus

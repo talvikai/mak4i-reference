@@ -4,8 +4,9 @@
 # MAK4I_INSTALL_STATE, MAK4I_INSTALLED_RELEASE) and in the Docker volumes.
 
 # Releases this one upgrades from (and rolls back to): v0.1.0-rc.6 is a
-# maintenance release of v0.1.0-rc.5 with the same schema.
-readonly UPGRADE_SOURCES="v0.1.0-rc.5 v0.1.0-rc.6"
+# maintenance release of v0.1.0-rc.5 with the same schema. Every migration
+# is additive and they run in order, so each source upgrades directly.
+readonly UPGRADE_SOURCES="v0.1.0-rc.5 v0.1.0-rc.6 v2.0.0-rc.1"
 
 is_upgrade_source() {
   [[ " $UPGRADE_SOURCES " == *" $1 "* ]]
@@ -642,7 +643,7 @@ cmd_upgrade() {
     "$MAK4I_RELEASE") info "already $MAK4I_RELEASE; re-applying and verifying" ;;
     *)
       is_upgrade_source "$from" ||
-        die "$EX_UNSUPPORTED" "upgrading from $from isn't supported. Supported paths: ${UPGRADE_SOURCES// / or } -> $MAK4I_RELEASE (upgrade to v0.1.0-rc.6 first, following its guide)"
+        die "$EX_UNSUPPORTED" "upgrading from $from isn't supported. Supported paths: ${UPGRADE_SOURCES// / or } -> $MAK4I_RELEASE (upgrade an earlier release to v0.1.0-rc.6 first, following its guide)"
       info "installed: $from -> upgrading to $MAK4I_RELEASE" ;;
   esac
 
