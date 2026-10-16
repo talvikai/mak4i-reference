@@ -17,7 +17,7 @@ removal.
 2. [Install](#2-install)
 3. [Initialize](#3-initialize)
 4. [Run the server](#4-run-the-server)
-5. [Connect an AI client](#5-connect-an-ai-client)
+5. [Connect an AI client](#5-connect-an-ai-client) (5.1 [OAuth sign-in](#51-oauth-sign-in-optional-local-http))
 6. [Health and readiness](#6-health-and-readiness)
 7. [Stop, start and restart](#7-stop-start-and-restart)
 8. [Credential recovery](#8-credential-recovery)
@@ -270,6 +270,7 @@ The tools:
 | `mak4i_history` | every version in a lineage, oldest first |
 | `mak4i_list_conflicts`, `mak4i_get_conflict` | subjects claimed by more than one lineage, with every candidate and its author |
 | `mak4i_resolve_conflict` | resolve a conflict the user has decided (needs the `resolve` permission) |
+| `mak4i_changes` | what changed in a project after a cursor (`mak4i changes` on the CLI) |
 
 **Verify:** ask your client to (1) list MAK4I projects (your project with
 `["read","write"]`), (2) create an artifact in it, (3) get the current
@@ -283,6 +284,56 @@ yourself. Clients see the name in `mak4i_whoami`, project listings and
 access denials. Review writes your client proposes when it has several
 MAK4I connections: a server can't control what a client does on another
 connection.
+
+### 5.1 OAuth sign-in (optional, Local HTTP)
+
+By default local clients use the credential from `.mak4i/credentials.json`.
+A client on this machine that supports MCP OAuth, such as Claude Code, can
+sign in with a one-time code instead, so no token is copied into its
+configuration.
+
+1. Start the server with OAuth on. `MAK4I_PUBLIC_ENDPOINT` must be the exact
+   local URL, including the port:
+
+   ```bash
+   MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=http://127.0.0.1:9090/mcp \
+     mak4i serve --transport http
+   ```
+
+   Check it: `curl -s http://127.0.0.1:9090/.well-known/oauth-protected-resource/mcp`
+   returns JSON.
+2. Add the server by URL, without a header, then authenticate:
+
+   ```bash
+   claude mcp add --transport http mak4i-local http://127.0.0.1:9090/mcp
+   ```
+
+   In Claude Code run `/mcp` → `mak4i-local` → **Authenticate**. A browser
+   opens the MAK4I sign-in page.
+3. Get a sign-in code in another terminal (the local credential
+   authenticates you, so no `--actor` is needed) and enter it:
+
+   ```bash
+   mak4i oauth sign-in-code
+   ```
+
+   A code works once and for 10 minutes. Approve the consent page.
+
+After that, new conversations reuse the connection without a new code.
+Access tokens last 1 hour and refresh silently. Sign in again after 7 days
+without use, after 30 days in total, or after `mak4i oauth authorization
+revoke`.
+
+Limits:
+- Hosted clients (claude.ai, ChatGPT) run in the cloud and can't reach
+  `127.0.0.1`. Use them with an Enterprise install on a public HTTPS name
+  ([Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)),
+  or with a tunnel (§4.3) and `MAK4I_PUBLIC_ENDPOINT` set to the tunnel's
+  `https://…/mcp`.
+- Plain `http` is accepted only on loopback.
+- Client policies (`mak4i client-policy`, [ADMIN_CLI.md](ADMIN_CLI.md#client-policies-client-scoped-access-mak-0006-57))
+  work the same locally. Claude Code's client ID is
+  `https://claude.ai/oauth/claude-code-client-metadata`.
 
 ## 6. Health and readiness
 
@@ -592,6 +643,6 @@ from `.mak4i/`, so you normally set none of them.
 | A working credential suddenly returns `401` after changing directories | `mak4i serve` uses the `.mak4i/` in its current directory. Two directories mean two separate environments with different credentials (their banners can look identical). |
 | `421 Misdirected Request` while tunneling | The server is on loopback; restart with `--host 0.0.0.0` after reading its [security warning](#43-network-http-and-tunnels). |
 | A cloud client can't reach your endpoint | It can't reach `127.0.0.1` on your machine: use a tunnel (section 4.3) or Enterprise Self-Hosted. |
-| A cloud client asks how the server "signs in" | That client uses OAuth. MAK4I's OAuth sign-in needs a public HTTPS endpoint the client can reach (see [Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)); on a local install, use the client's custom-header setup with `Authorization: Bearer <credential>` instead. |
+| A cloud client asks how the server "signs in" | That client uses OAuth. MAK4I's OAuth sign-in needs a public HTTPS endpoint the client can reach (see [Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in)); on a local install, use the client's custom-header setup with `Authorization: Bearer <credential>` instead. Clients on this machine can use local OAuth (§5.1). |
 | `access denied … on MAK4I connection '…'` | Your principal has no grant (or only `read`) on that project here. It's final for this connection: don't write the same thing to another MAK4I connection without choosing it deliberately. |
 | `ERROR: MAK4I could not start. 127.0.0.1:<port> is already in use.` | Stop the other process, or use `--port`. |

@@ -26,7 +26,7 @@ AI clients connect to over HTTPS.
 6. [Create your organization and access](#6-create-your-organization-and-access)
 7. [Connect AI clients](#7-connect-ai-clients)
 8. [Operate](#8-operate)
-9. [Upgrade from v0.1.0-rc.5](#9-upgrade-from-v010-rc5)
+9. [Upgrade from v0.1.0-rc.5](#9-upgrade-from-v010-rc5) (9.1 [from v2.0.0-rc.1 to the next release](#91-upgrade-from-v200-rc1-to-the-next-release-prepared-not-yet-released))
 10. [Uninstall](#10-uninstall)
 11. [Manual Compose procedure](#11-manual-compose-procedure)
 12. [Configuration reference](#12-configuration-reference)
@@ -433,12 +433,23 @@ request.
 `tls` profile). Hosted clients such as claude.ai connect from the
 internet, so a private-http installation can't be used with them.
 
-**Enable it** in `deploy/compose/.env`, then restart the stack:
+**Enable it** in `deploy/compose/.env`:
 
 ```bash
 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp
 MAK4I_OAUTH_ENABLED=1
 ```
+
+Then recreate the MAK4I container so it reads the new settings:
+
+```bash
+cd deploy/compose && docker compose up -d mak4i
+../bootstrap/mak4i-enterprise status        # wait for /health ok and /ready ready
+```
+
+`./deploy/bootstrap/mak4i-enterprise restart` is **not** enough here: it
+restarts the existing container, which keeps its old environment, so
+OAuth stays off. The same applies to every other `.env` change.
 
 Check discovery (both must return JSON without a token):
 
@@ -507,7 +518,11 @@ docker compose exec mak4i mak4i oauth sign-in-code --actor "$OWNER" --principal-
 ```
 
 `$OWNER` is the owner's `principal_id` printed by `mak4i org create`;
-recover ids with `./deploy/bootstrap/mak4i-enterprise admin-info`. A
+recover ids with `./deploy/bootstrap/mak4i-enterprise admin-info`.
+Who can issue a code: an owner, for anyone in the organization, or any
+principal for itself by acting with its own credential
+(`docker compose exec -e MAK4I_TOKEN mak4i mak4i oauth sign-in-code`,
+with `MAK4I_TOKEN` set in the shell). A
 sign-in code works **once** and for **10 minutes**, and it is consumed
 by the first successful sign-in: issue a new one for every sign-in. It
 is never a bearer token.
@@ -552,6 +567,20 @@ and write.
 The client is identified by its registration, never by the name an app
 reports. Tokens are bearer tokens, so a policy limits the client a token
 was issued to, not software that copies it (MAK-0006 §5.7.9).
+
+### 7.3 Change notifications
+
+MAK4I keeps a change feed per project (MAK-0008 §14). AI clients can
+subscribe to project resources and read the feed with `mak4i_changes`.
+Administrators read it with:
+
+```bash
+docker compose exec mak4i mak4i changes --principal "$PRINCIPAL" --project "$PROJECT" --after 0
+```
+
+Events are kept for `MAK4I_CHANGE_FEED_RETENTION_DAYS` (default 7) and
+are delivered by this single MAK4I instance. Details:
+[DEPLOYMENT.md → Change feed and MCP resources](DEPLOYMENT.md#change-feed-and-mcp-resources).
 
 ## 8. Operate
 
@@ -735,6 +764,72 @@ If PostgreSQL reports a **collation version change** after the upgrade
 (`upgrade` warns and prints the command), rebuild the indexes once. This
 happens when an older installation's PostgreSQL image was built on an
 earlier Debian release than the one this release pins.
+
+### 9.1 Upgrade from v2.0.0-rc.1 to the next release (prepared, not yet released)
+
+The next Reference release adds the change feed and client-scoped access.
+Its version and tag aren't chosen yet; below, `<next-tag>` stands for it.
+These steps are for that tagged release. Don't upgrade a production
+installation from `main`.
+
+**Release gate.** The bootstrap on `main` still says it installs
+`v2.0.0-rc.1`. It accepts only `v0.1.0-rc.5`/`rc.6` as upgrade sources,
+and rolls back only to those. Before `<next-tag>` is tagged, the release
+change must:
+- set `MAK4I_RELEASE` and the package version;
+- add `v2.0.0-rc.1` to the supported upgrade and rollback sources.
+
+Until then, `upgrade` on a v2.0.0-rc.1 installation would only re-apply
+v2.0.0-rc.1.
+
+**What changes for you.** Two additive migrations; existing data is not
+rewritten:
+
+| Migration | Adds | Effect until you act |
+|---|---|---|
+| `0006_change_feed` | `change_feed_heads`, `change_events` tables | Records changes from the upgrade on; no history before it |
+| `0007_client_policies` | `client_policies` table, `projects.client_restrictions` (default off) | None: no policies exist and every project is `off`, so access is unchanged |
+
+- **OAuth.** Clients, authorizations and tokens are kept, so connected
+  clients stay signed in. One behavior changes: a refresh token presented
+  by a different client now also revokes its authorization (MAK-0008 §6.5).
+- **Profiles.** `mak4i_whoami` reports two more profiles,
+  `server-change-feed` and `server-client-policies`, and a `client` field.
+- **Configuration.** One new optional setting,
+  `MAK4I_CHANGE_FEED_RETENTION_DAYS` (default 7).
+
+```bash
+./deploy/bootstrap/mak4i-enterprise backup --backup-dir /srv/mak4i-backups   # optional extra copy
+git fetch --depth 1 origin tag <next-tag> && git checkout <next-tag>
+./deploy/bootstrap/mak4i-enterprise upgrade --backup-dir /srv/mak4i-backups
+./deploy/bootstrap/mak4i-enterprise status
+```
+
+`upgrade` takes and verifies a backup labeled `v2.0.0-rc.1`, rebuilds,
+runs the migrations before MAK4I starts, and checks version, health,
+schema, unchanged data counts and HTTPS.
+
+Then confirm:
+- `docker compose exec mak4i mak4i --version` reports the new version;
+- `mak4i_whoami` lists `server-client-policies`;
+- a connected OAuth client still works without signing in again.
+
+**Rollback = restore the pre-upgrade backup** with v2.0.0-rc.1. It's the
+same model as above: anything after the upgrade is lost. That includes
+change events, client policies and restriction modes, credentials issued
+or revoked since, and OAuth authorizations made since.
+
+```bash
+B=/srv/mak4i-backups/mak4i-backup-<timestamp>                       # printed by upgrade
+./deploy/bootstrap/mak4i-enterprise rollback --from "$B"             # with <next-tag>
+git fetch --depth 1 origin tag v2.0.0-rc.1 && git checkout v2.0.0-rc.1
+(cd deploy/compose && docker compose --profile tls build mak4i)      # omit --profile tls for private-http
+./deploy/bootstrap/mak4i-enterprise restore --from "$B"              # with v2.0.0-rc.1
+```
+
+Schema downgrade (`alembic downgrade 0005_admin_events`) removes the two
+migrations' tables and column. Like above, use it only together with
+restoring data.
 
 ## 10. Uninstall
 
