@@ -2,4 +2,4 @@
 # against (tests/test_protocol_conformance.py, CI). One line:
 #   <repository> <full commit SHA>
 # Update it deliberately when adopting a new protocol revision.
-https://github.com/talvikai/mak4i-protocol 6d1192b4793fd110dd1dbfc1f31770b3b6aa33c2
+https://github.com/talvikai/mak4i-protocol 177503adb7bb92ac1dd4b961de07b12cbb5b281f

@@ -60,8 +60,8 @@ Implements the optional MAK-0008 §14 profile `server-change-feed`
 
 ### Changed
 - Protocol version `0.3` (`mak4i_whoami.protocol.version`).
-  `PROTOCOL_REVISION` pins the v0.3 preparation (talvikai/mak4i-protocol#13,
-  on top of main with #10 and #11 merged).
+  `PROTOCOL_REVISION` pins protocol main `177503a` (#10, #11 and #13
+  merged).
 - **Enterprise bootstrap:** `upgrade` accepts `v2.0.0-rc.1`, `v0.1.0-rc.5`
   and `v0.1.0-rc.6`; a v0.1 installation upgrades directly (migrations
   `0002`–`0007` in one step). `restore` and `rollback` accept backups from
