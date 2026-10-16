@@ -7,7 +7,7 @@ the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
 ### Added
 - **Client-scoped project access** (CLIENT-AUTH-001; MAK-0006 §5.7,
-  profile `server-client-policies`; protocol proposal
+  profile `server-client-policies`;
   talvikai/mak4i-protocol#11).
   - The same principal can have different permissions on a project
     depending on the verified client: a credential, or a pre-registered
@@ -27,6 +27,11 @@ the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
   - Migration `0007_client_policies` is additive: every project starts
     `off` with no policies, so nothing changes until an owner acts.
     Local SQLite environments are upgraded automatically.
+
+### Changed
+- `PROTOCOL_REVISION` pins protocol main `fa068b9` (#10 and #11 merged).
+  Before, it pinned the #10 proposal commit, then the #11 proposal commit.
+  The spec content is identical.
 
 ### Security
 - A refresh token presented with another client's `client_id` now also
@@ -136,7 +141,7 @@ is independent.
 ### Change feed and MCP resources (#20)
 
 Implements the optional MAK-0008 §14 profile `server-change-feed`
-(protocol proposal talvikai/mak4i-protocol#10).
+(talvikai/mak4i-protocol#10).
 
 - **Durable per-project change feed.**
   - Stored in the control-plane database (migration `0006_change_feed`).
