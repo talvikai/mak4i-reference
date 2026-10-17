@@ -36,7 +36,7 @@ separate "user" or "actor" argument.
 
 | Method | Use it for | What the client stores |
 |---|---|---|
-| **OAuth sign-in** ([Enterprise §7.1](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in); locally [LOCAL_SETUP §5.1](LOCAL_SETUP.md#51-oauth-sign-in-optional-local-http)) | claude.ai, ChatGPT, Claude Code: any client with MCP OAuth | nothing you paste; you sign in once with a one-time code |
+| **OAuth sign-in** ([Enterprise §7.1](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in); locally [LOCAL_SETUP §12](LOCAL_SETUP.md#12-oauth-sign-in-on-your-computer)) | claude.ai, ChatGPT, Claude Code: any client with MCP OAuth | nothing you paste; you sign in once with a one-time code |
 | **Credential header** `Authorization: Bearer <token>` | Claude Code, Gemini CLI, scripts: any client that can send a header | the credential issued with `mak4i credential issue` |
 
 OAuth needs the server's OAuth service enabled. Hosted clients (claude.ai,

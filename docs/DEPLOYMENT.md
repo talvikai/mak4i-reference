@@ -133,7 +133,7 @@ validation and prints the effective configuration with secrets shown only
 as references; its output follows the versioned schema in
 [`config.schema.json`](config.schema.json) (`mak4i config schema`).
 
-Settings for each flavor: [Local](LOCAL_SETUP.md#13-configuration-reference),
+Settings for each flavor: [Local](LOCAL_SETUP.md#14-configuration-reference),
 [Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#12-configuration-reference).
 
 **Endpoints.** `GET /health` (liveness) and `GET /ready` (the control
@@ -308,7 +308,7 @@ Two independent stores need backing up on the same schedule: the
 control-plane database (the authorization system of record) and the
 artifact store (the knowledge itself). Restoring one without the other
 fails closed rather than corrupting anything. How:
-[Local](LOCAL_SETUP.md#10-backup-and-restore),
+[Local](LOCAL_SETUP.md#7-back-up-and-restore),
 [Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#83-backup).
 
 ## Production options
