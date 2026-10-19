@@ -6,8 +6,8 @@ guide; installation and operation have exactly two canonical guides:
 
 | Deployment flavor | For | Guide |
 |---|---|---|
-| **Local Developer Setup** | one developer on their own machine; stdio or local HTTP; nothing shared | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) |
-| **Enterprise Self-Hosted** | a shared server on one Linux VM for a team and remote AI clients, over HTTPS | [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md) |
+| **Local** | one person on their own computer (macOS, Linux); apps on that computer connect directly, cloud apps such as claude.ai and ChatGPT through an HTTPS tunnel or proxy the user sets up; data stored on that computer | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) |
+| **Enterprise Self-Hosted** | one shared MAK4I for a team, on a Linux VM, with HTTPS built in | [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md) |
 
 > **Developer Preview.** `v2.1.0-rc.1` is a release candidate, not a
 > production-supported release.
@@ -133,7 +133,7 @@ validation and prints the effective configuration with secrets shown only
 as references; its output follows the versioned schema in
 [`config.schema.json`](config.schema.json) (`mak4i config schema`).
 
-Settings for each flavor: [Local](LOCAL_SETUP.md#14-configuration-reference),
+Settings for each flavor: [Local](LOCAL_SETUP.md#15-configuration-reference),
 [Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#12-configuration-reference).
 
 **Endpoints.** `GET /health` (liveness) and `GET /ready` (the control
@@ -164,7 +164,11 @@ directory, and don't put it on a network filesystem.
 
 ### Replicas
 
-This release supports **one MAK4I server process per installation**.
+This release supports **one MAK4I server process per installation**,
+including a Local installation: one `mak4i serve` (stdio or HTTP) per
+`.mak4i/` at a time. Each start-up finishes work a previous process left
+pending, assuming that process has stopped. CLI commands may run
+alongside the one server.
 Besides `LocalJSONStore`, three pieces of state are per process: the OAuth
 rate limiter, the MCP session-to-principal binding, and in-flight
 streamable-HTTP sessions. Durable state (identities, OAuth, conflict
@@ -180,9 +184,10 @@ balancer must:
 - **not buffer responses:** Streamable HTTP streams server-sent events
   (Caddy `flush_interval -1`, nginx `proxy_buffering off`);
 - **allow long-lived requests:** idle timeouts well above 30 seconds;
-- **pass the `Host` header through, and reach MAK4I on a non-loopback
-  bind.** On a loopback bind, MAK4I's DNS-rebinding guard rejects your
-  real hostname with `421`;
+- **get the `Host` header right:** either pass it through to MAK4I on a
+  non-loopback bind (with `MAK4I_TLS_TERMINATED_UPSTREAM=1`), or rewrite
+  it to `127.0.0.1:<port>` for a loopback bind. On a loopback bind,
+  MAK4I's DNS-rebinding guard rejects any other `Host` with `421`;
 - **expose only HTTPS** to clients: credentials travel in a header on
   every request.
 
@@ -308,7 +313,7 @@ Two independent stores need backing up on the same schedule: the
 control-plane database (the authorization system of record) and the
 artifact store (the knowledge itself). Restoring one without the other
 fails closed rather than corrupting anything. How:
-[Local](LOCAL_SETUP.md#7-back-up-and-restore),
+[Local](LOCAL_SETUP.md#8-back-up-and-restore),
 [Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#83-backup).
 
 ## Production options

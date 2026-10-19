@@ -3,7 +3,11 @@
 Every administrative task in the MAK4I Reference is a `mak4i` command run
 on the host (MAK-0006 §8, "administration without a portal"). There is no
 web console and no remote administration endpoint: the MCP server exposes
-no administrative tool, and nothing administrative is reachable over HTTP.
+no administrative tool, and no owner or operator command is reachable
+over HTTP. Over HTTP there is only the OAuth sign-in flow itself, when
+OAuth is enabled: sign-in and consent, token issue and refresh, a client
+revoking its own token (`/oauth/revoke`), and, only if
+`MAK4I_OAUTH_DCR=1`, dynamic client registration (`/oauth/register`).
 This page lists every command `mak4i` accepts, who may run it, what it
 records and what it prints. It is derived from `build_parser()` in
 `src/mak4i/cli.py`; `mak4i <command> --help` shows the same flags.
@@ -20,7 +24,7 @@ executable, by `tests/test_admin_cli_acceptance.py`.
 - [Outputs, exit codes and audit](#outputs-exit-codes-and-audit)
 - [Administrative commands](#administrative-commands)
 - [Record commands](#record-commands)
-- [Known gaps](#known-gaps)
+- [Not offered by the CLI](#not-offered-by-the-cli)
 
 ## How the CLI authenticates
 
@@ -189,7 +193,7 @@ otherwise it exits 1 with a message saying so.
 |---|---|---|---|---|---|
 | `audit list` | The organization's administrative events, newest first, including denied attempts (`--limit`, default 200) | Owner | — (`--organization-id` defaults to the actor's) | — | JSON array of admin events |
 | `admin inventory` | Non-secret inventory of the installation: organizations, owners, projects, principals, grants, credential metadata | Instance operator | — | — | JSON |
-| `admin revoke-oauth` | Revoke every active OAuth authorization of every organization (after restoring a backup); works with OAuth disabled | Instance operator | `--all` (optional `--reason`) | `oauth_authorization.revoke_all_instance` (instance-level, see [Known gaps](#known-gaps)) | JSON `{"revoked": n}` |
+| `admin revoke-oauth` | Revoke every active OAuth authorization of every organization (after restoring a backup); works with OAuth disabled | Instance operator | `--all` (optional `--reason`) | `oauth_authorization.revoke_all_instance`, one event in each affected organization (one event without an organization when nothing was revoked) | JSON `{"revoked": n}` |
 
 ### Onboarding, configuration and diagnostics
 
@@ -221,18 +225,8 @@ code (MAK-0006 §8.6). All print JSON.
 | `conflict list` / `conflict show` | Subject conflicts | `read` | `--principal`, `--project` (`--conflict-id` for show) |
 | `conflict resolve` | Resolve a conflict | `resolve` | `--principal`, `--project`, `--conflict-id`, `--candidates`, `--action`, `--reason` |
 
-## Known gaps
+## Not offered by the CLI
 
-Found by the acceptance tests and tracked there as expected failures:
-
-- `grant create` with an unknown permission name (for example
-  `--permissions read,admin`) is refused and recorded as a `failed`
-  `grant.set` event, but prints a Python traceback instead of a one-line
-  `error:` message.
-- `admin revoke-oauth --all` records one instance-level event with no
-  organization, so owners of the affected organizations don't see it in
-  `audit list`. The instance operator finds it in the audit log stream.
-
-Not offered by the CLI (by design or not yet): deleting anything
+By design or not yet: deleting anything
 (MAK-0006 §8.4), reactivating a principal, and listing every principal
 that holds a grant on one project (list grants per principal instead).

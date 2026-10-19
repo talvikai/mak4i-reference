@@ -12,8 +12,9 @@ AI clients connect to over HTTPS.
 > control plane), artifacts on a Docker volume, and Caddy for HTTPS.
 > Architecture and production options: [`DEPLOYMENT.md`](DEPLOYMENT.md).
 >
-> Running MAK4I only on your own machine? Use
-> [`LOCAL_SETUP.md`](LOCAL_SETUP.md) instead. Don't use `mak4i init` or
+> Running MAK4I just for yourself, on your own computer? Use
+> [`LOCAL_SETUP.md`](LOCAL_SETUP.md) instead; it also covers claude.ai and
+> ChatGPT through an HTTPS tunnel you set up. Don't use `mak4i init` or
 > `mak4i serve` for Enterprise Self-Hosted.
 
 ## Contents
@@ -923,20 +924,27 @@ docker compose logs migrate           # migration run (exit 0 = success)
 
 ### 11.4 Backup and restore
 
-The dump is written inside the container and copied out with
+The bootstrap's `backup` ([8.3](#83-backup)) does all of this for you,
+consistently. By hand: **stop MAK4I first**, so the database and the
+artifacts are copied from the same moment, and keep it stopped until both
+are copied. `docker compose cp` also works on a stopped container. The
+dump is written inside the container and copied out with
 `docker compose cp`, which avoids shell redirection (which corrupts binary
 files in Windows PowerShell).
 
 ```bash
+docker compose stop mak4i
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/mak4i-control-plane.dump'
 docker compose exec -T postgres sh -c 'pg_restore --list /tmp/mak4i-control-plane.dump > /dev/null && echo dump-ok'
 docker compose cp postgres:/tmp/mak4i-control-plane.dump /srv/mak4i-backups/mak4i-control-plane.dump
 docker compose exec -T postgres rm /tmp/mak4i-control-plane.dump
 docker compose cp mak4i:/data/artifacts /srv/mak4i-backups/mak4i-artifacts-backup
 cp .env /srv/mak4i-backups/mak4i-compose.env && chmod 600 /srv/mak4i-backups/mak4i-compose.env
+docker compose start mak4i
 ```
 
-Keep backups **outside the repository**. A backup is verified when
+If any step fails, start MAK4I again with `docker compose start mak4i`
+and repeat the backup from the beginning. Keep backups **outside the repository**. A backup is verified when
 `dump-ok` was printed and the artifacts copy contains one `org_…`
 directory per organization.
 
