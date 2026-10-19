@@ -71,6 +71,34 @@ Implements the optional MAK-0008 §14 profile `server-change-feed`
 - A refresh token presented with another client's `client_id` now also
   revokes its authorization (MAK-0008 §6.5). Before, it was only refused.
 
+### Documentation
+- `LOCAL_SETUP.md` is rewritten for non-technical readers: what it covers
+  and how each kind of AI app connects come first, then numbered steps
+  with expected output. Claude.ai and ChatGPT can use a Local installation
+  through an HTTPS tunnel or proxy the user sets up; Enterprise
+  Self-Hosted is for a shared, team installation.
+- The documented Claude Code connection works from every project (it only
+  worked inside the repository folder). Local upgrades stop MAK4I before
+  the backup, and the manual Enterprise backup stops MAK4I while copying.
+- `ADMIN_CLI.md`: the two "known gaps" fixed in v2.0.0-rc.1 are removed.
+- Both installation guides say how to find your installed release and the
+  exact upgrade path from every earlier release (Local: directly from any
+  release; Enterprise: directly from `v2.0.0-rc.1`, `v0.1.0-rc.5` and
+  `v0.1.0-rc.6`, through those releases' own guides from earlier ones).
+
+### Added — Windows and one server per installation (#55)
+- **Local runs on Windows.** `LocalJSONStore` used `fcntl` (macOS/Linux
+  only); its per-artifact locks are now OS file locks on every platform
+  (`fcntl` or `msvcrt`), records are UTF-8 everywhere, and Windows file
+  sharing conflicts are retried briefly.
+- **One MAK4I server per installation is enforced.** A server takes an
+  installation lock in its local artifact store before start-up recovery;
+  a second one exits with `another MAK4I server is already running for
+  this installation`, before reading or changing anything. The OS releases
+  the lock when the server exits, even after a crash. CLI commands don't
+  take it. Not applied with `MAK4I_STORE=gcs`.
+- CI runs the Local guide's commands on Linux, macOS and Windows.
+
 ## v2.0.0-rc.1 — Developer Preview (2026-10-14)
 
 Implements the MAK4I protocol v0.2 drafts (talvikai/mak4i-protocol#6):

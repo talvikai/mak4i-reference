@@ -36,11 +36,16 @@ separate "user" or "actor" argument.
 
 | Method | Use it for | What the client stores |
 |---|---|---|
-| **OAuth sign-in** ([Enterprise §7.1](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in); locally [LOCAL_SETUP §5.1](LOCAL_SETUP.md#51-oauth-sign-in-optional-local-http)) | claude.ai, ChatGPT, Claude Code: any client with MCP OAuth | nothing you paste; you sign in once with a one-time code |
+| **OAuth sign-in** ([Enterprise §7.1](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in); locally [LOCAL_SETUP §4](LOCAL_SETUP.md#4-use-mak4i-from-claudeai-or-chatgpt) and [§13](LOCAL_SETUP.md#13-oauth-sign-in-for-apps-on-your-computer)) | claude.ai, ChatGPT, Claude Code: any client with MCP OAuth | nothing you paste; you sign in once with a one-time code |
 | **Credential header** `Authorization: Bearer <token>` | Claude Code, Gemini CLI, scripts: any client that can send a header | the credential issued with `mak4i credential issue` |
 
 OAuth needs the server's OAuth service enabled. Hosted clients (claude.ai,
-ChatGPT) also need a public HTTPS endpoint.
+ChatGPT) also need a public HTTPS endpoint: an Enterprise Self-Hosted
+installation, or a Local installation behind an HTTPS tunnel or proxy you
+set up ([LOCAL_SETUP §4](LOCAL_SETUP.md#4-use-mak4i-from-claudeai-or-chatgpt)).
+On a Local installation, run the `mak4i oauth …` commands below with the
+same `MAK4I_OAUTH_ENABLED=1` and `MAK4I_PUBLIC_ENDPOINT` as the server; a
+Local owner can leave out `--actor`.
 
 **Two things to check first if a connection fails:**
 
