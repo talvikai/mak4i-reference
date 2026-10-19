@@ -86,6 +86,15 @@ Implements the optional MAK-0008 §14 profile `server-change-feed`
   release; Enterprise: directly from `v2.0.0-rc.1`, `v0.1.0-rc.5` and
   `v0.1.0-rc.6`, through those releases' own guides from earlier ones).
 
+### Fixed
+- **Successor ids no longer repeat `-v2`.** Superseding a record whose id
+  has no trailing number gave `x-v2`, then `x-v2-v2`, `x-v2-v2-v2`…
+  (since the first release). The successor now carries the next version:
+  `x` → `x-v2` → `x-v3`. A head named the old way (`x-v2-v2-v2`) gets
+  `x-v5` for version 5.0. Ids ending in a number still count it up
+  (`decision-db-001` → `-002`). Existing ids are never renamed; ids stay
+  server-assigned and opaque (MAK-0008 §10.5).
+
 ### Added — Windows and one server per installation (#55)
 - **Local runs on Windows.** `LocalJSONStore` used `fcntl` (macOS/Linux
   only); its per-artifact locks are now OS file locks on every platform

@@ -353,6 +353,110 @@ def test_successor_id_falls_back_to_v_suffix_when_no_trailing_digits(world):
     assert new.artifact_id == "doc-api-conventions-v2"
 
 
+def _supersede_n_times(engine, principal, project, artifact_id, n):
+    ids = [artifact_id]
+    for i in range(n):
+        new = engine.supersede_artifact(
+            principal=principal, project=project, old_id=ids[-1],
+            content=f"revision {i + 2}", reason=f"update {i + 2}",
+        )
+        ids.append(new.artifact_id)
+    return ids
+
+
+@pytest.mark.parametrize(
+    "artifact_id,artifact_type",
+    [("doc-api-conventions", "documentation_fact"), ("cache-layer", "caching_decision")],
+)
+def test_repeated_supersedes_count_the_v_suffix_up(world, store, artifact_id, artifact_type):
+    """`-vN` follows the version: doc -> doc-v2 -> doc-v3, never doc-v2-v2."""
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    engine.create_artifact(
+        principal=principal, project=project, artifact_id=artifact_id,
+        artifact_type=artifact_type, title="t", content="revision 1",
+    )
+    ids = _supersede_n_times(engine, principal, project, artifact_id, 5)
+    assert ids == [artifact_id] + [f"{artifact_id}-v{n}" for n in range(2, 7)]
+
+    history = engine.get_history(principal=principal, project=project, lineage_id=artifact_id)
+    assert [a.artifact_id for a in history] == ids
+    assert [a.version for a in history] == [f"{n}.0" for n in range(1, 7)]
+    assert all(a.lineage_id == artifact_id for a in history)
+    assert [a.superseded_by for a in history] == ids[1:] + [None]
+
+
+@pytest.mark.parametrize(
+    "artifact_id,artifact_type",
+    [("decision-db-001", "database_decision"), ("decision-cache-007", "caching_decision")],
+)
+def test_numbered_ids_keep_counting_their_number(world, artifact_id, artifact_type):
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    engine.create_artifact(
+        principal=principal, project=project, artifact_id=artifact_id,
+        artifact_type=artifact_type, title="t", content="revision 1",
+    )
+    ids = _supersede_n_times(engine, principal, project, artifact_id, 4)
+    prefix, number = artifact_id.rsplit("-", 1)
+    assert ids == [f"{prefix}-{int(number) + i:03d}" for i in range(5)]
+
+
+@pytest.mark.parametrize("artifact_type", ["documentation_fact", "database_decision"])
+def test_a_legacy_repeated_suffix_head_gets_a_clean_successor(world, store, artifact_type):
+    """Successors named before this rule (`x-v2-v2-v2`) keep their ids; the
+    next one drops the repeated tail and carries the next version."""
+    from datetime import datetime, timezone
+
+    from mak4i.models import Artifact
+
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    org = world["organization_id"]
+    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    chain = ["open-issues", "open-issues-v2", "open-issues-v2-v2", "open-issues-v2-v2-v2"]
+    for version, (artifact_id, successor) in enumerate(zip(chain, chain[1:] + [None]), start=1):
+        store.put_new(Artifact(
+            artifact_id=artifact_id, artifact_type=artifact_type, organization_id=org,
+            project=project, title="t", content=f"revision {version}",
+            status="active" if successor is None else "superseded", version=f"{version}.0",
+            created_by=principal.principal_id, created_at=now, updated_at=now,
+            lineage_id="open-issues", supersedes=chain[version - 2] if version > 1 else None,
+            superseded_by=successor,
+        ))
+    new = engine.supersede_artifact(
+        principal=principal, project=project, old_id="open-issues-v2-v2-v2",
+        content="revision 5", reason="update",
+    )
+    assert new.artifact_id == "open-issues-v5" and new.version == "5.0"
+    history = engine.get_history(principal=principal, project=project, lineage_id="open-issues")
+    assert [a.artifact_id for a in history] == chain + ["open-issues-v5"]  # nothing renamed
+    assert store.get(org, project, "open-issues-v2-v2-v2")[0].superseded_by == "open-issues-v5"
+
+
+@pytest.mark.parametrize("artifact_type", ["documentation_fact", "caching_decision"])
+def test_a_taken_successor_id_is_skipped(world, store, artifact_type):
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    for artifact_id in ("doc", "doc-v3"):  # doc-v3 is an unrelated record
+        engine.create_artifact(
+            principal=principal, project=project, artifact_id=artifact_id,
+            artifact_type=artifact_type, title=artifact_id, content=artifact_id,
+        )
+    ids = _supersede_n_times(engine, principal, project, "doc", 2)
+    assert ids == ["doc", "doc-v2", "doc-v4"]
+    assert store.get(world["organization_id"], project, "doc-v3")[0].content == "doc-v3"  # untouched
+    history = engine.get_history(principal=principal, project=project, lineage_id="doc")
+    assert [a.version for a in history] == ["1.0", "2.0", "3.0"]
+
+
+def test_an_id_that_already_ends_in_v_n_is_never_reused(world):
+    """An original id like `api-v2` (version 1.0): its successor can't be
+    itself, so it takes the next free -vN."""
+    engine, principal, project = world["engine"], world["principal"], world["project"]
+    engine.create_artifact(
+        principal=principal, project=project, artifact_id="api-v2",
+        artifact_type="documentation_fact", title="t", content="revision 1",
+    )
+    assert _supersede_n_times(engine, principal, project, "api-v2", 2) == ["api-v2", "api-v3", "api-v4"]
+
+
 def test_check_integrity_reports_zero_active_lineage(world, store):
     from datetime import datetime, timezone
 
