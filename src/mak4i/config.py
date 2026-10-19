@@ -29,7 +29,9 @@ def build_store_from_env() -> ArtifactStore:
     if backend == "local":
         from mak4i.store.local_json import LocalJSONStore
 
-        store_dir = os.environ.get("MAK4I_LOCAL_STORE_DIR", "artifacts/local")
+        from mak4i.instance_guard import DEFAULT_LOCAL_STORE_DIR
+
+        store_dir = os.environ.get("MAK4I_LOCAL_STORE_DIR", DEFAULT_LOCAL_STORE_DIR)
         return LocalJSONStore(store_dir)
     raise ValueError(f"unknown MAK4I_STORE: {backend!r} (expected 'local' or 'gcs')")
 

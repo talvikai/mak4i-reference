@@ -67,7 +67,8 @@ def _request(url: str, *, method: str = "GET", token: str | None = None, body: d
         data = json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        # Generous: a cold Windows CI runner can take seconds per call.
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, dict(response.headers), response.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers or {}), exc.read().decode()
@@ -122,10 +123,15 @@ def e2e_server(tmp_path):
         }
     )
 
+    # The server's output goes to a file, never an undrained pipe: once a
+    # pipe's buffer fills (it is small on Windows), the server blocks
+    # writing its audit log in the middle of a request.
+    log_path = tmp_path / "server.log"
+    log = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, "-m", "mak4i.mcp_server"],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -140,6 +146,7 @@ def e2e_server(tmp_path):
             "owner": owner,
             "credential_id": credential.credential_id,
             "proc": proc,
+            "log_path": log_path,
         }
     finally:
         proc.terminate()
@@ -148,6 +155,9 @@ def e2e_server(tmp_path):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+        log.close()
+        # Shown by pytest only when the test fails: the server's own log.
+        print(log_path.read_text(encoding="utf-8", errors="replace"))
 
 
 def test_real_streamable_http_process_end_to_end(e2e_server):
@@ -268,5 +278,6 @@ def test_real_streamable_http_process_end_to_end(e2e_server):
     # raw credential (requirements §12)
     proc = e2e_server["proc"]
     proc.terminate()
-    output = proc.communicate(timeout=5)[0] or ""
+    proc.wait(timeout=10)
+    output = e2e_server["log_path"].read_text(encoding="utf-8", errors="replace")
     assert raw_token not in output

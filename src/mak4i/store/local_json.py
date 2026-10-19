@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import os
+import sys
+import time
 from pathlib import Path
 
+from mak4i._filelock import FileLock
 from mak4i.models import Artifact, dump_for_storage
 from mak4i.store._filtering import filter_artifacts
 from mak4i.store.base import (
@@ -32,9 +34,10 @@ class LocalJSONStore:
     monotonically bumped integer that stands in for GCS's object
     generation number, giving the same create-if-absent /
     update-if-unchanged-since-read contract without real GCS credentials.
-    An `fcntl` exclusive lock per artifact serializes the
-    read-check-write sequence so put_new/put_if_match are atomic with
-    respect to concurrent callers on this machine.
+    An exclusive OS file lock per artifact (`mak4i._filelock`: `fcntl` on
+    macOS/Linux, `msvcrt` on Windows) serializes the read-check-write
+    sequence so put_new/put_if_match are atomic with respect to concurrent
+    callers on this machine. Records are UTF-8 on every platform.
     """
 
     def __init__(self, root: Path | str):
@@ -147,7 +150,7 @@ class LocalJSONStore:
             artifact.organization_id, artifact.project, artifact.artifact_id, ".lock"
         )
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        return _FileLock(lock_path)
+        return FileLock(lock_path)
 
     def _read_record(
         self, organization_id: str, project: str, artifact_id: str
@@ -155,7 +158,7 @@ class LocalJSONStore:
         path = self._path(organization_id, project, artifact_id)
         if not path.exists():
             return None
-        record = json.loads(path.read_text())
+        record = json.loads(_read_text(path))
         return Artifact.model_validate(record["artifact"]), record["generation"]
 
     def _write_record(self, artifact: Artifact, generation: int) -> None:
@@ -166,8 +169,8 @@ class LocalJSONStore:
             "generation": generation,
             "artifact": json.loads(dump_for_storage(artifact)),
         }
-        tmp_path.write_text(json.dumps(record, indent=2))
-        os.replace(tmp_path, path)  # atomic within the same filesystem
+        tmp_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        _replace(tmp_path, path)
 
     def _iter_all(
         self, organization_id: str | None = None, project: str | None = None
@@ -184,21 +187,37 @@ class LocalJSONStore:
         for path in sorted(self._root.glob(glob)):
             if path.name.endswith(".json.tmp"):
                 continue
-            record = json.loads(path.read_text())
+            record = json.loads(_read_text(path))
             yield Artifact.model_validate(record["artifact"])
 
 
-class _FileLock:
-    """Exclusive fcntl lock on a sidecar file, held for one store operation."""
+def _read_text(path: Path) -> str:
+    """UTF-8 contents of a record. On Windows, opening a file that a writer
+    is replacing at that instant fails with PermissionError; retry briefly."""
+    if sys.platform != "win32":
+        return path.read_text(encoding="utf-8")
+    for attempt in range(50):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
 
-    def __init__(self, lock_path: Path):
-        self._lock_path = lock_path
-        self._handle = None
 
-    def __enter__(self) -> None:
-        self._handle = open(self._lock_path, "a+")
-        fcntl.flock(self._handle, fcntl.LOCK_EX)
-
-    def __exit__(self, *exc_info) -> None:
-        fcntl.flock(self._handle, fcntl.LOCK_UN)
-        self._handle.close()
+def _replace(source: Path, target: Path) -> None:
+    """`os.replace`, atomic within one filesystem. On Windows it fails with
+    PermissionError while a reader has `target` open (an unlocked `get` or
+    query), so retry briefly there; the reader holds it only to read it."""
+    if sys.platform != "win32":
+        os.replace(source, target)
+        return
+    for attempt in range(50):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
