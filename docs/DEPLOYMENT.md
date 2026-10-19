@@ -6,7 +6,7 @@ guide; installation and operation have exactly two canonical guides:
 
 | Deployment flavor | For | Guide |
 |---|---|---|
-| **Local** | one person on their own computer (macOS, Linux); apps on that computer connect directly, cloud apps such as claude.ai and ChatGPT through an HTTPS tunnel or proxy the user sets up; data stored on that computer | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) |
+| **Local** | one person on their own computer (macOS, Linux, Windows); apps on that computer connect directly, cloud apps such as claude.ai and ChatGPT through an HTTPS tunnel or proxy the user sets up; data stored on that computer | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) |
 | **Enterprise Self-Hosted** | one shared MAK4I for a team, on a Linux VM, with HTTPS built in | [`ENTERPRISE_SELF_HOSTED.md`](ENTERPRISE_SELF_HOSTED.md) |
 
 > **Developer Preview.** `v2.1.0-rc.1` is a release candidate, not a
@@ -157,9 +157,10 @@ on a schedule (`SECURITY.md`).
 
 ### `LocalJSONStore` is single-writer
 
-It serializes writes with per-artifact file locks and atomic renames on a
-local filesystem, which is safe for **exactly one** MCP server process on a
-local disk or block volume. Don't run a second replica against the same
+It serializes writes with per-artifact OS file locks (`fcntl` on
+macOS/Linux, `msvcrt` on Windows) and atomic renames on a local filesystem,
+which is safe for **exactly one** MCP server process on a local disk or
+block volume. Don't run a second replica against the same
 directory, and don't put it on a network filesystem.
 
 ### Replicas
@@ -167,8 +168,13 @@ directory, and don't put it on a network filesystem.
 This release supports **one MAK4I server process per installation**,
 including a Local installation: one `mak4i serve` (stdio or HTTP) per
 `.mak4i/` at a time. Each start-up finishes work a previous process left
-pending, assuming that process has stopped. CLI commands may run
-alongside the one server.
+pending, so the server enforces this with a lock file in its local
+artifact store (`.mak4i-server.lock`), taken before anything is read or
+changed: a second server exits with `another MAK4I server is already
+running for this installation`. The OS releases the lock when the process
+exits, even after a crash. CLI commands don't take it and may run alongside
+the one server. With `MAK4I_STORE=gcs` there's no local lock; running one
+instance is the platform's job.
 Besides `LocalJSONStore`, three pieces of state are per process: the OAuth
 rate limiter, the MCP session-to-principal binding, and in-flight
 streamable-HTTP sessions. Durable state (identities, OAuth, conflict

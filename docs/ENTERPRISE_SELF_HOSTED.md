@@ -674,20 +674,40 @@ is logged.
 
 ## 9. Upgrade
 
-Supported paths to `v2.1.0-rc.1`; every one preserves all data:
+**First, find the release you're on.** From the checkout directory:
 
-| Installed release | Migrations applied | What changes |
+```bash
+./deploy/bootstrap/mak4i-enterprise status     # "Configured release:" and "Running version:"
+git describe --tags --always                    # the checkout's release, for any installation
+```
+
+An installation made by hand (the guides of `v0.1.0-rc.1` to `v0.1.0-rc.3`,
+before the bootstrap existed) has no bootstrap `status`; use
+`git describe --tags --always`, or
+`docker compose exec mak4i mak4i --version` (`mak4i 0.1.0rc3` means
+`v0.1.0-rc.3`; the first two releases print `0.1.0`).
+
+**Then follow the row for that release.** Every path preserves all data:
+
+| Installed release | Path to `v2.1.0-rc.1` | What changes |
 |---|---|---|
-| `v2.0.0-rc.1` | `0006`, `0007` | [9.1](#91-from-v200-rc1) |
-| `v0.1.0-rc.5` or `v0.1.0-rc.6` | `0002`–`0007`, in one step | [9.2](#92-from-v010-rc5-or-rc6) |
+| `v2.0.0-rc.1` | **directly**, with the steps below | [9.1](#91-from-v200-rc1) |
+| `v0.1.0-rc.5` or `v0.1.0-rc.6` | **directly**, with the steps below (migrations `0002`–`0007` in one step) | [9.2](#92-from-v010-rc5-or-rc6) |
+| `v0.1.0-rc.4` | 1. to `v0.1.0-rc.5` with [that release's guide](https://github.com/talvikai/mak4i-reference/blob/v0.1.0-rc.5/docs/ENTERPRISE_SELF_HOSTED.md#9-upgrade-from-v010-rc4); 2. then directly, as for `v0.1.0-rc.5` | [9.2](#92-from-v010-rc5-or-rc6) |
+| `v0.1.0-rc.3` (made by hand) | 1. to `v0.1.0-rc.4` with [its guide](https://github.com/talvikai/mak4i-reference/blob/v0.1.0-rc.4/docs/ENTERPRISE_SELF_HOSTED.md#9-upgrade-from-v010-rc3), whose bootstrap takes over a hand-made installation; 2. to `v0.1.0-rc.5` ([guide](https://github.com/talvikai/mak4i-reference/blob/v0.1.0-rc.5/docs/ENTERPRISE_SELF_HOSTED.md#9-upgrade-from-v010-rc4)); 3. then directly | [9.2](#92-from-v010-rc5-or-rc6) |
+| `v0.1.0-rc.1` or `v0.1.0-rc.2` (made by hand) | 1. to `v0.1.0-rc.3` with [its guide](https://github.com/talvikai/mak4i-reference/blob/v0.1.0-rc.3/docs/ENTERPRISE_SELF_HOSTED.md#upgrades) (switch the checkout and rebuild); 2. then as for `v0.1.0-rc.3` | [9.2](#92-from-v010-rc5-or-rc6) |
+
+Each bootstrap accepts only the releases named in its own guide, and
+refuses any other path with `upgrading from … isn't supported`, before it
+changes anything. The in-between steps use those releases' own guides and
+bootstraps, not this one; back up before each.
 
 Every migration only adds tables and columns, and they always run in
-order, so a v0.1 installation upgrades directly; there's no need to install
-v2.0.0-rc.1 first. An installation on an earlier release upgrades to
-`v0.1.0-rc.6` first, following that release's guide.
+order, so a `v0.1.0-rc.5`/`rc.6` installation goes directly to this release;
+there's no need to install v2.0.0-rc.1 first.
 
-The steps are the same for every path. Read the section for your release
-first.
+The steps are the same for every direct path. Read the section for your
+release first.
 
 ```bash
 ./deploy/bootstrap/mak4i-enterprise backup --backup-dir /srv/mak4i-backups   # optional extra copy

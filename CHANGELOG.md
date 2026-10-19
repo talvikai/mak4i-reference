@@ -81,12 +81,23 @@ Implements the optional MAK-0008 §14 profile `server-change-feed`
   worked inside the repository folder). Local upgrades stop MAK4I before
   the backup, and the manual Enterprise backup stops MAK4I while copying.
 - `ADMIN_CLI.md`: the two "known gaps" fixed in v2.0.0-rc.1 are removed.
+- Both installation guides say how to find your installed release and the
+  exact upgrade path from every earlier release (Local: directly from any
+  release; Enterprise: directly from `v2.0.0-rc.1`, `v0.1.0-rc.5` and
+  `v0.1.0-rc.6`, through those releases' own guides from earlier ones).
 
-### Known limitations
-- **Local isn't supported on Windows:** `LocalJSONStore` uses `fcntl`,
-  which Windows doesn't have.
-- **One MAK4I server process per installation**, Local included: don't
-  run two `mak4i serve` processes against the same `.mak4i/` at once.
+### Added — Windows and one server per installation (#55)
+- **Local runs on Windows.** `LocalJSONStore` used `fcntl` (macOS/Linux
+  only); its per-artifact locks are now OS file locks on every platform
+  (`fcntl` or `msvcrt`), records are UTF-8 everywhere, and Windows file
+  sharing conflicts are retried briefly.
+- **One MAK4I server per installation is enforced.** A server takes an
+  installation lock in its local artifact store before start-up recovery;
+  a second one exits with `another MAK4I server is already running for
+  this installation`, before reading or changing anything. The OS releases
+  the lock when the server exits, even after a crash. CLI commands don't
+  take it. Not applied with `MAK4I_STORE=gcs`.
+- CI runs the Local guide's commands on Linux, macOS and Windows.
 
 ## v2.0.0-rc.1 — Developer Preview (2026-10-14)
 

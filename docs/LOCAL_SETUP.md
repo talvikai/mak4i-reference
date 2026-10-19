@@ -16,10 +16,8 @@ connect your AI apps to it, check that it works, and keep it up to date.
   When an AI app reads from MAK4I, what it reads is sent to that app, and
   to its provider if the app runs in the cloud. If you use a tunnel, your
   MAK4I traffic also passes through the tunnel provider.
-- **Systems:** macOS and Linux. **Windows isn't supported yet**: one of
-  MAK4I's storage components uses a feature that only macOS and Linux
-  have, so MAK4I can't start on Windows. Running the Linux steps inside
-  WSL (Windows Subsystem for Linux) may work but hasn't been tested.
+- **Systems:** macOS, Linux and Windows. Every step has commands for
+  macOS and Linux, and for Windows PowerShell.
 
 **Running MAK4I for a team?** The
 [Enterprise Self-Hosted guide](ENTERPRISE_SELF_HOSTED.md) installs one
@@ -31,9 +29,10 @@ need it for yourself, including for claude.ai or ChatGPT.
 Read this before you install anything.
 
 **One MAK4I at a time.** Only one copy of MAK4I may run on an
-installation at any moment. Running two at once (for example, two Claude
-Code windows that each start their own MAK4I) isn't supported. So there
-are two ways to run it:
+installation at any moment. A second copy refuses to start, with the
+message `another MAK4I server is already running for this installation`
+(for example, when two Claude Code windows each try to start their own
+MAK4I). So there are two ways to run it:
 
 | | **The MAK4I server** (recommended) | **Started by Claude Code** |
 |---|---|---|
@@ -110,21 +109,32 @@ other sections first.
 
 # Part 1: Everyday use
 
-**The commands are for macOS and Linux.** Type them into a terminal
-window, exactly as shown.
+**Commands for your system.** Where the commands differ, each step has a
+box for **macOS and Linux** and a box for **Windows** (PowerShell). Copy
+the box for your system only, exactly as shown. The Windows commands for
+installing, connecting, sign-in, backup and undo are run automatically on
+Windows on every change to MAK4I; the uninstall commands aren't.
 
 **Always start in the MAK4I folder.** MAK4I keeps its data in the folder you
 install it into. Whenever you open a new terminal window to run a MAK4I
 command, go to that folder first:
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
+```
+
+Windows:
+
+```powershell
+Set-Location ~\mak4i-reference
 ```
 
 ## 1. Before you start
 
 You need:
-- a computer with macOS or Linux;
+- a computer with macOS, Linux or Windows 10/11;
 - an internet connection;
 - about 300 MB of free disk space;
 - the AI app you want to use, for example
@@ -137,6 +147,7 @@ itself.
 ### Step 1: Open a terminal
 
 - **macOS:** press Cmd+Space, type `Terminal`, press Enter.
+- **Windows:** press the Windows key, type `PowerShell`, press Enter.
 - **Linux:** open your Terminal app.
 
 ### Step 2: Check for Git, and install it if needed
@@ -154,6 +165,9 @@ If you see "command not found":
 - **macOS:** a window offers to install the "command line developer
   tools". Click **Install**, wait until it finishes, then run
   `git --version` again.
+- **Windows:** download Git from <https://git-scm.com/download/win>, run the
+  installer with the default options, then close PowerShell and open it
+  again.
 - **Linux (Debian or Ubuntu):** run `sudo apt install git`.
 
 ### Step 3: Check for uv, and install it if needed
@@ -167,10 +181,19 @@ uv --version
 **You should see** a line starting with `uv`, which means uv is installed.
 If a later step fails with a uv error, update it with `uv self update`.
 
-If you see "command not found", install uv:
+If you see "command not found" (or a message that uv isn't recognized),
+install uv:
+
+macOS and Linux:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 Then **close the terminal and open a new one**, and run `uv --version`
@@ -183,11 +206,21 @@ again. (More options: [uv installation](https://docs.astral.sh/uv/getting-starte
 MAK4I is installed in a folder named `mak4i-reference` inside your home
 folder.
 
+macOS and Linux:
+
 ```bash
 cd ~
 ```
 
+Windows:
+
+```powershell
+Set-Location ~
+```
+
 ### Step 2: Download MAK4I
+
+The command is the same on every system:
 
 ```bash
 git clone --branch v2.1.0-rc.1 --depth 1 https://github.com/talvikai/mak4i-reference.git
@@ -199,8 +232,17 @@ commit". Both are normal.
 
 ### Step 3: Install it
 
+macOS and Linux:
+
 ```bash
 cd mak4i-reference
+uv sync --no-editable
+```
+
+Windows:
+
+```powershell
+Set-Location mak4i-reference
 uv sync --no-editable
 ```
 
@@ -213,16 +255,32 @@ of package names, each starting with `+`.
 
 ### Step 4: Check the installation
 
+macOS and Linux:
+
 ```bash
 .venv/bin/mak4i --version
+```
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mak4i.exe --version
 ```
 
 **You should see** `mak4i 2.1.0rc1`.
 
 ### Step 5: Create your organization and first project
 
+macOS and Linux:
+
 ```bash
 .venv/bin/mak4i init
+```
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mak4i.exe init
 ```
 
 It asks four questions:
@@ -252,9 +310,18 @@ Next: [3. Start MAK4I and connect your AI app](#3-start-mak4i-and-connect-your-a
 
 Open a terminal window, go to the MAK4I folder, and start MAK4I:
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
 .venv/bin/mak4i serve --transport http
+```
+
+Windows:
+
+```powershell
+Set-Location ~\mak4i-reference
+.\.venv\Scripts\mak4i.exe serve --transport http
 ```
 
 **You should see**, ending with:
@@ -269,16 +336,27 @@ MCP server ready.
 terminal window for the next steps. To stop MAK4I, press Ctrl+C in this
 window.
 
-MAK4I listens only on this computer: other computers can't reach it.
+MAK4I listens only on this computer: other computers can't reach it. If
+you see `another MAK4I server is already running for this installation`
+instead, MAK4I is already running: use that one.
 
 ### 3.2 Connect Claude Code
 
 This makes MAK4I available in **all** your Claude Code projects and
 windows. In a new terminal window:
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
 claude mcp add --transport http -s user mak4i http://127.0.0.1:9090/mcp --header "Authorization: Bearer $(.venv/bin/python -c 'import json; print(json.load(open(".mak4i/credentials.json"))["token"])')"
+```
+
+Windows:
+
+```powershell
+Set-Location ~\mak4i-reference
+claude mcp add --transport http -s user mak4i http://127.0.0.1:9090/mcp --header "Authorization: Bearer $((Get-Content .mak4i\credentials.json | ConvertFrom-Json).token)"
 ```
 
 This reads your private access key from `.mak4i/` and saves it in Claude
@@ -319,18 +397,28 @@ If you use MAK4I **only from Claude Code, and only in one Claude Code
 window at a time**, Claude Code can start MAK4I by itself. You then don't
 need the MAK4I server from 3.1. Don't use both at once.
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
 claude mcp add -s user mak4i -- sh -c "cd \"$PWD\" && exec .venv/bin/mak4i serve"
 ```
 
+Windows:
+
+```powershell
+Set-Location ~\mak4i-reference
+claude mcp add -s user mak4i -- cmd /c "cd /d `"$PWD`" && .venv\Scripts\mak4i.exe serve"
+```
+
 **You should see** `Added stdio MCP server mak4i … to user config`, and
 `claude mcp get mak4i` shows `Status: ✔ Connected`.
 
-With this setup, quit Claude Code before you open a second Claude Code
-window that uses MAK4I, or before you start the MAK4I server. Each Claude
-Code window starts its own copy of MAK4I, and two copies at once aren't
-supported. If you move or rename the `mak4i-reference` folder, run the
+With this setup, each Claude Code window starts its own copy of MAK4I, and
+only one copy can run: a second Claude Code window shows MAK4I as failed
+to connect, and the MAK4I server (3.1) refuses to start while Claude Code
+runs MAK4I. Quit the first Claude Code window first, or use the MAK4I
+server (3.1) instead. If you move or rename the `mak4i-reference` folder, run the
 command again from the new location.
 
 ## 4. Use MAK4I from claude.ai or ChatGPT
@@ -387,13 +475,24 @@ documentation and the requirements in 4.1.
 **Step 2: Restart MAK4I with sign-in turned on.** In the window where the
 MAK4I server runs, press Ctrl+C, then start it again with your address:
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
 MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp .venv/bin/mak4i serve --transport http
 ```
 
-Use this command, with these two settings, every time you start the MAK4I
-server from now on.
+Windows (the two `$env:` settings last until you close this PowerShell
+window):
+
+```powershell
+Set-Location ~\mak4i-reference
+$env:MAK4I_OAUTH_ENABLED = "1"
+$env:MAK4I_PUBLIC_ENDPOINT = "https://mak4i.example.com/mcp"
+.\.venv\Scripts\mak4i.exe serve --transport http
+```
+
+Use these two settings every time you start the MAK4I server from now on.
 
 **Step 3: Check your public address.** In a web browser, open
 `https://mak4i.example.com/.well-known/oauth-protected-resource/mcp`.
@@ -403,22 +502,27 @@ server from now on.
 the tunnel against 4.1.
 
 **Step 4: Register the app.** Open a **new** terminal window. Every MAK4I
-sign-in command needs the same two settings as the server, so they're part
-of each command below.
+sign-in command needs the same two settings as the server.
 
-For claude.ai:
+macOS and Linux (the settings are part of each command):
 
 ```bash
 cd ~/mak4i-reference
 MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp .venv/bin/mak4i oauth client register --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback
-```
-
-For ChatGPT:
-
-```bash
-cd ~/mak4i-reference
 MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp .venv/bin/mak4i oauth client register --name "ChatGPT" --redirect-uri https://chatgpt.com/connector_platform_oauth_redirect
 ```
+
+Windows (set them once in this new PowerShell window):
+
+```powershell
+Set-Location ~\mak4i-reference
+$env:MAK4I_OAUTH_ENABLED = "1"
+$env:MAK4I_PUBLIC_ENDPOINT = "https://mak4i.example.com/mcp"
+.\.venv\Scripts\mak4i.exe oauth client register --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback
+.\.venv\Scripts\mak4i.exe oauth client register --name "ChatGPT" --redirect-uri https://chatgpt.com/connector_platform_oauth_redirect
+```
+
+Run only the line for the app you use (claude.ai, ChatGPT, or both).
 
 **You should see** `OAuth client registered.` and a `client_id:` starting
 with `mak4c_`. Keep it for the next step.
@@ -432,9 +536,17 @@ for each app:
 **Step 6: Sign in.** The app opens a MAK4I sign-in page that asks for a
 sign-in code. In the terminal window from Step 4, run:
 
+macOS and Linux:
+
 ```bash
 cd ~/mak4i-reference
 MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp .venv/bin/mak4i oauth sign-in-code
+```
+
+Windows (in the window from Step 4, where the two settings are set):
+
+```powershell
+.\.venv\Scripts\mak4i.exe oauth sign-in-code
 ```
 
 **You should see** `Sign-in code created.` and a `sign-in code:` line.
@@ -519,21 +631,48 @@ Upgrading keeps your data and your app connections. You need the version
 number of the new release, for example `v2.1.0-rc.1`; the current one is
 shown at the top of [`README.md`](../README.md).
 
+**Which releases can upgrade?** Every Local release, from `v0.1.0-rc.1`
+on, upgrades **directly** to the new one with the steps below: there are
+no in-between versions to install. MAK4I updates its data by itself the
+first time the new version runs. (Tested from `v0.1.0-rc.1`,
+`v0.1.0-rc.4` and `v2.0.0-rc.1`.)
+
 ### Step 1: Go to the MAK4I folder
+
+macOS and Linux:
 
 ```bash
 cd ~/mak4i-reference
 ```
 
-### Step 2: Write down your current version
+Windows:
 
-```bash
-git describe --tags
+```powershell
+Set-Location ~\mak4i-reference
 ```
 
-**You should see** your current version, for example `v2.0.0-rc.1`. Write
-it down: you need it if you ever want to go back
-([undo the upgrade](#undo-the-upgrade)).
+### Step 2: Find your current version
+
+The command is the same on every system:
+
+```bash
+git describe --tags --always
+```
+
+**Write down what it prints**: you need it if you ever want to go back
+([undo the upgrade](#undo-the-upgrade)). What it means:
+
+| It prints | You're on |
+|---|---|
+| a version, for example `v2.0.0-rc.1` | that release |
+| a version with more after it, for example `v2.0.0-rc.1-12-g1a2b3c4` | a development version 12 changes after that release |
+| only letters and numbers, for example `1a2b3c4` | a development version (you downloaded MAK4I without a version tag) |
+
+To see the version MAK4I itself reports, run `.venv/bin/mak4i --version`
+(Windows: `.\.venv\Scripts\mak4i.exe --version`). `mak4i 2.0.0rc1` means
+`v2.0.0-rc.1`, and `mak4i 0.1.0rc4` means `v0.1.0-rc.4`. The first two
+releases print `0.1.0` or don't know `--version` at all. Every case
+upgrades the same way.
 
 ### Step 3: Stop MAK4I and close your AI apps
 
@@ -544,9 +683,18 @@ Nothing may change MAK4I's data while you copy it.
 
 ### Step 4: Make a backup
 
+macOS and Linux:
+
 ```bash
 cp -R .mak4i ~/mak4i-backup-$(date +%Y-%m-%d-%H%M)
 ls ~/mak4i-backup-*
+```
+
+Windows:
+
+```powershell
+Copy-Item -Recurse .\.mak4i "$HOME\mak4i-backup-$(Get-Date -Format yyyy-MM-dd-HHmm)"
+Get-ChildItem "$HOME\mak4i-backup-*"
 ```
 
 **You should see** `artifacts`, `config.json`, `control-plane.db` and
@@ -557,7 +705,8 @@ contains your private access key: keep it private.
 
 ### Step 5: Download the new version
 
-Replace `v2.1.0-rc.1` with the new version number if it's different.
+Replace `v2.1.0-rc.1` with the new version number if it's different. The
+commands are the same on every system:
 
 ```bash
 git fetch --depth 1 origin tag v2.1.0-rc.1
@@ -578,8 +727,16 @@ uv sync --no-editable
 
 ### Step 7: Start MAK4I and check
 
+macOS and Linux:
+
 ```bash
 .venv/bin/mak4i --version
+```
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mak4i.exe --version
 ```
 
 **You should see** the new version, for example `mak4i 2.1.0rc1`. Then
@@ -602,6 +759,8 @@ one folder (`claude mcp add mak4i -- mak4i serve`), connect it again with
 - An owner can limit what each AI app may do on a project (client
   policies). Nothing changes until you set one: see
   [ADMIN_CLI.md](ADMIN_CLI.md#client-policies-client-scoped-access-mak-0006-57).
+- MAK4I runs on Windows, and refuses to start a second copy on the same
+  installation.
 
 Full list: [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -615,19 +774,34 @@ in MAK4I after the upgrade is lost.
 3. Put the current data aside and restore your backup. Replace
    `mak4i-backup-<date>` with your backup's folder name:
 
+   macOS and Linux:
+
    ```bash
    mv .mak4i ~/mak4i-after-upgrade-$(date +%Y-%m-%d-%H%M)
    cp -R ~/mak4i-backup-<date> .mak4i
    ```
 
-4. Go back to the version you wrote down in Step 2 (replace
-   `<old-version>`, for example with `v2.0.0-rc.1`), and install it:
+   Windows:
+
+   ```powershell
+   Move-Item .\.mak4i "$HOME\mak4i-after-upgrade-$(Get-Date -Format yyyy-MM-dd-HHmm)"
+   Copy-Item -Recurse "$HOME\mak4i-backup-<date>" .\.mak4i
+   ```
+
+4. Go back to what you wrote down in Step 2 (replace `<old-version>`, for
+   example with `v2.0.0-rc.1`), and install it. The commands are the same
+   on every system:
 
    ```bash
    git fetch --depth 1 origin tag <old-version>
    git checkout <old-version>
    uv sync --no-editable
    ```
+
+   If what you wrote down isn't a version (for example `1a2b3c4`, or
+   `v2.0.0-rc.1-12-g1a2b3c4`), leave out the `git fetch` line and use
+   `git checkout <what you wrote down>`; for the longer form, use the part
+   after `-g` (`1a2b3c4`).
 
 5. Check it as in Step 7. You should see your old version.
 
@@ -652,13 +826,16 @@ private.
 
 | What you see | What to do |
 |---|---|
-| `command not found: mak4i` | Go to the MAK4I folder, then use `.venv/bin/mak4i` instead of `mak4i`. |
+| `command not found: mak4i`, or `mak4i` isn't recognized | Go to the MAK4I folder, then use `.venv/bin/mak4i` (Windows: `.\.venv\Scripts\mak4i.exe`) instead of `mak4i`. |
 | `command not found: uv` right after installing uv | Close the terminal and open a new one. |
-| `fatal: not a git repository` | You're not in the MAK4I folder. Run `cd ~/mak4i-reference`. |
+| `fatal: not a git repository` | You're not in the MAK4I folder. Run `cd ~/mak4i-reference` (Windows: `Set-Location ~\mak4i-reference`). |
+| `uv sync` reports files in use (Windows) | Stop MAK4I, quit every AI app that uses it and close other terminal windows, then run it again. |
 | "MAK4I has not been initialized locally." | You're not in the MAK4I folder, or you haven't done [2. Install, Step 5](#step-5-create-your-organization-and-first-project) yet. |
 | `claude mcp get mak4i` shows `✘ Failed to connect` | Start the MAK4I server (3.1) and try again. If it still fails, remove the connection with `claude mcp remove -s user mak4i` and redo [3.2](#32-connect-claude-code). |
 | Claude Code finds MAK4I in one folder but not in another | MAK4I was connected with an older command that works in one folder only. Redo [3.2](#32-connect-claude-code). |
 | `ERROR: MAK4I could not start. 127.0.0.1:9090 is already in use.` | MAK4I (or another program) is already running on that port. Use the MAK4I that's already running, or stop it first. |
+| `MAK4I could not start: another MAK4I server is already running for this installation` | Only one copy of MAK4I can run. Use the one that's running, or stop it first: press Ctrl+C in the MAK4I server window, or quit the Claude Code window that started MAK4I (3.4). |
+| A second Claude Code window shows MAK4I as failed to connect | With the alternative in 3.4, only one Claude Code window can use MAK4I at a time. Use the MAK4I server (3.1, 3.2) for several windows. |
 | claude.ai or ChatGPT can't connect | Check the address ends in `/mcp`, the MAK4I server and your tunnel are running, and your tunnel meets [4.1](#41-what-your-tunnel-or-proxy-must-do). |
 | `421 Invalid Host header` through a tunnel | Your tunnel doesn't rewrite the Host header ([4.1](#41-what-your-tunnel-or-proxy-must-do), item 2). |
 | claude.ai or ChatGPT worked, then stopped after the tunnel restarted | The address changed: [4.3](#43-if-your-public-address-changes). |
@@ -677,7 +854,8 @@ private.
 
 ## 10. Uninstall
 
-Pick what you need. Stop MAK4I and close your AI apps first.
+Pick what you need. Stop MAK4I and close your AI apps first. (The Windows
+commands in this section aren't run in MAK4I's automatic Windows checks.)
 
 | Operation | Deletes | Keeps |
 |---|---|---|
@@ -710,8 +888,17 @@ added with. claude.ai and Cowork: remove the connector in
 
 Keeps all your data. From the MAK4I folder:
 
+macOS and Linux:
+
 ```bash
 rm -rf .venv
+uv sync --no-editable
+```
+
+Windows:
+
+```powershell
+Remove-Item -Recurse -Force .\.venv
 uv sync --no-editable
 ```
 
@@ -723,9 +910,18 @@ uv sync --no-editable
 
 From the MAK4I folder:
 
+macOS and Linux:
+
 ```bash
 rm -rf .mak4i
 .venv/bin/mak4i init
+```
+
+Windows:
+
+```powershell
+Remove-Item -Recurse -Force .\.mak4i
+.\.venv\Scripts\mak4i.exe init
 ```
 
 `init` creates a new, empty organization and project with a new access
@@ -741,9 +937,18 @@ Step 4.
 > **your MAK4I data**. Make a backup first to keep the data, and disconnect
 > your AI apps first ([10.1](#101-disconnect-your-ai-apps)).
 
+macOS and Linux:
+
 ```bash
 cd ~
 rm -rf mak4i-reference
+```
+
+Windows (close every window using the folder first):
+
+```powershell
+Set-Location ~
+Remove-Item -Recurse -Force .\mak4i-reference
 ```
 
 ---
@@ -758,7 +963,7 @@ and activate the environment in each new terminal:
 
 ```bash
 uv sync --extra dev --no-editable
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 uv run --no-sync pytest            # optional: all green; the GCS integration tests skip by design
 ```
 
@@ -783,12 +988,15 @@ project, credential and stored context. `mak4i serve` uses the `.mak4i/`
 in its current directory (or `$MAK4I_HOME`), so run it from the repository
 directory.
 
-**One server process per installation.** Run only one `mak4i serve` (stdio
-or HTTP) against a `.mak4i/` at a time ([DEPLOYMENT.md → Replicas](DEPLOYMENT.md#replicas)).
-Every `serve` start-up finishes work a previous process left pending,
-assuming that process has stopped; a second live process breaks that
-assumption. CLI commands such as `mak4i create` may run alongside the one
-server.
+**One server process per installation.** Only one `mak4i serve` (stdio or
+HTTP) runs against a `.mak4i/` at a time ([DEPLOYMENT.md → Replicas](DEPLOYMENT.md#replicas)).
+Every `serve` start-up finishes work a previous process left pending, so
+before it reads or changes anything it takes an OS file lock
+(`.mak4i/artifacts/.mak4i-server.lock`). A second server exits with code 2
+and `MAK4I could not start: another MAK4I server is already running for
+this installation`. The OS releases the lock when the server exits, even
+after a crash. CLI commands such as `mak4i create` don't take it and may
+run alongside the one server.
 
 | You're connecting | Mode | Command |
 |---|---|---|

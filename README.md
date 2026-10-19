@@ -37,7 +37,7 @@ with the local code instead of silently picking a side.
 
 | Flavor | Who it's for | What you run | Guide |
 |---|---|---|---|
-| **Local** | Anyone using MAK4I on their own computer (macOS, Linux). | MAK4I on that computer. AI apps on the computer connect directly; cloud apps such as claude.ai and ChatGPT connect through an HTTPS tunnel or proxy you set up. Your MAK4I data is stored in the installation's `.mak4i/` directory; what an AI app reads is sent to that app. | [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) |
+| **Local** | Anyone using MAK4I on their own computer (macOS, Linux, Windows). | MAK4I on that computer. AI apps on the computer connect directly; cloud apps such as claude.ai and ChatGPT connect through an HTTPS tunnel or proxy you set up. Your MAK4I data is stored in the installation's `.mak4i/` directory; what an AI app reads is sent to that app. | [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) |
 | **Enterprise Self-Hosted** | Cloud administrators, platform engineers, DevOps and SRE running one shared MAK4I for a team, used from AI apps such as claude.ai, ChatGPT, Claude Code and Gemini. | One Linux VM with Docker Compose: PostgreSQL, the MCP server and automatic HTTPS, installed and operated with a bootstrap command. | [`docs/ENTERPRISE_SELF_HOSTED.md`](docs/ENTERPRISE_SELF_HOSTED.md) |
 
 Each guide is the single, complete source for its flavor: requirements,
