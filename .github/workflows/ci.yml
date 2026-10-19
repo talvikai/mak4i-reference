@@ -33,6 +33,7 @@ jobs:
     # Code connection commands in an isolated Claude Code configuration,
     # then the store, one-server-guard and Local start-up tests.
     name: local (${{ matrix.os }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

@@ -138,7 +138,10 @@ def installation(tmp_path):
 
 
 def _start_server(inst) -> tuple[subprocess.Popen, int]:
+    """A real server; its output goes to a file (an undrained pipe can fill
+    and block the server)."""
     port = _free_port()
+    log_path = inst["store_dir"].parent / f"server-{port}.log"
     proc = subprocess.Popen(
         [sys.executable, "-m", "mak4i.mcp_server"],
         env=_env(
@@ -146,8 +149,9 @@ def _start_server(inst) -> tuple[subprocess.Popen, int]:
             MAK4I_STORE="local", MAK4I_LOCAL_STORE_DIR=str(inst["store_dir"]),
             MAK4I_CONTROL_PLANE_DB=inst["db_url"],
         ),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=open(log_path, "w", encoding="utf-8"), stderr=subprocess.STDOUT, text=True,
     )
+    proc.log_path = log_path
     return proc, port
 
 
@@ -155,13 +159,17 @@ def _wait_ready(proc: subprocess.Popen, port: int, timeout: float = 30.0) -> Non
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise AssertionError(f"server exited early ({proc.returncode}): {proc.stdout.read()}")
+            raise AssertionError(f"server exited early ({proc.returncode}): {_output(proc)}")
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=0.5)
             return
         except Exception:  # noqa: BLE001 - readiness poll
             time.sleep(0.1)
     raise TimeoutError("server never became ready")
+
+
+def _output(proc: subprocess.Popen) -> str:
+    return proc.log_path.read_text(encoding="utf-8", errors="replace")
 
 
 def _stop(proc: subprocess.Popen, *, abrupt: bool) -> None:
@@ -209,7 +217,7 @@ def test_second_server_is_refused_before_recovery_and_restart_recovers(installat
 
         second, _ = _start_server(installation)
         second.wait(timeout=30)
-        output = second.stdout.read()
+        output = _output(second)
         assert second.returncode == 2, output
         assert "another MAK4I server is already running for this installation" in output
         # Refused before its start-up recovery: the live server's in-flight

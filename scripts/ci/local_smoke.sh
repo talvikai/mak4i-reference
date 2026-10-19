@@ -58,4 +58,31 @@ server=$!
 wait_ready
 kill "$server"; wait "$server" 2>/dev/null || true
 
+echo "== sign-in turned on (4.2): server and oauth commands with the same two settings"
+oauth=(MAK4I_OAUTH_ENABLED=1 MAK4I_PUBLIC_ENDPOINT=https://mak4i.example.com/mcp)
+env "${oauth[@]}" .venv/bin/mak4i serve --transport http >server.log 2>&1 &
+server=$!
+wait_ready
+curl -fsS -H 'Host: 127.0.0.1:9090' "$base/.well-known/oauth-protected-resource/mcp" | grep -q '"resource":"https://mak4i.example.com/mcp"' || fail discovery
+env "${oauth[@]}" .venv/bin/mak4i oauth client register --name "Claude (claude.ai)" --redirect-uri https://claude.ai/api/mcp/auth_callback 2>/dev/null | grep -q 'client_id: mak4c_' || fail "client register"
+env "${oauth[@]}" .venv/bin/mak4i oauth sign-in-code 2>/dev/null | grep -q 'Sign-in code created' || fail sign-in-code
+kill "$server"; wait "$server" 2>/dev/null || true
+out=$(.venv/bin/mak4i oauth sign-in-code 2>&1 || true)
+grep -q 'OAuth is not enabled' <<<"$out" || fail "sign-in-code without the settings should fail"
+
+echo "== back up (7, Step 4) and undo (restore the backup)"
+backup=~/mak4i-backup-$(date +%Y-%m-%d-%H%M)
+cp -R .mak4i "$backup"
+ls "$backup" | grep -q control-plane.db || fail "backup contents"
+mv .mak4i ~/mak4i-after-upgrade-$(date +%Y-%m-%d-%H%M)
+cp -R "$backup" .mak4i
+.venv/bin/mak4i serve --transport http >server.log 2>&1 &
+server=$!
+wait_ready
+mcp "" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' >/dev/null
+session=$(tr -d '\r' <headers.txt | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+mcp "$session" '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
+mcp "$session" '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"mak4i_get_current","arguments":{"project":"'"$project"'"}}}' | grep -q PostgreSQL || fail "restored data"
+kill "$server"; wait "$server" 2>/dev/null || true
+
 echo "OK: Local smoke test passed"
