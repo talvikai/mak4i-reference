@@ -24,3 +24,14 @@ def _cli_audit_log_discarded(monkeypatch):
         if handler not in before:
             logger.removeHandler(handler)
             handler.close()
+
+
+@pytest.fixture(autouse=True)
+def _instance_guard_released():
+    """A server started in-process (`mcp_server.main`) holds its
+    installation lock for the rest of the process (mak4i.instance_guard).
+    Give it up after each test so tests stay independent."""
+    yield
+    from mak4i import instance_guard
+
+    instance_guard.release()

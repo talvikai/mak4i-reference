@@ -1412,6 +1412,24 @@ def main(*, on_http_started: Callable[[], None] | None = None) -> None:
         raise SystemExit(2) from exc
     configure_audit_logging(settings.logging.level)
 
+    # One server per installation (DEPLOYMENT.md → Replicas): take the
+    # installation lock before anything below reads or changes state, so a
+    # second server never runs start-up recovery over a live one's work.
+    from mak4i import instance_guard
+
+    lock_path = instance_guard.lock_path_from_env()
+    if lock_path is not None:
+        try:
+            instance_guard.acquire(lock_path)
+        except instance_guard.AlreadyRunningError as exc:
+            print(
+                "MAK4I could not start: another MAK4I server is already running for this "
+                f"installation (lock: {exc.lock_path}). Only one may run at a time: connect "
+                "your AI apps to the running server, or stop it first.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+
     store = build_store_from_env()
     control_plane = build_control_plane_from_env()
     audit = AuditLogger()

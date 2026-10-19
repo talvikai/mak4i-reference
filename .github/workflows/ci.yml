@@ -27,6 +27,47 @@ jobs:
       - name: Release consistency
         run: uv run --no-sync python scripts/check_release_consistency.py --report
 
+  local:
+    # Local MAK4I on each operating system: the guide's own commands
+    # (docs/LOCAL_SETUP.md Part 1, via scripts/ci/local_smoke.*), the Claude
+    # Code connection commands in an isolated Claude Code configuration,
+    # then the store, one-server-guard and Local start-up tests.
+    name: local (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.32"
+      - name: Install as the guide does
+        run: uv sync --frozen --no-editable
+      - name: Guide smoke test (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: bash scripts/ci/local_smoke.sh
+      - name: Guide smoke test (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ci/local_smoke.ps1
+      - name: Install the Claude Code CLI (pinned)
+        run: npm install -g @anthropic-ai/claude-code@2.1.301
+      - name: Claude Code connection commands (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: bash scripts/ci/claude_registration.sh
+      - name: Claude Code connection commands (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ci/claude_registration.ps1
+      - name: Install the development extras
+        run: uv sync --frozen --extra dev --no-editable
+      - name: Local store, one-server guard and start-up tests
+        env:
+          PYTHONUTF8: "1"
+        run: uv run --no-sync pytest -q tests/test_instance_guard.py tests/test_local_json_store.py tests/test_mcp_http_e2e.py tests/test_cli_init.py
+
   shellcheck:
     runs-on: ubuntu-24.04
     steps:
