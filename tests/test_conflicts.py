@@ -220,6 +220,21 @@ def test_merge_creates_one_authoritative_version(world, artifact_type):  # C7
 
 
 @pytest.mark.parametrize("artifact_type", TYPES)
+def test_resolution_successors_count_the_v_suffix_up(world, artifact_type):
+    """A merge's successor is named like any other: yellow -> yellow-v2,
+    and superseding that head gives yellow-v3, never yellow-v2-v2."""
+    conflict = _red_yellow(world, artifact_type)
+    record = _resolve(world, conflict, action="merge", into_artifact_id="yellow", content="merged")
+    (head,) = record.resulting_heads
+    assert head.artifact_id == "yellow-v2"
+    nxt = world["engine"].supersede_artifact(
+        principal=world["human"], project=world["project"], old_id="yellow-v2",
+        content="merged, then updated", reason="update",
+    )
+    assert nxt.artifact_id == "yellow-v3" and nxt.version == "3.0"
+
+
+@pytest.mark.parametrize("artifact_type", TYPES)
 def test_separate_subjects_assigns_every_candidate(world, artifact_type):  # C7
     conflict = _red_yellow(world, artifact_type)
     record = _resolve(

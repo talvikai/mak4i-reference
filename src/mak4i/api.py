@@ -433,7 +433,7 @@ class MAK4IEngine:
                     "instead of releasing the key"
                 )
 
-        new_id = self._next_available_id(organization_id, project, old_id)
+        new_id = self._next_available_id(organization_id, project, old_id, bump_version(old.version))
         now = utc_now()
 
         old_marked_superseded = old.model_copy(
@@ -1296,7 +1296,7 @@ class MAK4IEngine:
         elif old.status != "active":
             raise ConflictChangedError(f"{head_id!r} is no longer a current head")
         else:
-            new_id = self._next_available_id(org, project, head_id)
+            new_id = self._next_available_id(org, project, head_id, bump_version(old.version))
             try:
                 # The marker records which resolution owns this half-step.
                 self._store.put_if_match(
@@ -1466,9 +1466,9 @@ class MAK4IEngine:
 
     # -- internals ------------------------------------------------------
 
-    def _next_available_id(self, organization_id: str, project: str, old_id: str) -> str:
+    def _next_available_id(self, organization_id: str, project: str, old_id: str, new_version: str) -> str:
         for attempt in range(1, _MAX_SUCCESSOR_ID_ATTEMPTS + 1):
-            candidate = _bump_id(old_id, attempt)
+            candidate = _bump_id(old_id, attempt, new_version)
             if self._store.get(organization_id, project, candidate) is None:
                 return candidate
         raise RuntimeError(f"could not find an available successor id for {old_id!r}")
@@ -1560,17 +1560,28 @@ def _resolve_auth(
     return auth.auth_method, auth.ceiling
 
 
-def _bump_id(old_id: str, offset: int) -> str:
-    """[MVP CHOICE]: neither doc specifies a successor-id algorithm, only
-    consistent example results (decision-db-001 -> decision-db-002). This
-    increments a trailing numeric suffix, zero-padded to the original
-    width; ids with no such suffix fall back to an appended `-vN`."""
+_V_SUFFIXES = re.compile(r"(?:-v\d+)+$")
+
+
+def _bump_id(old_id: str, offset: int, new_version: str | None = None) -> str:
+    """[MVP CHOICE]: the successor's id is server-assigned and opaque
+    (MAK-0008 §10.5); the docs only give consistent examples
+    (decision-db-001 -> decision-db-002, primary-database ->
+    primary-database-v2 at version 2.0). An id ending in a number counts
+    that number up, zero-padded to its width. Any other id gets `-vN`, N
+    the successor's major version: `-vN` replaces the id's own trailing
+    `-vN` (or a run of them, from successors named before this rule), so
+    `doc` -> `doc-v2` -> `doc-v3`, never `doc-v2-v2`. `offset` counts the
+    candidates `_next_available_id` tries when one is taken."""
     match = re.match(r"^(.*-)(\d+)$", old_id)
     if match:
         prefix, digits = match.groups()
         width = len(digits)
         return f"{prefix}{int(digits) + offset:0{width}d}"
-    return f"{old_id}-v{offset + 1}"
+    base = _V_SUFFIXES.sub("", old_id) or old_id
+    major, _, _ = (new_version or "").partition(".")
+    first = int(major) if major.isdigit() and int(major) >= 2 else 2
+    return f"{base}-v{first + offset - 1}"
 
 
 def _version_sort_key(version: str) -> tuple[int, str]:

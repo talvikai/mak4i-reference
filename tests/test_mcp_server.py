@@ -173,6 +173,33 @@ async def test_supersede_then_history_shows_both_versions_oldest_first(server, w
         assert history[1]["status"] == "active"
 
 
+async def test_repeated_supersedes_over_mcp_count_the_v_suffix_up(server, world):
+    """The successor ids clients read back from mak4i_supersede: primary-
+    database -> -v2 -> -v3 -> -v4 -> -v5, never -v2-v2 (MAK-0008 §10.5:
+    server-assigned, opaque)."""
+    async with Client(server=server) as client:
+        await client.call_tool(
+            "mak4i_create",
+            {
+                "project": world["project"],
+                "artifact_id": "primary-database",
+                "artifact_type": "database_decision",
+                "title": "Primary database",
+                "content": "Use PostgreSQL.",
+            },
+        )
+        head, seen = "primary-database", []
+        for n in range(2, 6):
+            result = await client.call_tool(
+                "mak4i_supersede",
+                {"project": world["project"], "old_id": head, "content": f"revision {n}", "reason": "update"},
+            )
+            assert not result.is_error
+            head = result.structured_content["artifact_id"]
+            seen.append((head, result.structured_content["version"]))
+        assert seen == [(f"primary-database-v{n}", f"{n}.0") for n in range(2, 6)]
+
+
 async def test_supersede_nonexistent_old_id_surfaces_as_tool_error(server, world):
     async with Client(server=server) as client:
         result = await client.call_tool(
