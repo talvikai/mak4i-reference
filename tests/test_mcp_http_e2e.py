@@ -67,7 +67,8 @@ def _request(url: str, *, method: str = "GET", token: str | None = None, body: d
         data = json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        # Generous: a cold Windows CI runner can take seconds per call.
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, dict(response.headers), response.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers or {}), exc.read().decode()
@@ -148,6 +149,9 @@ def e2e_server(tmp_path):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+        # Shown by pytest only when the test fails: the server's own log.
+        if proc.stdout is not None and not proc.stdout.closed:
+            print(proc.stdout.read())
 
 
 def test_real_streamable_http_process_end_to_end(e2e_server):
