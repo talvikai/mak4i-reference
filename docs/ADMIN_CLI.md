@@ -13,7 +13,7 @@ records and what it prints. It is derived from `build_parser()` in
 `src/mak4i/cli.py`; `mak4i <command> --help` shows the same flags.
 
 For the step-by-step setup of a deployed installation, see
-[Enterprise Self-Hosted §6](ENTERPRISE_SELF_HOSTED.md#6-create-your-organization-and-access).
+[Enterprise Self-Hosted §4](ENTERPRISE_SELF_HOSTED.md#4-create-your-organization-people-and-projects).
 The behaviour described here is exercised end to end, through the real
 executable, by `tests/test_admin_cli_acceptance.py`.
 

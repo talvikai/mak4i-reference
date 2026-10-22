@@ -14,7 +14,7 @@ optional profiles `server-change-feed` and `server-client-policies`. It is
 tagged together with protocol v0.3 after the November 4 acceptance checks.
 Developer Preview: for evaluation and feedback, not for production use.
 Upgrading from v2.0.0-rc.1, v0.1.0-rc.5 or v0.1.0-rc.6:
-[`docs/ENTERPRISE_SELF_HOSTED.md` §9](docs/ENTERPRISE_SELF_HOSTED.md#9-upgrade).
+[`docs/ENTERPRISE_SELF_HOSTED.md` §9](docs/ENTERPRISE_SELF_HOSTED.md#8-find-your-release-and-upgrade).
 
 ### Added — change feed and MCP resources (#20)
 
