@@ -4,19 +4,6 @@
 > `v2.1.0-rc.1`, for evaluation and feedback. It isn't a
 > production-supported release.
 
-> **Release status (2026-10-22): `v2.1.0-rc.1` is prepared but not yet
-> published.** Until it appears on the
-> [releases page](https://github.com/talvikai/mak4i-reference/releases),
-> the download commands in this guide that name `v2.1.0-rc.1` fail with
-> `Remote branch v2.1.0-rc.1 not found`. Until then:
->
-> - **To install the published release**, follow the
->   [`v2.0.0-rc.1` guide](https://github.com/talvikai/mak4i-reference/blob/v2.0.0-rc.1/docs/ENTERPRISE_SELF_HOSTED.md).
->   You can upgrade to `v2.1.0-rc.1` with
->   [section 8](#8-find-your-release-and-upgrade) once it's published.
-> - **To evaluate the candidate on a test server only**, see
->   [Evaluate the candidate before it's published](#evaluate-the-candidate-before-its-published).
-
 ## What this guide covers
 
 This guide shows you how to install the free MAK4I on a Linux server for
@@ -325,9 +312,7 @@ cd mak4i-reference
 ```
 
 **You should see** `Cloning into 'mak4i-reference'...`. A note about
-"detached HEAD" is normal. (`Remote branch v2.1.0-rc.1 not found` means
-this release isn't published yet: see the
-[release status](#mak4i-for-your-team-enterprise-self-hosted) at the top.)
+"detached HEAD" is normal.
 
 **Always start in this folder.** Every administrator command in this
 guide runs from `~/mak4i-reference` unless it says otherwise. In a new
@@ -1607,7 +1592,7 @@ for example `--yes` for `restore`, `--destroy-data --yes-destroy-data` for
 
 ## 24. What has been tested
 
-As of 2026-10-22, for the `v2.1.0-rc.1` candidate:
+As of 2026-10-23, for `v2.1.0-rc.1`:
 
 | Path | How it was checked |
 |---|---|
@@ -1615,7 +1600,7 @@ As of 2026-10-22, for the `v2.1.0-rc.1` candidate:
 | Upgrade from `v2.0.0-rc.1`, with rollback; upgrade directly from `v0.1.0-rc.6` | run on a real server |
 | Upgrade directly from `v0.1.0-rc.5` | accepted by the installer (same path as `v0.1.0-rc.6`); not repeated on a server for this guide |
 | claude.ai and ChatGPT: register, sign in, read; ChatGPT also saved and read back | real apps, with a person |
-| Per-app limits | automated tests; with real apps, a read-only limit for claude.ai still allowed reading (a write refused by the server for claude.ai hasn't been observed yet) |
+| Per-app limits | automated tests, and real apps: with claude.ai limited to read, its write was refused by the server (`client_not_permitted`) while ChatGPT, allowed to write, saved |
 | Claude Code (self-registration and sign-in) | real app |
 | Grok (self-registration and sign-in) | real app connected and signed in; saving and reading not yet tested |
 | Upgrades from `v0.1.0-rc.4` and earlier (the in-between steps) | from those releases' own guides; not repeated for this release |
@@ -1636,20 +1621,3 @@ As of 2026-10-22, for the `v2.1.0-rc.1` candidate:
   [`DEPLOYMENT.md` → Production options](DEPLOYMENT.md#production-options).
 - **Sign-in codes** are issued by an owner (or by a person with their own
   access key); users can't yet request one themselves.
-
-### Evaluate the candidate before it's published
-
-**For test servers only**, while `v2.1.0-rc.1` isn't yet published (see
-the release status at the top). The candidate is the current `main`
-branch, which can change; it isn't a release.
-
-- **New installation:** in [2, Step 1](#step-1-download-mak4i), download
-  with `git clone --branch main --depth 1 https://github.com/talvikai/mak4i-reference.git`,
-  then follow the guide unchanged.
-- **Upgrade a test installation:** in
-  [8, Step 4](#step-4-download-the-new-release-and-upgrade), replace the
-  two `git` lines with
-  `git fetch --depth 1 origin main && git checkout FETCH_HEAD`.
-
-`git describe` then shows a development version (for example
-`v0.1.0-rc.5-75-g129f6f8`), and `status` shows `v2.1.0-rc.1`. Once `v2.1.0-rc.1` is published, use the release instead.
