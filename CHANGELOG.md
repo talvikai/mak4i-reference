@@ -7,14 +7,14 @@ the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
 Nothing yet.
 
-## v2.1.0-rc.1 — Developer Preview (prepared, not yet released)
+## v2.1.0-rc.1 — Developer Preview (2026-10-23)
 
 Implements MAK4I protocol v0.3 (talvikai/mak4i-protocol#13), including the
 optional profiles `server-change-feed` and `server-client-policies`. It is
-tagged together with protocol v0.3 after the November 4 acceptance checks.
+tagged together with protocol v0.3.0, after the November 4 acceptance checks.
 Developer Preview: for evaluation and feedback, not for production use.
 Upgrading from v2.0.0-rc.1, v0.1.0-rc.5 or v0.1.0-rc.6:
-[`docs/ENTERPRISE_SELF_HOSTED.md` §9](docs/ENTERPRISE_SELF_HOSTED.md#9-upgrade).
+[`docs/ENTERPRISE_SELF_HOSTED.md` §8](docs/ENTERPRISE_SELF_HOSTED.md#8-find-your-release-and-upgrade).
 
 ### Added — change feed and MCP resources (#20)
 

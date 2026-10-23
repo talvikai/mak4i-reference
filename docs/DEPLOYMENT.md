@@ -119,7 +119,7 @@ What any platform must provide to run the container image
 | `MAK4I_PUBLIC_ENDPOINT` | the client-facing MCP URL (connect instructions, `mak4i_whoami`) |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this installation names itself to AI clients |
 | `MAK4I_TOKEN` | stdio only: the one credential a local stdio session authenticates (re-checked before every operation) |
-| `MAK4I_OAUTH_ENABLED` and `MAK4I_OAUTH_*` | the built-in OAuth authorization server for HTTP (MAK-0008); see [Enterprise → OAuth sign-in](ENTERPRISE_SELF_HOSTED.md#71-oauth-sign-in) for every setting. Issuer and advertised URLs are derived from `MAK4I_PUBLIC_ENDPOINT` (and `MAK4I_OAUTH_ISSUER`), never from request headers. |
+| `MAK4I_OAUTH_ENABLED` and `MAK4I_OAUTH_*` | the built-in OAuth authorization server for HTTP (MAK-0008); see [Enterprise → Configuration reference](ENTERPRISE_SELF_HOSTED.md#22-configuration-reference) for every setting. Issuer and advertised URLs are derived from `MAK4I_PUBLIC_ENDPOINT` (and `MAK4I_OAUTH_ISSUER`), never from request headers. |
 | `MAK4I_CONTROL_PLANE_CREATE_TABLES` | `1` builds the schema directly (throwaway databases only; never on a database you keep) |
 | `MAK4I_CONTROL_PLANE_DB_FILE`, `MAK4I_TOKEN_FILE` | read the secret from a file (Docker/Kubernetes secrets) instead of the environment; setting both forms is an error |
 | `MAK4I_DEPLOYMENT_MODE` | `local` or `self-hosted` (default: `self-hosted` unless bound to loopback) |
@@ -134,7 +134,7 @@ as references; its output follows the versioned schema in
 [`config.schema.json`](config.schema.json) (`mak4i config schema`).
 
 Settings for each flavor: [Local](LOCAL_SETUP.md#15-configuration-reference),
-[Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#12-configuration-reference).
+[Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#22-configuration-reference).
 
 **Endpoints.** `GET /health` (liveness) and `GET /ready` (the control
 plane is reachable; `503` if not) are unauthenticated and return a bare
@@ -320,7 +320,7 @@ control-plane database (the authorization system of record) and the
 artifact store (the knowledge itself). Restoring one without the other
 fails closed rather than corrupting anything. How:
 [Local](LOCAL_SETUP.md#8-back-up-and-restore),
-[Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#83-backup).
+[Enterprise Self-Hosted](ENTERPRISE_SELF_HOSTED.md#91-back-up).
 
 ## Production options
 

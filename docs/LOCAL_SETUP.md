@@ -1301,7 +1301,7 @@ from `.mak4i/`, so you normally set none of them.
 | `MAK4I_HOST` | HTTP bind address (default `127.0.0.1`); `--host` wins. See [12](#12-network-access-without-host-rewriting) before using anything else. |
 | `MAK4I_TLS_TERMINATED_UPSTREAM` | `1` only when a TLS-terminating proxy or tunnel sits in front of MAK4I. Without it, MAK4I refuses to serve HTTP on any non-loopback address (MAK-0008 §1.2). |
 | `MAK4I_PORT` | HTTP port for one run; `--port` wins; otherwise the saved port, then 9090 |
-| `MAK4I_OAUTH_ENABLED`, `MAK4I_PUBLIC_ENDPOINT` | turn on OAuth sign-in and name the public MCP URL ([4.2](#42-steps), [13](#13-oauth-sign-in-for-apps-on-your-computer)). Not saved in `.mak4i/`: set them for the server and every `mak4i oauth` command. Other `MAK4I_OAUTH_*` settings: [ENTERPRISE_SELF_HOSTED.md → Configuration reference](ENTERPRISE_SELF_HOSTED.md#12-configuration-reference). |
+| `MAK4I_OAUTH_ENABLED`, `MAK4I_PUBLIC_ENDPOINT` | turn on OAuth sign-in and name the public MCP URL ([4.2](#42-steps), [13](#13-oauth-sign-in-for-apps-on-your-computer)). Not saved in `.mak4i/`: set them for the server and every `mak4i oauth` command. Other `MAK4I_OAUTH_*` settings: [ENTERPRISE_SELF_HOSTED.md → Configuration reference](ENTERPRISE_SELF_HOSTED.md#22-configuration-reference). |
 | `MAK4I_INSTANCE_NAME`, `MAK4I_ENVIRONMENT` | how this server names itself to AI clients (default `MAK4I local (<organization>)` / `local`) |
 | `MAK4I_AUDIT_LOG` | where CLI commands write audit and security events: `stderr` (default; stdout stays machine-readable) or a file path. Security events can't be switched off (MAK-0006 §8.6). |
 | `MAK4I_TOKEN` | the credential for `python -m mak4i.mcp_server` over stdio (manual setup); ignored by `mak4i serve` |
