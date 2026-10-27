@@ -17,7 +17,7 @@
 # follow the remediation thresholds in SECURITY.md.
 FROM ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 AS uv
 
-FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+FROM python:3.15.0-slim@sha256:f5b92f2a669a4c347044f29367f31983280b648250ca94dea66f98c53bc87e58
 
 # Kept in step with pyproject.toml by scripts/check_release_consistency.py.
 LABEL org.opencontainers.image.title="MAK4I Reference MCP server" \
