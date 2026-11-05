@@ -5,7 +5,16 @@ the Python package version is the PEP 440 equivalent (`X.Y.ZrcN`).
 
 ## Unreleased
 
-Nothing yet.
+### Security
+
+- `certifi` 2026.7.22 → 2026.10.23: drops the compromised emSign root
+  certificates (GHSA-6q48-6c7w-9gw2, PYSEC-2026-4320; critical).
+- `pyasn1` 0.6.4 → 0.6.5: denial-of-service fixes (CVE-2026-119194,
+  CVE-2026-119195, CVE-2026-119196, CVE-2026-119197).
+- `opentelemetry-api` 1.44.0 → 1.45.2 (CVE-2026-114603).
+
+v2.1.0-rc.1 and earlier ship the affected versions; upgrade to the next
+release candidate once it is tagged.
 
 ## v2.1.0-rc.1 — Developer Preview (2026-10-23)
 
