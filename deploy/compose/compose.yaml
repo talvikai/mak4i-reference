@@ -135,7 +135,7 @@ services:
 
   caddy:
     # Pinned to a reviewed version and digest (issue #10).
-    image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+    image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0
     profiles: ["tls"]
     restart: unless-stopped
     environment:
