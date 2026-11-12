@@ -15,7 +15,7 @@
 # `docker buildx imagetools inspect <image>:<version>`, rebuild, run the
 # test suite and the image scan (.github/workflows/security.yml), and
 # follow the remediation thresholds in SECURITY.md.
-FROM ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
